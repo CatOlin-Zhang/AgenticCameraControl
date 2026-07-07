@@ -3,9 +3,14 @@ UI 抽象基类 - 定义所有 UI 实现必须遵循的接口
 """
 from abc import ABC, abstractmethod
 
-from camera import CameraManager
-from events import EventBus
-from llm import OllamaClient
+from core.camera import CameraManager
+from core.events import EventBus
+from core.llm import LocalLLMClient, OllamaClient
+from typing import Union
+
+
+# LLM 客户端通用类型
+LLMClient = Union[LocalLLMClient, OllamaClient]
 
 
 class BaseUI(ABC):
@@ -14,7 +19,7 @@ class BaseUI(ABC):
     CLI 和 GUI 实现均需继承此类并实现所有抽象方法。
     """
 
-    def __init__(self, camera_manager: CameraManager, llm_client: OllamaClient, event_bus: EventBus):
+    def __init__(self, camera_manager: CameraManager, llm_client: LLMClient, event_bus: EventBus):
         self.camera_manager = camera_manager
         self.llm_client = llm_client
         self.event_bus = event_bus

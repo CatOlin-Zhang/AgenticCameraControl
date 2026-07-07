@@ -5,10 +5,10 @@ Agentic Camera Control - 智能摄像头控制系统
 import argparse
 import sys
 
-from config import load_config, AppConfig
-from camera import CameraManager
-from events import EventBus
-from llm import OllamaClient
+from core.config import load_config, AppConfig
+from core.camera import CameraManager
+from core.events import EventBus
+from core.llm import LocalLLMClient, OllamaClient
 from ui.cli import CLIApp
 
 
@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
 def bootstrap(config: AppConfig, auto_connect: bool = False) -> tuple:
     """
     初始化系统各组件
-    :return: (CameraManager, OllamaClient, EventBus)
+    :return: (CameraManager, LLMClient, EventBus)
     """
     # 1. 事件总线
     event_bus = EventBus()
@@ -52,15 +52,20 @@ def bootstrap(config: AppConfig, auto_connect: bool = False) -> tuple:
     for cam_config in config.cameras:
         camera_manager.add_camera(cam_config)
 
-    # 3. 自动连接
-    if auto_connect and config.cameras:
-        results = camera_manager.connect_all()
-        for name, ok in results.items():
-            status = "成功" if ok else "失败"
-            print(f"[启动] 摄像头 {name} 连接{status}")
+    # 3. 自动连接所有摄像头（USB 直连 + ONVIF/RTSP 均自动连接）
+    for cam_config in config.cameras:
+        ok = camera_manager.connect(cam_config.name)
+        mode = cam_config.connection_type.upper()
+        status = "成功" if ok else "失败"
+        print(f"[启动] {mode} 摄像头 {cam_config.name} 连接{status}")
 
-    # 4. LLM 客户端
-    llm_client = OllamaClient(config.ollama)
+    # 4. LLM 客户端（根据配置选择本地或 Ollama 后端）
+    if config.llm.backend == "ollama":
+        print("[LLM] 使用 Ollama 后端")
+        llm_client = OllamaClient(config.llm)
+    else:
+        print("[LLM] 使用本地 llama-cpp-python 后端")
+        llm_client = LocalLLMClient(config.llm)
 
     return camera_manager, llm_client, event_bus
 

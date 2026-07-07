@@ -1,14 +1,19 @@
 cameras:
-- name: camera_01
-  ip: 192.168.1.100
+- name: M50_main
+  connection_type: onvif
+  ip: 172.28.234.22
   port: 80
   username: admin
-  password: your_password_here
+  password: 1c3589
   rtsp_port: 554
   rtsp_path: /stream1
   rtsp_sub_path: /stream2
-ollama:
+  device_model: LC2418
+  product_version: ZCR461
+llm:
+  backend: local
+  model_path: D:\OllamaModels\qwen2.5-0.5b-instruct-q4_k_m.gguf
   base_url: http://localhost:11434
-  model: qwen2.5:7b
+  model: qwen2.5:0.5b
   timeout: 60
   temperature: 0.3

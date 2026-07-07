@@ -2,9 +2,9 @@
 GUI 界面 - 预留实现
 未来可使用 PyQt / Tkinter / DearPyGui 等框架实现此接口。
 """
-from camera import CameraManager
-from events import EventBus
-from llm import OllamaClient
+from core.camera import CameraManager
+from core.events import EventBus
+from core.llm import OllamaClient
 from ui.base import BaseUI
 
 

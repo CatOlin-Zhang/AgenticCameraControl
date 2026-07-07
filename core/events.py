@@ -1,6 +1,8 @@
 """
 事件系统模块 - IPC 摄像头事件的订阅/发布接口
 
+协议类型: 局域网 ONVIF 事件订阅
+
 预留支持的事件类型：
 - 移动侦测 (Motion Detection)
 - 遮挡报警 (Tamper Alarm)
@@ -70,22 +72,13 @@ class EventBus:
     """
 
     def __init__(self):
-        # {EventType: [callback, ...]}
         self._subscribers: Dict[EventType, List[EventCallback]] = {}
-        # 全局监听器（监听所有事件）
         self._global_listeners: List[EventCallback] = []
-        # 线程锁，保证并发安全
         self._lock = threading.Lock()
-        # 事件历史队列（可选）
         self._event_history: List[CameraEvent] = []
         self._max_history: int = 1000
 
     def subscribe(self, event_type: EventType, callback: EventCallback) -> None:
-        """
-        订阅指定类型的事件
-        :param event_type: 要订阅的事件类型
-        :param callback: 回调函数
-        """
         with self._lock:
             if event_type not in self._subscribers:
                 self._subscribers[event_type] = []
@@ -93,16 +86,11 @@ class EventBus:
         print(f"[EventBus] 已订阅事件: {event_type.value}")
 
     def subscribe_all(self, callback: EventCallback) -> None:
-        """
-        订阅所有类型的事件（全局监听）
-        :param callback: 回调函数
-        """
         with self._lock:
             self._global_listeners.append(callback)
         print("[EventBus] 已注册全局事件监听器")
 
     def unsubscribe(self, event_type: EventType, callback: EventCallback) -> None:
-        """取消订阅"""
         with self._lock:
             if event_type in self._subscribers:
                 try:
@@ -111,17 +99,11 @@ class EventBus:
                     pass
 
     def publish(self, event: CameraEvent) -> None:
-        """
-        发布事件，异步通知所有订阅者
-        :param event: 事件数据
-        """
-        # 记录事件历史
         with self._lock:
             self._event_history.append(event)
             if len(self._event_history) > self._max_history:
                 self._event_history = self._event_history[-self._max_history:]
 
-        # 分发给指定类型的订阅者
         callbacks = []
         with self._lock:
             if event.event_type in self._subscribers:
@@ -140,24 +122,15 @@ class EventBus:
         camera_name: Optional[str] = None,
         limit: int = 50,
     ) -> List[CameraEvent]:
-        """
-        查询事件历史
-        :param event_type: 按类型过滤（可选）
-        :param camera_name: 按摄像头名称过滤（可选）
-        :param limit: 返回条数上限
-        """
         with self._lock:
             events = list(self._event_history)
-
         if event_type:
             events = [e for e in events if e.event_type == event_type]
         if camera_name:
             events = [e for e in events if e.camera_name == camera_name]
-
         return events[-limit:]
 
     def clear_history(self) -> None:
-        """清空事件历史"""
         with self._lock:
             self._event_history.clear()
 
@@ -166,10 +139,7 @@ class EventBus:
 #  ONVIF 事件监听器（预留实现）
 # ──────────────────────────────────────────────
 class OnvifEventListener(ABC):
-    """
-    ONVIF 事件监听器抽象基类。
-    子类需实现 start() / stop() 来管理事件轮询或订阅循环。
-    """
+    """ONVIF 事件监听器抽象基类。"""
 
     def __init__(self, camera_name: str, event_bus: EventBus):
         self.camera_name = camera_name
@@ -179,17 +149,9 @@ class OnvifEventListener(ABC):
 
     @abstractmethod
     def _poll_events(self) -> None:
-        """
-        轮询或接收 ONVIF 事件的内部实现。
-        子类需在此方法中：
-        1. 连接 ONVIF Event 服务
-        2. 拉取/接收事件
-        3. 将原始事件转换为 CameraEvent 并通过 event_bus.publish() 发布
-        """
         pass
 
     def start(self) -> None:
-        """启动事件监听（后台线程）"""
         if self._running:
             return
         self._running = True
@@ -202,7 +164,6 @@ class OnvifEventListener(ABC):
         print(f"[EventListener] {self.camera_name} 事件监听已启动")
 
     def stop(self) -> None:
-        """停止事件监听"""
         self._running = False
         if self._thread:
             self._thread.join(timeout=5)
@@ -210,28 +171,22 @@ class OnvifEventListener(ABC):
         print(f"[EventListener] {self.camera_name} 事件监听已停止")
 
     def _run_loop(self) -> None:
-        """监听主循环"""
         while self._running:
             try:
                 self._poll_events()
             except Exception as e:
                 print(f"[EventListener] {self.camera_name} 轮询异常: {e}")
-                # 发布离线事件
                 self.event_bus.publish(CameraEvent(
                     event_type=EventType.DEVICE_OFFLINE,
                     camera_name=self.camera_name,
                     severity="warning",
                     message=f"事件轮询异常: {e}",
                 ))
-            time.sleep(1)  # 轮询间隔，子类可覆盖
+            time.sleep(1)
 
 
-# ──────────────────────────────────────────────
-#  默认空实现（占位，后续替换为真实 ONVIF 实现）
-# ──────────────────────────────────────────────
 class StubOnvifEventListener(OnvifEventListener):
     """占位实现 - 不做任何实际操作，仅用于开发阶段"""
 
     def _poll_events(self) -> None:
-        # 开发阶段：静默等待，不产生任何事件
         time.sleep(5)
