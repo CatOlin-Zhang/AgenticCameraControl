@@ -1,0 +1,6 @@
+onvif-zeep==0.2.12
+zeep==4.2.1
+opencv-python==4.10.0.84
+requests==2.32.3
+httpx==0.28.1
+pyyaml==6.0.2

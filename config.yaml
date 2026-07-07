@@ -1,0 +1,14 @@
+cameras:
+- name: camera_01
+  ip: 192.168.1.100
+  port: 80
+  username: admin
+  password: your_password_here
+  rtsp_port: 554
+  rtsp_path: /stream1
+  rtsp_sub_path: /stream2
+ollama:
+  base_url: http://localhost:11434
+  model: qwen2.5:7b
+  timeout: 60
+  temperature: 0.3
