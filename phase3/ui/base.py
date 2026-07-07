@@ -3,9 +3,9 @@ UI 抽象基类 - 定义所有 UI 实现必须遵循的接口
 """
 from abc import ABC, abstractmethod
 
-from core.camera import CameraManager
-from core.events import EventBus
-from core.llm import LocalLLMClient, OllamaClient
+from phase3.core.camera import CameraManager
+from phase3.core.events import EventBus
+from phase3.core.llm import LocalLLMClient, OllamaClient
 from typing import Union
 
 

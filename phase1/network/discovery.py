@@ -6,6 +6,7 @@
   3. USB(UVC) 摄像头扫描
 """
 import ipaddress
+import re
 import socket
 import struct
 import threading
@@ -13,6 +14,8 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
+import xml.etree.ElementTree as ET
 
 import cv2
 
@@ -32,7 +35,7 @@ class DiscoveredUSBDevice:
 
 @dataclass
 class DiscoveredNetworkDevice:
-    """发现的局域网摄像头信息"""
+    """局域网摄像头信息"""
     ip: str
     onvif_port: int = 80                        # ONVIF 服务端口
     rtsp_port: int = 554                       # RTSP 端口
@@ -42,6 +45,11 @@ class DiscoveredNetworkDevice:
     mac_address: str = ""                      # MAC 地址
     device_type: str = ""                      # 设备类型描述
     extra_ports: List[int] = field(default_factory=list)  # 其他开放端口
+    xaddrs: str = ""                           # WS-Discovery XAddrs 完整地址
+    scopes: str = ""                           # WS-Discovery Scopes
+    brand: str = ""                            # 品牌（从 Scopes 提取）
+    model: str = ""                            # 型号（从 Scopes 提取）
+    ws_discovered: bool = False                # 是否通过 WS-Discovery 发现（真正的 ONVIF 设备）
 
 
 # ──────────────────────────────────────────────
@@ -71,37 +79,42 @@ WS_PROBE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 </s:Envelope>"""
 
 
-def _ws_discovery(timeout: float = 3.0) -> List[str]:
+def _ws_discovery(timeout: float = 3.0) -> Dict[str, dict]:
     """
     通过 WS-Discovery 协议发现 ONVIF 设备。
-    发送多播 Probe 消息，收集设备的响应。
+    发送多播 Probe 消息，解析 ProbeMatch 响应提取 XAddrs/Scopes/Types。
 
     :param timeout: 等待响应的时间（秒）
-    :return: 发现的设备 IP 列表
+    :return: {ip: {onvif_port, xaddrs, scopes, types}}
     """
-    found_ips = []
+    found: Dict[str, dict] = {}
     msg_id = str(uuid.uuid4())
     probe_msg = WS_PROBE_TEMPLATE.format(msg_id=msg_id).encode("utf-8")
 
+    # XML 命名空间
+    NS = {
+        's': 'http://www.w3.org/2003/05/soap-envelope',
+        'wsa': 'http://schemas.xmlsoap.org/ws/2004/08/addressing',
+        'd': 'http://schemas.xmlsoap.org/ws/2005/04/discovery',
+        'd3': 'http://www.onvif.org/ver10/network/wsdl/RemoteDiscoveryBinding',
+    }
+
     try:
-        # 创建 UDP socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.settimeout(timeout)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-        # 发送多播 Probe
         sock.sendto(probe_msg, (WS_DISCOVERY_ADDR, WS_DISCOVERY_PORT))
         print(f"  [WS-Discovery] 已发送 Probe，等待响应 (超时 {timeout}s) ...")
 
-        # 收集响应
         while True:
             try:
                 data, addr = sock.recvfrom(65535)
                 ip = addr[0]
-                if ip not in found_ips:
-                    found_ips.append(ip)
-                    # 尝试从响应中提取设备信息
-                    print(f"  [✓] WS-Discovery 响应: {ip}")
+                info = _parse_probe_match(data, ip, NS)
+                if info and ip not in found:
+                    found[ip] = info
+                    print(f"  [\u2713] WS-Discovery: {ip} (ONVIF端口: {info['onvif_port']}, 品牌: {info.get('brand','')})")
             except socket.timeout:
                 break
             except Exception:
@@ -112,7 +125,84 @@ def _ws_discovery(timeout: float = 3.0) -> List[str]:
     except Exception as e:
         print(f"  [!] WS-Discovery 异常: {e}")
 
-    return found_ips
+    return found
+
+
+def _parse_probe_match(data: bytes, ip: str, ns: dict) -> Optional[dict]:
+    """
+    解析 WS-Discovery ProbeMatch/Hello XML，提取 XAddrs 端口、Scopes、Types。
+    """
+    try:
+        xml_str = data.decode("utf-8", errors="ignore")
+        # 去掉可能的前导二进制数据
+        xml_start = xml_str.find("<?xml")
+        if xml_start < 0:
+            xml_start = xml_str.find("<s:Envelope")
+        if xml_start < 0:
+            return None
+        xml_str = xml_str[xml_start:]
+
+        root = ET.fromstring(xml_str)
+
+        # 提取 XAddrs
+        xaddrs_elem = root.find('.//' + '{http://schemas.xmlsoap.org/ws/2005/04/discovery}XAddrs')
+        if xaddrs_elem is None:
+            # 尝试不带命名空间
+            for elem in root.iter():
+                if elem.tag.endswith('}XAddrs') or elem.tag == 'XAddrs':
+                    xaddrs_elem = elem
+                    break
+
+        xaddrs = xaddrs_elem.text.strip() if xaddrs_elem is not None else ""
+
+        # 从 XAddrs URL 解析端口
+        onvif_port = 80
+        if xaddrs:
+            try:
+                parsed = urlparse(xaddrs.split()[0])  # 可能有多个 URL，取第一个
+                if parsed.port:
+                    onvif_port = parsed.port
+            except Exception:
+                pass
+
+        # 提取 Scopes
+        scopes_elem = root.find('.//' + '{http://schemas.xmlsoap.org/ws/2005/04/discovery}Scopes')
+        if scopes_elem is None:
+            for elem in root.iter():
+                if elem.tag.endswith('}Scopes') or elem.tag == 'Scopes':
+                    scopes_elem = elem
+                    break
+        scopes_text = scopes_elem.text.strip() if scopes_elem is not None else ""
+
+        # 提取 Types
+        types_elem = root.find('.//' + '{http://schemas.xmlsoap.org/ws/2005/04/discovery}Types')
+        if types_elem is None:
+            for elem in root.iter():
+                if elem.tag.endswith('}Types') or elem.tag == 'Types':
+                    types_elem = elem
+                    break
+        types_text = types_elem.text.strip() if types_elem is not None else ""
+
+        # 从 Scopes 提取品牌和型号
+        brand = ""
+        model = ""
+        for scope in scopes_text.split():
+            if '/name/' in scope:
+                brand = scope.split('/name/')[-1]
+            if '/hardware/' in scope:
+                model = scope.split('/hardware/')[-1]
+
+        return {
+            "ip": ip,
+            "onvif_port": onvif_port,
+            "xaddrs": xaddrs,
+            "scopes": scopes_text,
+            "types": types_text,
+            "brand": brand,
+            "model": model,
+        }
+    except Exception as e:
+        return None
 
 
 # ──────────────────────────────────────────────
@@ -168,33 +258,32 @@ def _get_http_title(ip: str, port: int, timeout: float = 2.0) -> str:
     return ""
 
 
-def _scan_subnet(
-    subnet: Optional[str] = None,
+def _scan_subnets(
+    subnets: Optional[List[str]] = None,
     ports: Optional[List[int]] = None,
     timeout: float = 0.3,
     max_workers: int = 50,
 ) -> Dict[str, List[int]]:
     """
-    扫描局域网子网，找出开放指定端口的设备。
+    扫描多个局域网子网，找出开放指定端口的设备。
 
-    :param subnet: 子网 CIDR (如 "192.168.1.0/24")，None 则自动检测
+    :param subnets: 子网 CIDR 列表 (如 ["192.168.0.0/16", "172.28.0.0/16"])，None 则使用默认网段
     :param ports: 要扫描的端口列表
     :param timeout: 每个端口的连接超时
     :param max_workers: 最大并发线程数
     :return: {ip: [open_ports]}
     """
-    if subnet is None:
-        subnet = _detect_subnet()
-        if not subnet:
-            print("  [!] 无法自动检测子网，请手动指定")
+    if subnets is None:
+        subnets = _detect_subnets()
+        if not subnets:
+            print("  [!] 无法检测子网，请手动指定")
             return {}
 
     if ports is None:
         ports = [80, 554, 8080, 8000, 8081, 8899]
 
-    print(f"  [端口扫描] 子网: {subnet}  端口: {ports}")
+    print(f"  [端口扫描] 网段: {subnets}  端口: {ports}")
 
-    network = ipaddress.ip_network(subnet, strict=False)
     results: Dict[str, List[int]] = {}
     lock = threading.Lock()
     semaphore = threading.Semaphore(max_workers)
@@ -211,15 +300,17 @@ def _scan_subnet(
             semaphore.release()
 
     threads = []
-    for host in network.hosts():
-        ip_str = str(host)
-        # 跳过网关（通常是 .1）和本机
-        if ip_str.endswith(".1"):
-            continue
-        for port in ports:
-            t = threading.Thread(target=scan_ip_port, args=(ip_str, port))
-            threads.append(t)
-            t.start()
+    for subnet in subnets:
+        network = ipaddress.ip_network(subnet, strict=False)
+        for host in network.hosts():
+            ip_str = str(host)
+            # 跳过网关（通常是 .1）和本机
+            if ip_str.endswith(".0.1") or ip_str.endswith(".0.0.1"):
+                continue
+            for port in ports:
+                t = threading.Thread(target=scan_ip_port, args=(ip_str, port))
+                threads.append(t)
+                t.start()
 
     # 等待所有线程完成
     for t in threads:
@@ -228,28 +319,21 @@ def _scan_subnet(
     return results
 
 
-def _detect_subnet() -> Optional[str]:
+def _detect_subnets() -> List[str]:
     """
-    自动检测本机所在的子网。
-    通过获取本机 IP 地址推算子网。
+    检测本机需要扫描的子网列表。
+    固定扫描 192.168.0.0/16 和 172.28.0.0/16 两个网段。
     """
+    subnets = ["192.168.1.0/24", "172.28.234.0/24"]
     try:
-        # 创建一个 UDP socket 来获取本机出口 IP
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         local_ip = s.getsockname()[0]
         s.close()
-
         print(f"  [网络] 本机 IP: {local_ip}")
-
-        # 假设 /24 子网（绝大多数家庭/办公网络）
-        parts = local_ip.split(".")
-        subnet = f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
-        return subnet
-
-    except Exception as e:
-        print(f"  [!] 检测子网失败: {e}")
-        return None
+    except Exception:
+        pass
+    return subnets
 
 
 def _get_local_ip() -> Optional[str]:
@@ -269,7 +353,7 @@ def _get_local_ip() -> Optional[str]:
 # ──────────────────────────────────────────────
 
 def discover_network_cameras(
-    subnet: Optional[str] = None,
+    subnets: Optional[List[str]] = None,
     password: str = "",
     scan_timeout: float = 0.3,
 ) -> List[DiscoveredNetworkDevice]:
@@ -277,10 +361,10 @@ def discover_network_cameras(
     综合发现局域网内的摄像头设备。
     流程：
       1. WS-Discovery 多播发现 ONVIF 设备
-      2. 端口扫描补充（HTTP/RTSP 端口）
+      2. 端口扫描补充（HTTP/RTSP 端口），默认扫描 192.168.0.0/16 和 172.28.0.0/16
       3. 合并结果
 
-    :param subnet: 子网 CIDR，None 自动检测
+    :param subnets: 子网 CIDR 列表，None 使用默认网段
     :param password: 用于验证连接的密码
     :param scan_timeout: 端口扫描超时
     :return: 发现的设备列表
@@ -295,13 +379,13 @@ def discover_network_cameras(
 
     # ── Step 1: WS-Discovery ──
     print("\n[Step 1/3] WS-Discovery ONVIF 设备发现 ...")
-    ws_ips = _ws_discovery(timeout=3.0)
+    ws_devices = _ws_discovery(timeout=3.0)
 
     # ── Step 2: 端口扫描 ──
     print(f"\n[Step 2/3] 端口扫描 ...")
-    port_results = _scan_subnet(
-        subnet=subnet,
-        ports=[80, 554, 8080, 8000, 8081, 8899, 10554],
+    port_results = _scan_subnets(
+        subnets=subnets,
+        ports=[80, 554, 2000, 8080, 8000, 8081, 8899, 10554],
         timeout=scan_timeout,
     )
 
@@ -309,7 +393,7 @@ def discover_network_cameras(
     print(f"\n[Step 3/3] 合并发现结果 ...")
 
     # 收集所有 IP
-    all_ips = set(ws_ips) | set(port_results.keys())
+    all_ips = set(ws_devices.keys()) | set(port_results.keys())
     # 排除本机
     if local_ip:
         all_ips.discard(local_ip)
@@ -317,14 +401,17 @@ def discover_network_cameras(
     devices = []
     for ip in sorted(all_ips):
         open_ports = port_results.get(ip, [])
-        is_ws = ip in ws_ips
+        ws_info = ws_devices.get(ip, {})
+        is_ws = ip in ws_devices
 
-        # 判断 ONVIF 端口
-        onvif_port = 80
-        for p in [80, 8080, 8000, 8899]:
-            if p in open_ports:
-                onvif_port = p
-                break
+        # ONVIF 端口：优先使用 WS-Discovery XAddrs 解析的端口
+        onvif_port = ws_info.get("onvif_port", 80) if ws_info else 80
+        # 如果 WS-Discovery 没有提供，回退到端口扫描
+        if not ws_info:
+            for p in [80, 2000, 8080, 8000, 8899]:
+                if p in open_ports:
+                    onvif_port = p
+                    break
 
         # 判断 RTSP 端口
         rtsp_port = 554
@@ -345,6 +432,11 @@ def discover_network_cameras(
             rtsp_available=rtsp_available,
             http_title=http_title,
             extra_ports=open_ports,
+            xaddrs=ws_info.get("xaddrs", "") if ws_info else "",
+            scopes=ws_info.get("scopes", "") if ws_info else "",
+            brand=ws_info.get("brand", "") if ws_info else "",
+            model=ws_info.get("model", "") if ws_info else "",
+            ws_discovered=is_ws,
         )
         devices.append(device)
 
@@ -361,8 +453,12 @@ def discover_network_cameras(
         print(f"  共发现 {len(devices)} 个网络设备:\n")
         for i, dev in enumerate(devices):
             print(f"  [{i+1}] IP: {dev.ip}")
-            print(f"      ONVIF: {'✓ 可用 (端口 ' + str(dev.onvif_port) + ')' if dev.onvif_available else '✗ 未检测到'}")
-            print(f"      RTSP:  {'✓ 可用 (端口 ' + str(dev.rtsp_port) + ')' if dev.rtsp_available else '✗ 未检测到'}")
+            print(f"      ONVIF: {'\u2713 可用 (端口 ' + str(dev.onvif_port) + ')' if dev.onvif_available else '\u2717 未检测到'}")
+            print(f"      RTSP:  {'\u2713 可用 (端口 ' + str(dev.rtsp_port) + ')' if dev.rtsp_available else '\u2717 未检测到'}")
+            if dev.brand or dev.model:
+                print(f"      品牌/型号: {dev.brand} {dev.model}")
+            if dev.xaddrs:
+                print(f"      XAddrs: {dev.xaddrs}")
             print(f"      开放端口: {dev.extra_ports}")
             if dev.http_title:
                 print(f"      HTTP标题: {dev.http_title}")
@@ -402,6 +498,40 @@ def discover_usb_cameras(max_index: int = 10) -> List[DiscoveredUSBDevice]:
     else:
         print(f"[发现] 共发现 {len(found)} 个 USB 摄像头")
     return found
+
+
+# ──────────────────────────────────────────────
+#  ONVIF 设备验证
+# ──────────────────────────────────────────────
+
+def verify_onvif_camera(ip: str, port: int, username: str = "admin", password: str = "",
+                        timeout: float = 5.0) -> Optional[dict]:
+    """
+    快速验证一个设备是否为真正的 ONVIF 摄像头。
+    通过连接 ONVIF 服务并调用 GetDeviceInformation 来确认。
+
+    :return: 设备信息 dict（manufacturer, model, firmware, serial），验证失败返回 None
+    """
+    try:
+        from onvif import ONVIFCamera
+        import socket
+        old_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(timeout)
+        try:
+            camera = ONVIFCamera(host=ip, port=port, user=username, passwd=password)
+            devicemgmt = camera.create_devicemgmt_service()
+            info = devicemgmt.GetDeviceInformation()
+            result = {
+                'manufacturer': str(getattr(info, 'Manufacturer', '')),
+                'model': str(getattr(info, 'Model', '')),
+                'firmware': str(getattr(info, 'FirmwareVersion', '')),
+                'serial': str(getattr(info, 'SerialNumber', '')),
+            }
+            return result
+        finally:
+            socket.setdefaulttimeout(old_timeout)
+    except Exception as e:
+        return None
 
 
 # ──────────────────────────────────────────────

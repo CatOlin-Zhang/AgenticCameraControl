@@ -1,0 +1,8 @@
+# phase2 依赖
+opencv-python>=4.8.0
+numpy>=1.24.0
+pyyaml>=6.0
+onvif-zeep>=0.2.12
+llama-cpp-python>=0.3.0
+huggingface_hub>=0.20.0
+httpx>=0.25.0

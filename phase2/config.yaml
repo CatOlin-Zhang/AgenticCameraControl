@@ -1,0 +1,22 @@
+# phase2 配置文件 - SN 码认证 + 智能摄像头控制
+cameras: []
+# 示例：
+# cameras:
+#   - name: camera_1
+#     connection_type: onvif
+#     ip: 192.168.1.100
+#     port: 80
+#     username: admin
+#     password: ""          # 可为空，运行时由 SN 码解码填充
+#     sn_code: ""           # 设备 SN 码（也可运行时通过 /sn 命令输入）
+#     rtsp_port: 554
+#     rtsp_path: /stream1
+#     rtsp_sub_path: /stream2
+
+llm:
+  backend: local
+  model_path: D:\OllamaModels\qwen2.5-0.5b-instruct-q4_k_m.gguf
+  base_url: http://localhost:11434
+  model: qwen2.5:0.5b
+  timeout: 60
+  temperature: 0.3

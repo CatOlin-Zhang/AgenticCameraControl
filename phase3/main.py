@@ -5,11 +5,11 @@ Agentic Camera Control - 智能摄像头控制系统
 import argparse
 import sys
 
-from core.config import load_config, AppConfig
-from core.camera import CameraManager
-from core.events import EventBus
-from core.llm import LocalLLMClient, OllamaClient
-from ui.cli import CLIApp
+from phase3.core.config import load_config, AppConfig
+from phase3.core.camera import CameraManager
+from phase3.core.events import EventBus
+from phase3.core.llm import LocalLLMClient, OllamaClient
+from phase3.ui.cli import CLIApp
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,41 +30,26 @@ def parse_args() -> argparse.Namespace:
         default="cli",
         help="运行模式：cli（命令行）或 gui（图形界面，尚未实现）",
     )
-    parser.add_argument(
-        "--auto-connect",
-        action="store_true",
-        default=False,
-        help="启动时自动连接所有已注册的摄像头",
-    )
     return parser.parse_args()
 
 
-def bootstrap(config: AppConfig, auto_connect: bool = False) -> tuple:
+def bootstrap(config: AppConfig) -> tuple:
     """
-    初始化系统各组件
+    初始化系统各组件（静默初始化，不自动连接摄像头）
     :return: (CameraManager, LLMClient, EventBus)
     """
     # 1. 事件总线
     event_bus = EventBus()
 
-    # 2. 摄像头管理器
+    # 2. 摄像头管理器（仅注册配置中的摄像头，不自动连接）
     camera_manager = CameraManager(event_bus)
     for cam_config in config.cameras:
         camera_manager.add_camera(cam_config)
 
-    # 3. 自动连接所有摄像头（USB 直连 + ONVIF/RTSP 均自动连接）
-    for cam_config in config.cameras:
-        ok = camera_manager.connect(cam_config.name)
-        mode = cam_config.connection_type.upper()
-        status = "成功" if ok else "失败"
-        print(f"[启动] {mode} 摄像头 {cam_config.name} 连接{status}")
-
-    # 4. LLM 客户端（根据配置选择本地或 Ollama 后端）
+    # 3. LLM 客户端（根据配置选择本地或 Ollama 后端）
     if config.llm.backend == "ollama":
-        print("[LLM] 使用 Ollama 后端")
         llm_client = OllamaClient(config.llm)
     else:
-        print("[LLM] 使用本地 llama-cpp-python 后端")
         llm_client = LocalLLMClient(config.llm)
 
     return camera_manager, llm_client, event_bus
@@ -80,20 +65,13 @@ def main() -> None:
     else:
         config = load_config()
 
-    # 如果配置文件刚被创建（cameras 为空），提示用户编辑后退出
-    if not config.cameras:
-        print("\n请先编辑 config.yaml 填入摄像头信息后重新运行。")
-        sys.exit(1)
-
-    # 初始化组件
-    camera_manager, llm_client, event_bus = bootstrap(
-        config, auto_connect=args.auto_connect
-    )
+    # 静默初始化组件（不自动连接摄像头，由 LLM 根据用户意图决策）
+    camera_manager, llm_client, event_bus = bootstrap(config)
 
     # 选择 UI 模式
     if args.mode == "gui":
         try:
-            from ui.gui import GUIApp
+            from phase3.ui.gui import GUIApp
             app = GUIApp(camera_manager, llm_client, event_bus)
         except NotImplementedError as e:
             print(f"\n[错误] {e}")

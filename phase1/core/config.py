@@ -14,7 +14,7 @@ from enum import Enum
 from typing import Optional
 
 
-# 项目根目录（core/ 的上一级）
+# 项目根目录（phase1/ 目录，即 core/ 的上两级）
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_FILE = os.path.join(PROJECT_ROOT, "config.yaml")
 
@@ -58,7 +58,8 @@ class CameraConfig:
         :return: 完整的 RTSP URL
         """
         path = self.rtsp_sub_path if sub_stream else self.rtsp_path
-        return f"rtsp://{self.username}:{self.password}@{self.ip}:{self.rtsp_port}{path}"
+        pwd = self.password if self.password else ""
+        return f"rtsp://{self.username}:{pwd}@{self.ip}:{self.rtsp_port}{path}"
 
     def get_onvif_url(self) -> str:
         """获取 ONVIF 服务地址（仅 ONVIF 模式有效）"""
@@ -75,39 +76,36 @@ class LLMConfig:
     timeout: int = 60                          # 请求超时时间（秒）
     temperature: float = 0.3                   # 生成温度（控制指令场景用低温度）
     system_prompt: str = (
-        "你是摄像头控制助手。用户用自然语言告诉你想要什么，你返回一个JSON命令。\n"
+        "你是智能摄像头控制助手。根据用户意图返回JSON命令或对话。\n"
+        "\n"
+        "操作命令格式: {\"command\":\"命令名\"}\n"
+        "系统会自动处理所有参数，你不需要填写任何参数。\n"
         "\n"
         "可用命令：\n"
-        "- watch_camera: 连接摄像头并打开实时视频（自动连接+拉流+预览）\n"
-        "- take_photo: 连接摄像头并截图保存\n"
         "- discover_network: 扫描局域网摄像头\n"
-        "- discover_usb: 扫描本机USB摄像头\n"
         "- connect_camera: 连接摄像头\n"
-        "- disconnect_camera: 断开摄像头\n"
-        "- get_status: 查看摄像头状态\n"
-        "- list_cameras: 列出所有摄像头\n"
-        "- auto_setup: 自动扫描+连接+拉流全流程\n"
+        "- watch_camera: 连接并拉流预览\n"
+        "- get_stream: 获取视频流\n"
+        "- take_photo: 截图保存\n"
+        "- open_preview: 打开预览\n"
+        "- get_status: 查看状态\n"
+        "- list_cameras: 列出摄像头\n"
+        "- set_password: 设置密码\n"
+        "- auto_setup: 自动扫描+连接+拉流\n"
         "\n"
-        "规则：只返回JSON，不要解释。\n"
-        "格式：{\"command\":\"命令名\",\"params\":{}}\n"
-        "如果不指定摄像头，params可以为空对象{}。\n"
-        "如果只是聊天，返回文字即可。\n"
+        "规则：\n"
+        "1. 执行操作时只返回 {\"command\":\"命令名\"}\n"
+        "2. 闲聊/回答问题时直接返回文字\n"
         "\n"
         "示例：\n"
-        "用户：我想看看摄像头的视频\n"
-        "{\"command\":\"watch_camera\",\"params\":{}}\n"
+        "用户：你好\n"
+        "助手：你好！有什么可以帮你的？\n"
         "\n"
-        "用户：帮我截个图\n"
-        "{\"command\":\"take_photo\",\"params\":{}}\n"
+        "用户：扫描摄像头\n"
+        "{\"command\":\"discover_network\"}\n"
         "\n"
-        "用户：扫描一下局域网里有什么摄像头\n"
-        "{\"command\":\"discover_network\",\"params\":{}}\n"
-        "\n"
-        "用户：帮我搞定一切\n"
-        "{\"command\":\"auto_setup\",\"params\":{}}\n"
-        "\n"
-        "用户：看看M50的状态\n"
-        "{\"command\":\"get_status\",\"params\":{\"camera\":\"M50_main\"}}\n"
+        "用户：拉流\n"
+        "{\"command\":\"watch_camera\"}\n"
     )
 
 
@@ -132,6 +130,42 @@ class AppConfig:
     def add_camera(self, camera: CameraConfig) -> None:
         """添加摄像头配置"""
         self.cameras.append(camera)
+
+
+def save_config(config: AppConfig, config_path: str = CONFIG_FILE) -> None:
+    """将当前配置持久化到 YAML 文件"""
+    data = {}
+    # 序列化摄像头列表
+    cameras_data = []
+    for cam in config.cameras:
+        cameras_data.append({
+            "name": cam.name,
+            "connection_type": cam.connection_type,
+            "ip": cam.ip,
+            "port": cam.port,
+            "username": cam.username,
+            "password": cam.password,
+            "rtsp_port": cam.rtsp_port,
+            "rtsp_path": cam.rtsp_path,
+            "rtsp_sub_path": cam.rtsp_sub_path,
+            "device_model": cam.device_model,
+            "product_version": cam.product_version,
+        })
+    data["cameras"] = cameras_data
+
+    # 序列化 LLM 配置
+    llm = config.llm
+    data["llm"] = {
+        "backend": llm.backend,
+        "model_path": llm.model_path,
+        "base_url": llm.base_url,
+        "model": llm.model,
+        "timeout": llm.timeout,
+        "temperature": llm.temperature,
+    }
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
 
 def load_config(config_path: str = CONFIG_FILE) -> AppConfig:

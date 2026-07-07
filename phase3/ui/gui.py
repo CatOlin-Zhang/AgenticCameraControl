@@ -2,10 +2,10 @@
 GUI 界面 - 预留实现
 未来可使用 PyQt / Tkinter / DearPyGui 等框架实现此接口。
 """
-from core.camera import CameraManager
-from core.events import EventBus
-from core.llm import OllamaClient
-from ui.base import BaseUI
+from phase3.core.camera import CameraManager
+from phase3.core.events import EventBus
+from phase3.core.llm import OllamaClient
+from phase3.ui.base import BaseUI
 
 
 class GUIApp(BaseUI):
