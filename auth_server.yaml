@@ -1,0 +1,11 @@
+# 远程授权服务器配置
+# 此文件位于项目根目录下，用于存储摄像头注册的远程授权服务器地址
+#
+# 用户通过 /register 命令注册摄像头时，系统会向此地址发送 HTTP POST 请求
+# 请求体包含: { "sn_code": "设备SN码", "local_ip": "本机IP地址" }
+#
+# 请将 server_url 替换为实际的远程授权服务器地址
+
+server_url: http://192.168.1.200:8080/api/camera/register
+timeout: 30
+

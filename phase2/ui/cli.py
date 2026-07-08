@@ -15,6 +15,7 @@ from phase2.core.auth import SNDecoder
 from phase2.core.llm import LocalLLMClient, OllamaClient, ParsedCommand
 from phase2.ui.base import BaseUI
 from phase2.core.config import CameraConfig
+from phase2.core.registration import CameraRegistrar
 
 
 # ──────────────────────────────────────────────
@@ -47,6 +48,7 @@ class CLIApp(BaseUI):
     HELP_TEXT = f"""
 {Colors.BOLD}可用命令：{Colors.RESET}
   {Colors.GREEN}/sn{Colors.RESET}           - 输入设备 SN 码，解码获取摄像头密码
+  {Colors.GREEN}/register{Colors.RESET}     - 向远程授权服务器注册摄像头（输入SN码+发送本机IP）
   {Colors.GREEN}/stream{Colors.RESET}       - 获取视频流
   {Colors.GREEN}/snapshot{Colors.RESET}     - 截图并保存
   {Colors.GREEN}/preview{Colors.RESET}      - 打开摄像头实时预览窗口
@@ -71,6 +73,7 @@ class CLIApp(BaseUI):
         super().__init__(camera_manager, llm_client, event_bus, sn_decoder)
         self._running = False
         self._last_discovered_devices = []
+        self.registrar = CameraRegistrar()
         self.event_bus.subscribe_all(self._on_event)
 
     # ── 主循环 ──────────────────────────────────
@@ -81,6 +84,9 @@ class CLIApp(BaseUI):
 
         # Phase2: 启动时提示用户输入 SN 码
         self._prompt_sn_code()
+
+        # 摄像头远程注册提示
+        self._prompt_register()
 
         self._check_system_status()
         print(self.HELP_TEXT)
@@ -158,6 +164,47 @@ class CLIApp(BaseUI):
         except Exception as e:
             self.display_message(f"SN 码处理失败: {e}", "error")
 
+    # ── 摄像头远程注册 ──────────────────────────
+
+    def _prompt_register(self) -> None:
+        """启动时提示用户是否注册摄像头到远程授权服务器"""
+        print(f"\n{Colors.BOLD}{Colors.CYAN}{'─' * 50}{Colors.RESET}")
+        print(f"{Colors.BOLD}  摄像头远程注册{Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.CYAN}{'─' * 50}{Colors.RESET}")
+        print(f"  向远程授权服务器注册摄像头设备（发送本机IP和设备SN码）。")
+        print(f"  输入 {Colors.YELLOW}skip{Colors.RESET} 跳过此步骤。\n")
+
+        while True:
+            choice = input(f"  {Colors.BOLD}是否注册摄像头？(y/skip) > {Colors.RESET}").strip().lower()
+            if choice in ("skip", "n", ""):
+                self.display_message("已跳过摄像头注册", "info")
+                break
+            if choice in ("y", "yes"):
+                self._cmd_register("")
+                break
+            self.display_message("请输入 y 或 skip", "warning")
+
+        print(f"{Colors.CYAN}{'─' * 50}{Colors.RESET}\n")
+
+    def _cmd_register(self, arg: str) -> None:
+        """斜杠命令：向远程授权服务器注册摄像头"""
+        sn = arg.strip() if arg.strip() else ""
+        if not sn:
+            sn = input(f"  {Colors.BOLD}请输入设备 SN 码 > {Colors.RESET}").strip()
+        if not sn:
+            self.display_message("SN 码不能为空", "error")
+            return
+        try:
+            result = self.registrar.register(sn)
+            self.display_message("摄像头注册成功！", "success")
+            if isinstance(result, dict):
+                for k, v in result.items():
+                    print(f"  {Colors.CYAN}{k}{Colors.RESET}: {v}")
+        except ValueError as e:
+            self.display_message(str(e), "error")
+        except Exception as e:
+            self.display_message(f"注册失败: {e}", "error")
+
     # ── UI 接口实现 ─────────────────────────────
 
     def display_message(self, message: str, level: str = "info") -> None:
@@ -202,6 +249,7 @@ class CLIApp(BaseUI):
 
         command_map = {
             "/sn":          self._cmd_input_sn,
+            "/register":    self._cmd_register,
             "/stream":      self._cmd_stream,
             "/snapshot":    self._cmd_snapshot,
             "/preview":     self._cmd_preview,
@@ -406,6 +454,7 @@ class CLIApp(BaseUI):
     def _execute_command(self, cmd: ParsedCommand) -> None:
         executors = {
             "input_sn":          self._exec_input_sn,
+            "register_camera":   self._exec_register_camera,
             "watch_camera":      self._exec_watch_camera,
             "take_photo":        self._exec_take_photo,
             "get_stream":        self._exec_get_stream,
@@ -471,6 +520,11 @@ class CLIApp(BaseUI):
                     self._register_discovered_devices(sn)
         except Exception as e:
             self.display_message(f"SN 码处理失败: {e}", "error")
+
+    def _exec_register_camera(self, params: dict) -> None:
+        """LLM 触发：用户通过自然语言注册摄像头到远程授权服务器"""
+        sn = params.get("sn", "").strip()
+        self._cmd_register(sn)
 
     def _register_discovered_devices(self, sn_code: str) -> None:
         """将扫描到的设备注册到 CameraManager，并应用 SN 密码"""
@@ -671,6 +725,12 @@ class CLIApp(BaseUI):
         cached = self.sn_decoder.list_cached()
         if cached:
             self.display_message(f"SN 缓存: {len(cached)} 条记录", "success")
+
+        # 注册服务器状态
+        if self.registrar.is_configured():
+            self.display_message(f"授权服务器: {self.registrar.server_url}", "success")
+        else:
+            self.display_message("授权服务器未配置（编辑 auth_server.yaml）", "warning")
 
     def _on_event(self, event: CameraEvent) -> None:
         self.display_event(str(event))
