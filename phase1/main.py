@@ -72,9 +72,10 @@ def main() -> None:
     if args.mode == "gui":
         try:
             from phase1.ui.gui import GUIApp
-            app = GUIApp(camera_manager, llm_client, event_bus)
-        except NotImplementedError as e:
-            print(f"\n[错误] {e}")
+            app = GUIApp(camera_manager, llm_client, event_bus, app_config=config)
+        except ImportError as e:
+            print(f"\n[错误] GUI 依赖缺失: {e}")
+            print("请安装 PySide6: pip install PySide6>=6.5.0")
             sys.exit(1)
     else:
         app = CLIApp(camera_manager, llm_client, event_bus, app_config=config)

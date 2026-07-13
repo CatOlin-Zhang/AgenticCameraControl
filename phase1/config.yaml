@@ -33,9 +33,9 @@ cameras:
   device_model: skyworth
   product_version: mstar
 llm:
-  backend: local
+  backend: ollama
   model_path: D:\OllamaModels\qwen2.5-0.5b-instruct-q4_k_m.gguf
   base_url: http://localhost:11434
-  model: qwen2.5:0.5b
-  timeout: 60
+  model: gemma3:4b
+  timeout: 120
   temperature: 0.3
