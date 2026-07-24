@@ -1,0 +1,12 @@
+# ── 摄像头配置 ──
+# 通过 search_devices(method="sky_discovery") 发现设备后，
+# 调用 register_camera() 将设备信息自动写入此文件。
+# 下次启动时 get_registered_cameras() 自动加载并连接，无需重复输入密码。
+cameras: []
+
+# ── 云端授权 ──
+auth:
+  cloud_url: ""                # 智能云 API 端点（用于密码类设备授权请求）
+  token_timeout: 300           # Token 有效期（秒，默认 5 分钟）
+  auth_timeout: 30             # 云端请求超时（秒）
+  auto_request_auth: true      # 连接密码类设备时自动请求云端授权

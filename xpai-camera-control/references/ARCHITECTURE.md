@@ -1,17 +1,18 @@
 # Architecture Reference
 
-Runtime-relevant architecture details only. Auth flows and token management are encapsulated in `scripts/auth/` — the agent receives success/failure + status codes.
+Runtime-relevant architecture details. Connection flows are encapsulated in `scripts/toolkit/device_mgmt.py` and `scripts/toolkit/discovery.py` — the agent receives structured results with clear status codes.
 
 ## Script Map
 
 ```
 scripts/
 ├── toolkit/
+│   ├── discovery.py      # Skyworth private protocol discovery & TCP channel
 │   ├── stream.py         # Audio/video streaming & storage
 │   ├── ptz.py            # PTZ & cruise control
 │   ├── tracking.py       # AI tracking algorithms
 │   ├── image_audio.py    # Picture & audio settings
-│   ├── device_mgmt.py    # Device discovery, connection, config, auth polling
+│   ├── device_mgmt.py    # Device discovery, connection, config, management
 │   ├── alarm.py          # Alarm settings
 │   └── encoding_osd.py   # Video encoding & OSD
 └── auth/
@@ -22,33 +23,24 @@ scripts/
 
 ## Connection & Authorization Flow
 
-The connection process involves two actors: the **Agent** (AI) and the **Tool** (device_mgmt.py). The tool handles protocol details internally; the Agent manages user interaction and authorization polling.
+The connection process involves two actors: the **Agent** (AI) and the **Tool** (device_mgmt.py + discovery.py). The tool handles protocol details internally; the Agent manages user interaction when password is needed.
 
 ### Flow for Password-Required Cameras (no cached credentials)
 
 ```
 1. Agent → calls connect_device(camera_name)
-   └─ Tool sends authorization request to remote cloud server
-   └─ Tool returns ConnectResult(status="pending_auth")
+   └─ Tool sends RTSP DESCRIBE probe to camera
+   └─ Tool receives 401 Unauthorized response
+   └─ Tool returns ConnectResult(status="needs_password", needs_password=True, ip=..., rtsp_port=...)
 
-2. Agent → calls poll_auth_status(camera_name) in a loop
-   └─ Tool queries remote server for authorization status update
-   ─ Possible statuses:
-     · "pending"    → user has not yet approved on camera app
-     · "authorized" → user approved on camera app side
-     · "rejected"   → user rejected or timeout expired
-     · "error"      → server error
+2. Agent → prompts user for camera password
+   └─ User provides password to Agent
 
-3. When status == "authorized":
-   └─ Tool lists LAN cameras available for connection
-   └─ Agent presents camera list to user
-   └─ Agent prompts user to input camera password
-
-4. Agent → calls connect_device(camera_name, password=user_input)
-   └─ Tool uses ONVIF auth with username + user-provided password
+3. Agent → calls connect_device(camera_name, password=user_input, ip=..., rtsp_port=...)
+   └─ Tool attempts ONVIF auth → RTSP auth → TCP channel (port 9010)
    └─ Tool returns ConnectResult(success=True, auth_method="password")
 
-5. Agent → calls register_camera(...)
+4. Agent → calls register_camera(...)
    └─ Credentials written to config.yaml
    └─ Future sessions: Phase 0 reads config.yaml → auto-connect, no password needed
 ```
@@ -57,6 +49,7 @@ The connection process involves two actors: the **Agent** (AI) and the **Tool** 
 
 ```
 1. Agent → calls connect_device(camera_name)
+   └─ Tool sends RTSP DESCRIBE probe → receives 200 OK
    └─ Tool connects directly via RTSP (no auth needed)
    └─ Tool returns ConnectResult(success=True, auth_method="direct")
 ```
@@ -66,14 +59,14 @@ The connection process involves two actors: the **Agent** (AI) and the **Tool** 
 ```
 1. Agent → calls connect_device(cam_name)
    └─ Tool reads username/password from config.yaml automatically
-   └─ Tool connects via ONVIF auth with cached credentials
+   └─ Tool connects via ONVIF auth / TCP channel with cached credentials
    └─ Tool returns ConnectResult(success=True, auth_method="password")
    └─ No user interaction required
 ```
 
 ## Device Discovery
 
-### WS-Discovery Protocol
+### WS-Discovery Protocol (ONVIF)
 
 | Parameter | Value |
 |-----------|-------|
@@ -83,6 +76,18 @@ The connection process involves two actors: the **Agent** (AI) and the **Tool** 
 | ProbeMatch | Camera response with device info |
 | Types filter | Must contain `NetworkVideoTransmitter` |
 | Scopes | May contain brand/model info |
+
+### Skyworth Private Protocol
+
+| Parameter | Value |
+|-----------|-------|
+| Multicast address | `239.230.236.230:9008` (IPC listens) |
+| Tool receive port | `9028` |
+| NVR receive port | `9018` |
+| TCP command port | `9010` (HTTP + Basic Auth) |
+| Broadcast address | `255.255.255.255` |
+| Protocol | JSON over UDP (SK_DISCOVERY_SEARCH / SK_DISCOVERY_SEARCH_R) |
+| TCP path | `POST /xiaopaitech/device_service HTTP/1.1` |
 
 ### Key Discovery Fields
 
@@ -106,8 +111,8 @@ When WS-Discovery fails (firewall, non-ONVIF cameras, wrong subnet):
 | Type | Auth | Agent Behavior |
 |------|------|---------------|
 | Password-Required (cached) | ONVIF username/password from config.yaml | Auto-connect — no user input needed |
-| Password-Required (uncached) | Cloud authorization + user password | Poll auth status → prompt user for password → connect → register credentials |
-| Direct-Connect | None | Auto-connect — no auth needed |
+| Password-Required (uncached) | RTSP probe → 401 → user provides password | Detect `needs_password` → prompt user → connect with password → register credentials |
+| Direct-Connect | None | Auto-connect — RTSP probe returns 200 OK |
 
 ## Session Rules
 
@@ -122,6 +127,6 @@ When WS-Discovery fails (firewall, non-ONVIF cameras, wrong subnet):
 ```
 onvif-zeep      # ONVIF protocol (SOAP/WS-Discovery)
 opencv-python   # Video capture, frame processing, snapshot
-requests        # HTTP client (cloud auth, device probing)
+requests        # HTTP client (TCP channel, device probing)
 psutil          # Network interface enumeration for LAN scanning
 ```

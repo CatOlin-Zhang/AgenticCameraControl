@@ -14,11 +14,11 @@ All toolkit functions carry one or more safety constraints that the calling code
 |------------|---------|
 | **Explicit Prompt** | Inform the user what operation will be performed and wait for confirmation before executing. |
 | **Code Validation** | Validate parameter legality, device state, and connection availability before executing. |
-| **Explicit Authorization** | Requires cloud-side (APP) authorization for sensitive operations. |
+| **Explicit Authorization** | Requires user password input for sensitive operations. |
 
 ---
 
-## Module: `scripts/toolkit/dev ce_mgmt.py`
+## Module: `scripts/toolkit/device_mgmt.py`
 
 Device discovery, connection, and management.
 
@@ -29,9 +29,9 @@ Search for available cameras on the local network.
 | Aspect | Detail |
 |--------|--------|
 | **Safety** | None |
-| **Returns** | List of `DeviceInfo` objects (IP address, ONVIF port, model, SN, media capabilities) |
-| **Parameters** | `method`: `"ws_discovery"` for ONVIF WS-Discovery, `"usb"` for USB enumeration. `timeout`: discovery timeout in seconds. |
-| **Implementation** | WS-Discovery Probe + Passive Listen via `onvif-zeep` / OpenCV USB enumeration |
+| **Returns** | List of `DeviceInfo` objects (IP address, ONVIF port, model, SN, media capabilities, Skyworth protocol fields) |
+| **Parameters** | `method`: `"ws_discovery"` for ONVIF WS-Discovery, `"sky_discovery"` for Skyworth private protocol (multicast `239.230.236.230:9008`), `"usb"` for USB enumeration. `timeout`: discovery timeout in seconds. |
+| **Implementation** | WS-Discovery Probe + Passive Listen via `onvif-zeep` / Skyworth UDP multicast via `discovery.py` / OpenCV USB enumeration |
 
 ### `get_registered_cameras() -> List[CameraConfig]`
 
@@ -57,38 +57,35 @@ Write a camera entry to `config.yaml`, persisting its connection info and creden
 | **Implementation** | Append/update entry in `config.yaml` cameras section |
 | **When to call** | After first successful `connect_device()` — persist credentials so future sessions can auto-connect without re-entering password |
 
-### `connect_device(camera_name: str, password: Optional[str] = None) -> ConnectResult`
+### `connect_device(camera_name: str, password: Optional[str] = None, ip: Optional[str] = None, port: Optional[int] = None, rtsp_port: Optional[int] = None, rtsp_path: str = "/stream1", username: str = "admin") -> ConnectResult`
 
-Establish connection to a camera. The tool handles the full connection flow internally; the Agent's role is to call this function, poll authorization status if needed, and prompt the user for password.
+Establish connection to a camera. The tool probes the RTSP stream first to detect whether authentication is required, then connects accordingly.
 
-**Behavior by scenario:**
+**Connection flow:**
 
-| Scenario | Tool Behavior | Agent Action |
-|----------|--------------|-------------|
-| Cached camera (config.yaml has credentials) | Auto-load username/password from config.yaml → ONVIF auth | No user interaction needed |
-| Direct-connect camera | Connect via RTSP directly (no auth) | No user interaction needed |
-| Password-required (no cached credentials) | Send auth request to remote server → return `pending_auth` | Agent polls `poll_auth_status()`, prompts user for password, then calls `connect_device()` again with password |
+1. Check `config.yaml` for cached credentials → if found, connect directly (ONVIF/TCP/RTSP)
+2. If password provided → attempt ONVIF auth → RTSP auth → TCP channel
+3. If no password → probe RTSP stream:
+   - `200 OK` → direct-connect (`auth_method="direct"`)
+   - `401 Unauthorized` → return `needs_password=True` (Agent prompts user, calls again with password)
+   - Unreachable → try alternate RTSP paths, then fail
 
 | Aspect | Detail |
 |--------|--------|
-| **Safety** | Explicit Authorization (password-required devices need cloud authorization + user password input) |
-| **Returns** | `ConnectResult` (success/failure, auth_method, status) |
-| **Parameters** | `camera_name`: camera identifier. `password`: user-provided password for ONVIF auth (optional; auto-loaded from config.yaml when available) |
-| **Implementation** | Config lookup → ONVIF connection → cloud auth request → RTSP fallback |
+| **Safety** | None (password is local-only, no cloud auth) |
+| **Returns** | `ConnectResult` (success, auth_method: `"password"` / `"direct"`, status: `"connected"` / `"needs_password"` / `"failed"`, needs_password: bool) |
+| **Parameters** | `camera_name`: camera identifier. `password`: user-provided password (optional; auto-loaded from config.yaml when available). `ip`/`port`: direct connection target (skip discovery). `rtsp_port`/`rtsp_path`: stream parameters. `username`: default `"admin"`. |
+| **Implementation** | Config lookup → RTSP probe (socket + DESCRIBE) → ONVIF/RTSP/TCP channel auth → config.yaml write |
 | **When to call** | Phase 0 (cached cameras), Phase 2 (new cameras, possibly with password from user) |
 
-### `poll_auth_status(camera_name: str) -> AuthStatusResult`
+### `poll_auth_status(camera_name: str) -> AuthStatusResult` _(stub — not yet implemented)_
 
-Poll the remote authorization server to check whether the agent has been authorized to connect to a password-required camera. The Agent calls this in a loop after `connect_device()` returns `pending_auth`.
+Reserved for future remote authorization support. Currently raises `NotImplementedError`.
 
 | Aspect | Detail |
 |--------|--------|
 | **Safety** | None |
-| **Returns** | `AuthStatusResult` (status: `"pending"` / `"authorized"` / `"rejected"` / `"error"`, camera_name, message) |
-| **Parameters** | `camera_name`: the camera whose authorization is being checked |
-| **Implementation** | HTTP GET to remote authorization server endpoint |
-| **When to call** | After `connect_device()` returns `pending_auth` — poll every 5 seconds until status is `authorized` or `rejected` (max 120 seconds recommended) |
-| **Next step after `authorized`** | Agent prompts user for camera password → calls `connect_device(camera_name, password)` |
+| **Returns** | `AuthStatusResult` (status, camera_name, message) |
 
 ### `query_device_model(camera_name: str) -> DeviceModelResult`
 
@@ -122,6 +119,44 @@ Perform system maintenance operations.
 | **Returns** | `MaintenanceResult` (success/failure) |
 | **Parameters** | `camera_name`: camera identifier. `action`: `"reboot"`, `"calibrate_ptz"`, or `"factory_reset"`. |
 | **Implementation** | ONVIF Device Service `SystemReboot` |
+
+---
+
+## Module: `scripts/toolkit/discovery.py`
+
+Skyworth private protocol discovery and TCP channel communication.
+
+### `discover_sky_devices(timeout: float = 5.0, target_sn: str = "", bind_port: int = 9028, use_broadcast: bool = True, use_multicast: bool = True) -> List[SkDiscoveredDevice]`
+
+Discover Skyworth cameras via private UDP protocol (SK_DISCOVERY_SEARCH).
+
+| Aspect | Detail |
+|--------|--------|
+| **Safety** | None |
+| **Returns** | List of `SkDiscoveredDevice` objects (ip, sn, device_type, subtype, manufacturer, model, channels, rtsp_port, web_port, mac, etc.) |
+| **Parameters** | `timeout`: listen duration in seconds. `target_sn`: filter by specific SN (empty = all). `bind_port`: UDP receive port (default 9028 for tool). `use_broadcast`/`use_multicast`: enable broadcast/multicast sending. |
+| **Implementation** | UDP broadcast + multicast to `239.230.236.230:9008` → listen for SK_DISCOVERY_SEARCH_R on port 9028 |
+
+### `send_tcp_command(ip: str, command: dict, username: str = "admin", password: str = "", timeout: float = 10.0, port: int = 9010) -> dict`
+
+Send a JSON command to a Skyworth camera via TCP channel (HTTP protocol with Basic Auth).
+
+| Aspect | Detail |
+|--------|--------|
+| **Safety** | None |
+| **Returns** | Parsed JSON response dict |
+| **Parameters** | `ip`: camera IP. `command`: JSON-serializable command dict (e.g. `{"cmd": "SK_DEVICE_GET_INFO"}`). `username`/`password`: Basic Auth credentials. `timeout`: socket timeout. `port`: TCP port (default 9010). |
+| **Implementation** | `POST /xiaopaitech/device_service HTTP/1.1` with Basic Auth header + JSON body |
+
+### `SkyDiscoveryListener(callback, interval: float = 30.0)`
+
+Background discovery listener that periodically searches for Skyworth devices and invokes a callback when new devices are found.
+
+| Aspect | Detail |
+|--------|--------|
+| **Safety** | None |
+| **Methods** | `start()`, `stop()`, `get_devices()` |
+| **Callback** | Receives a single `SkDiscoveredDevice` argument for each newly discovered device |
 
 ---
 

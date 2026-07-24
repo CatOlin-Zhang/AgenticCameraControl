@@ -87,9 +87,12 @@ from .image_audio import (
 
 # ── device_mgmt ──
 from .device_mgmt import (
+    get_registered_cameras,
+    register_camera,
     search_devices,
     connect_device,
     disconnect_device,
+    poll_auth_status,
     query_device_model,
     update_firmware,
     system_maintenance,
@@ -104,6 +107,24 @@ from .device_mgmt import (
     DiscoveryMethod,
     DeviceClass,
     MaintenanceAction,
+    CameraConfig,
+    RegisterResult,
+    AuthStatusResult,
+    AuthStatus,
+)
+
+# ── discovery (创维私有协议) ──
+from .discovery import (
+    SkDiscoveredDevice,
+    SkChannelInfo,
+    SkyDiscoveryListener,
+    discover_sky_devices,
+    send_tcp_command,
+    SK_MULTICAST_ADDR,
+    SK_MULTICAST_PORT,
+    SK_TOOL_RECV_PORT,
+    SK_TCP_PORT,
+    SUBTYPE_NAMES,
 )
 
 # ── alarm ──
@@ -172,7 +193,9 @@ def enable_demo_mode() -> None:
     # Each entry: (module_suffix, [function_names...])
     patches = [
         (".device_mgmt", [
+            "get_registered_cameras", "register_camera",
             "search_devices", "connect_device", "disconnect_device",
+            "poll_auth_status",
             "query_device_model", "update_firmware", "system_maintenance",
         ]),
         (".stream", [
@@ -320,9 +343,12 @@ __all__ = [
     "FloodlightMode",
     "FloodlightType",
     # device_mgmt
+    "get_registered_cameras",
+    "register_camera",
     "search_devices",
     "connect_device",
     "disconnect_device",
+    "poll_auth_status",
     "query_device_model",
     "update_firmware",
     "system_maintenance",
@@ -337,6 +363,21 @@ __all__ = [
     "DiscoveryMethod",
     "DeviceClass",
     "MaintenanceAction",
+    "CameraConfig",
+    "RegisterResult",
+    "AuthStatusResult",
+    "AuthStatus",
+    # discovery (创维私有协议)
+    "SkDiscoveredDevice",
+    "SkChannelInfo",
+    "SkyDiscoveryListener",
+    "discover_sky_devices",
+    "send_tcp_command",
+    "SK_MULTICAST_ADDR",
+    "SK_MULTICAST_PORT",
+    "SK_TOOL_RECV_PORT",
+    "SK_TCP_PORT",
+    "SUBTYPE_NAMES",
     # alarm
     "configure_alarm_settings",
     "configure_alarm_push",

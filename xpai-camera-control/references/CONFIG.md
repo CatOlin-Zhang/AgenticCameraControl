@@ -4,7 +4,7 @@ Full schema for `config.yaml` — the configuration file for the Camera Control 
 
 ## File Location
 
-Place `config.yaml` at the skill root (`xpai-camera-control/config.yaml`) to define static camera configurations. Cameras discovered at runtime via WS-Discovery or USB scanning do not need to be pre-configured.
+Place `config.yaml` at the skill root (`xpai-camera-control/config.yaml`) to define camera configurations. Cameras discovered at runtime via WS-Discovery, Skyworth private protocol, or USB scanning do not need to be pre-configured.
 
 ---
 
@@ -31,18 +31,11 @@ cameras:
     rtsp_sub_path: string     # Sub stream path (default: "/stream2")
 
     # Device identity (populated by discovery or manual entry)
-    sn_code: string           # Device serial number (for cloud binding)
+    sn_code: string           # Device serial number
     pkdk: string              # Device public key identifier (for identity verification)
 
     # Device classification
     device_class: string      # "password_required" | "direct_connect" (default: auto-detect)
-
-# ── Cloud Authorization ──
-auth:
-  cloud_url: string           # Smart Cloud API endpoint for authorization requests
-  token_timeout: int          # Token validity period in seconds (default: 300)
-  auth_timeout: int           # Cloud request timeout in seconds (default: 30)
-  auto_request_auth: bool     # Auto-request cloud auth when connecting password-required devices (default: true)
 ```
 
 ---
@@ -87,9 +80,9 @@ Unique string identifier for the camera.
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `sn_code` | `""` | Device serial number. Populated by ONVIF `GetDeviceInformation` during discovery or manually entered. Used for cloud binding. |
+| `sn_code` | `""` | Device serial number. Populated by ONVIF `GetDeviceInformation` or Skyworth discovery during registration. |
 | `pkdk` | `""` | Device public key identifier. Exposed by device firmware / private protocol for identity verification. |
-| `device_class` | auto | `"password_required"` (needs cloud Token auth) or `"direct_connect"` (no password needed). Auto-detected from device response. |
+| `device_class` | auto | `"password_required"` (needs username/password auth) or `"direct_connect"` (no password needed). Auto-detected from RTSP probe response. |
 
 ### RTSP URL Construction
 
@@ -103,22 +96,22 @@ When ONVIF is available, the URL is fetched dynamically via `GetStreamUri` which
 
 ---
 
-## Auth Config Details
+## Auth Config Details _(reserved for future use)_
 
-The `auth` section configures cloud-based authorization for password-required devices.
+The `auth` section is reserved for future cloud-based authorization support. Currently unused.
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `cloud_url` | `""` | Smart Cloud API endpoint. WorkBuddy sends connection requests here. Example: `https://smart-cloud.skyworth.com/api/camera/auth` |
-| `token_timeout` | `300` | Token validity in seconds (5 min). Token expires after this period if unused. |
-| `auth_timeout` | `30` | Timeout for cloud HTTP requests in seconds. |
-| `auto_request_auth` | `true` | When `true`, automatically request cloud authorization when connecting a password-required device. When `false`, authorization must be triggered manually. |
+| `cloud_url` | `""` | Reserved. Smart Cloud API endpoint for future authorization service. |
+| `token_timeout` | `300` | Reserved. Token validity in seconds. |
+| `auth_timeout` | `30` | Reserved. Cloud HTTP request timeout in seconds. |
+| `auto_request_auth` | `true` | Reserved. |
 
 ---
 
 ## Example Configs
 
-### Single ONVIF camera + cloud auth
+### Single ONVIF camera (password-required)
 
 ```yaml
 cameras:
@@ -127,16 +120,13 @@ cameras:
     ip: 192.168.1.100
     port: 80
     username: admin
-    password: ""
+    password: "my_password"
     rtsp_port: 554
     rtsp_path: /stream1
-    sn_code: ""
     device_class: password_required
 
 auth:
-  cloud_url: https://smart-cloud.skyworth.com/api/camera/auth
-  token_timeout: 300
-  auth_timeout: 30
+  cloud_url: ""
   auto_request_auth: true
 ```
 
@@ -155,11 +145,11 @@ cameras:
     device_class: direct_connect
 
 auth:
-  cloud_url: https://smart-cloud.skyworth.com/api/camera/auth
+  cloud_url: ""
   auto_request_auth: true
 ```
 
-### Mixed: ONVIF (cloud auth) + USB + direct-connect
+### Mixed: ONVIF (password) + USB + direct-connect
 
 ```yaml
 cameras:
@@ -189,18 +179,7 @@ cameras:
     device_class: direct_connect
 
 auth:
-  cloud_url: https://smart-cloud.skyworth.com/api/camera/auth
-  token_timeout: 300
+  cloud_url: ""
   auto_request_auth: true
 ```
 
-### Discovery-only mode
-
-```yaml
-# No static cameras — rely entirely on WS-Discovery and USB scanning
-cameras: []
-
-auth:
-  cloud_url: https://smart-cloud.skyworth.com/api/camera/auth
-  auto_request_auth: true
-```
