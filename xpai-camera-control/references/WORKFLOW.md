@@ -133,7 +133,9 @@ result = tk.toggle_recording("客厅摄像头", action="start")
 result = tk.toggle_recording("客厅摄像头", action="stop")
 ```
 
-**Path note:** Screenshot files use the system temp directory (`%TEMP%` on Windows, `/tmp` on Unix). OpenCV's `imwrite` fails on paths containing non-ASCII characters.
+**Path note:** Screenshots use `cv2.imencode()` + `numpy.tofile()` instead of `cv2.imwrite()` to support paths containing non-ASCII characters (e.g. Chinese usernames on Windows). Recordings use a temporary file (via `tempfile.mkstemp()`) and are moved to the final path on stop.
+
+**Same-process note:** `connect_device()` and `capture_video_screenshot()` must run in the same Python process — connection state is in-memory and does not persist across separate process invocations.
 
 ---
 

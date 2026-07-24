@@ -73,8 +73,8 @@ Unique string identifier for the camera.
 | `username` | `"admin"` | ONVIF login username. |
 | `password` | `""` | ONVIF login password. |
 | `rtsp_port` | `554` | RTSP streaming port. |
-| `rtsp_path` | `"/stream1"` | Main stream RTSP path. When unknown, try common paths: `/stream1`, `/Streaming/Channels/101`, `/h264/ch1/main/av_stream`. |
-| `rtsp_sub_path` | `"/stream2"` | Sub (lower quality) stream RTSP path. |
+| `rtsp_path` | `"/stream1"` | Main stream RTSP path. When unknown, try common paths: `/stream1`, `/stream0`, `/md0_0` (Skyworth), `/Streaming/Channels/101`, `/h264/ch1/main/av_stream`. |
+| `rtsp_sub_path` | `"/stream2"` | Sub (lower quality) stream RTSP path. For Skyworth cameras, `/md0_1` is commonly used. |
 
 ### Device Identity Parameters
 

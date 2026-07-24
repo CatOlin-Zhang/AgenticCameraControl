@@ -184,9 +184,9 @@ Capture a single frame from the current video stream and save as JPEG.
 | **Safety** | Explicit Prompt + Code Validation (validate device connected, frame available) |
 | **Returns** | `ScreenshotResult` (success, file path) |
 | **Parameters** | `camera_name`: camera identifier. `save_path`: output directory path. |
-| **Implementation** | OpenCV `VideoCapture.read()` → `cv2.imwrite()` |
+| **Implementation** | OpenCV `VideoCapture.read()` → `cv2.imencode()` + `numpy.tofile()` |
 
-**Note:** Prefer the system temp directory for `save_path` to avoid encoding issues with non-ASCII workspace paths.
+**Note:** Uses `imencode` + `tofile` instead of `cv2.imwrite()` to support file paths containing non-ASCII characters (e.g. Chinese usernames on Windows).
 
 ### `toggle_recording(camera_name: str, action: str, save_path: Optional[str] = None) -> RecordingResult`
 

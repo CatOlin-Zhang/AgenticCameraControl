@@ -88,6 +88,8 @@ The connection process involves two actors: the **Agent** (AI) and the **Tool** 
 | Broadcast address | `255.255.255.255` |
 | Protocol | JSON over UDP (SK_DISCOVERY_SEARCH / SK_DISCOVERY_SEARCH_R) |
 | TCP path | `POST /xiaopaitech/device_service HTTP/1.1` |
+| RTSP main stream | `/stream0`, `/stream1`, `/md0_0` (2560x1440) |
+| RTSP sub stream | `/md0_1` (1280x720) |
 
 ### Key Discovery Fields
 

@@ -712,8 +712,9 @@ def _probe_stream_access(
             return "auth_required"
         elif "RTSP/1.0" in resp_text:
             # 其他 RTSP 错误码（404 等）— 可能是路径不对，但端口可达
-            # 尝试常见路径
-            for alt_path in ["/Streaming/Channels/101", "/h264/ch1/main/av_stream", "/live"]:
+            # 尝试常见路径（含创维摄像头路径 /stream0, /md0_0, /md0_1）
+            for alt_path in ["/Streaming/Channels/101", "/h264/ch1/main/av_stream", "/live",
+                             "/stream0", "/md0_0", "/stream1", "/md0_1"]:
                 if alt_path == rtsp_path:
                     continue
                 alt_result = _quick_rtsp_check(ip, rtsp_port, alt_path, username, password)
