@@ -128,26 +128,6 @@ Detailed code examples and parameter descriptions are available in [references/W
 
 Camera configurations are saved in the skill's root directory under `config.yaml`. After a successful connection, the credentials are automatically written to config.yaml and are reused in subsequent conversations. Complete schema can be found in [references/CONFIG.md](references/CONFIG.md).
 
-## MCP Server Tools
-
-When running in MCP server mode, all toolkit functions are exposed as MCP tools. The MCP server exposes **34 tools** across 8 categories:
-
-**Device Management (6):** `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device`, `query_device_model`
-
-**Stream & Capture (4):** `get_audio_video_stream`, `capture_video_screenshot`, `toggle_recording`, `manage_storage_status`
-
-**PTZ Control (9):** `control_ptz`, `control_lens_zoom`, `get_ptz_parameters`, `save_ptz_preset`, `go_to_preset`, `calibrate_ptz`, `move_to_position`, `stop_ptz`, `start_patrol_cruise`
-
-**AI Tracking (3):** `track_vehicles`, `track_human_shapes`, `monitor_zone_entry`
-
-**Image & Audio (6):** `adjust_picture_settings`, `flip_video_display`, `configure_night_vision`, `set_floodlight_mode`, `configure_microphone`, `configure_speaker`
-
-**Alarm (2):** `configure_alarm_settings`, `configure_alarm_push`
-
-**Encoding & OSD (2):** `configure_video_encoding`, `configure_osd_settings`
-
-**Discovery (2):** `discover_sky_devices`, `send_tcp_command`
-
 ## Limitations
 
 - Cameras and host must be on the same local network
@@ -156,45 +136,10 @@ When running in MCP server mode, all toolkit functions are exposed as MCP tools.
 - Screenshot/recording requires `opencv-python` (included in requirements.txt)
 - MCP server mode uses stdio transport only
 
-## Known Issues & Notes
-
-### Chinese character paths (Windows)
-
-OpenCV's `cv2.imwrite()` and `cv2.VideoWriter()` silently fail when the file path contains non-ASCII characters (e.g. Chinese usernames in the Windows user directory). The toolkit works around this by:
-- **Screenshots:** Using `cv2.imencode()` + `numpy.tofile()` instead of `cv2.imwrite()`
-- **Recordings:** Writing to a temporary file via `tempfile.mkstemp()` (ASCII path), then moving to the final destination on stop
-
-If `save_path` is provided, ensure it is writable. The default `snapshots/` and `recordings/` directories are created automatically.
-
-### Same-process connection requirement
-
-The toolkit stores connection state in an in-memory dict (`_connected_devices`). This means `connect_device()` and subsequent operations (`capture_video_screenshot()`, `get_audio_video_stream()`, etc.) must run in the **same Python process**. If using the toolkit via shell commands, combine connect + capture in a single script invocation:
-
-```python
-import scripts.toolkit as tk
-tk.connect_device("172.28.234.22")
-result = tk.capture_video_screenshot("172.28.234.22")
-print(result.file_path)
-```
-
-### Skyworth camera RTSP paths
-
-Skyworth IP cameras (discovered via `sky_discovery`) use non-standard RTSP paths. The toolkit automatically tries these paths in order:
-
-| Path | Stream | Typical Resolution |
-|------|--------|-------------------|
-| `/stream0` | Main stream | 2560x1440 |
-| `/stream1` | Main stream (alt) | 2560x1440 |
-| `/md0_0` | Main stream (alt) | 2560x1440 |
-| `/md0_1` | Sub stream | 1280x720 |
-
-Standard ONVIF paths (`/Streaming/Channels/101`, `/h264/ch1/main/av_stream`, `/live`) are also tried as fallbacks.
-
-
 ## References
 
 - [references/commands/](references/commands/) — Per-module tool reference (parameter signatures, safety constraints, implementation details)
 - [references/WORKFLOW.md](references/WORKFLOW.md) — Complete workflow examples and code snippets
-- [references/ARCHITECTURE.md](references/ARCHITECTURE.md) — System architecture, connection flow, device discovery protocols, and session rules
+- [references/ARCHITECTURE.md](references/ARCHITECTURE.md) — System architecture, connection flow, device discovery protocols, session rules, and known issues
 - [references/CONFIG.md](references/CONFIG.md) — config.yaml complete schema and examples
 - [requirements.txt](requirements.txt) — Python dependencies for MCP Server mode

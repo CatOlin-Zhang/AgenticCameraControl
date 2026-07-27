@@ -37,7 +37,7 @@ for d in result.devices:
     print(f"{d.ip} — {d.model} — {d.device_class}")
 ```
 
-WS-Discovery sends Probe multicast to `239.255.255.250:3702`, listens for ProbeMatch responses. Extracts IP and ONVIF port from XAddrs, brand/model from Scopes.
+For protocol details (multicast addresses, message types, key fields), see [ARCHITECTURE.md — Device Discovery](ARCHITECTURE.md#device-discovery).
 
 ### Skyworth Private Protocol Discovery
 
@@ -49,7 +49,7 @@ for d in result.devices:
     print(f"  RTSP port: {d.rtsp_port}, Web port: {d.sky_web_port}, MAC: {d.sky_mac}")
 ```
 
-Sends SK_DISCOVERY_SEARCH via UDP broadcast + multicast to `239.230.236.230:9008`, listens for SK_DISCOVERY_SEARCH_R responses on port 9028. Returns device SN, subtype (1=bullet, 2=dome, 3=hemisphere, 5=PT, 6=linkage), manufacturer, model, channels, and network info.
+For message format and field definitions, see [ARCHITECTURE.md — Skyworth Private Protocol](ARCHITECTURE.md#skyworth-private-protocol).
 
 ### USB Camera Enumeration
 
@@ -133,9 +133,7 @@ result = tk.toggle_recording("客厅摄像头", action="start")
 result = tk.toggle_recording("客厅摄像头", action="stop")
 ```
 
-**Path note:** Screenshots use `cv2.imencode()` + `numpy.tofile()` instead of `cv2.imwrite()` to support paths containing non-ASCII characters (e.g. Chinese usernames on Windows). Recordings use a temporary file (via `tempfile.mkstemp()`) and are moved to the final path on stop.
-
-**Same-process note:** `connect_device()` and `capture_video_screenshot()` must run in the same Python process — connection state is in-memory and does not persist across separate process invocations.
+> For non-ASCII path handling and same-process connection requirements, see [ARCHITECTURE.md — Known Issues](ARCHITECTURE.md#known-issues--implementation-notes).
 
 ---
 
@@ -222,6 +220,3 @@ result = tk.start_patrol_cruise("客厅摄像头")
 print(f"Cruise started: {result.preset_count} presets, protocol={result.protocol}")
 ```
 
----
-
-ONVIF `GetStreamUri` may return a different path — prefer the dynamic URL when ONVIF is available.

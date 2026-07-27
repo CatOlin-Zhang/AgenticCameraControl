@@ -27,15 +27,15 @@ cameras:
     username: string          # Login username (default: "admin")
     password: string          # Login password
     rtsp_port: int            # RTSP port (default: 554)
-    rtsp_path: string         # Main stream path (default: "/stream1")
-    rtsp_sub_path: string     # Sub stream path (default: "/stream2")
+    rtsp_path: string         # Main stream path (default: "/stream0")
+    rtsp_sub_path: string     # Sub stream path (default: "/md0_1")
 
     # Device identity (populated by discovery or manual entry)
     sn_code: string           # Device serial number
     pkdk: string              # Device public key identifier (for identity verification)
 
     # Device classification
-    device_class: string      # "password_required" | "direct_connect" (default: auto-detect)
+    device_class: string      # "password_required" | "direct_connect" (auto-detected via RTSP probe)
 ```
 
 ---
@@ -73,8 +73,8 @@ Unique string identifier for the camera.
 | `username` | `"admin"` | ONVIF login username. |
 | `password` | `""` | ONVIF login password. |
 | `rtsp_port` | `554` | RTSP streaming port. |
-| `rtsp_path` | `"/stream1"` | Main stream RTSP path. When unknown, try common paths: `/stream1`, `/stream0`, `/md0_0` (Skyworth), `/Streaming/Channels/101`, `/h264/ch1/main/av_stream`. |
-| `rtsp_sub_path` | `"/stream2"` | Sub (lower quality) stream RTSP path. For Skyworth cameras, `/md0_1` is commonly used. |
+| `rtsp_path` | `"/stream0"` | Main stream RTSP path. Skyworth cameras use `/stream0` (main); alternatives: `/stream1`, `/md0_0`, `/Streaming/Channels/101`, `/h264/ch1/main/av_stream`. |
+| `rtsp_sub_path` | `"/md0_1"` | Sub (lower quality) stream RTSP path. Skyworth cameras use `/md0_1`; alternatives: `/stream2`, `/Streaming/Channels/102`. |
 
 ### Device Identity Parameters
 
@@ -82,7 +82,7 @@ Unique string identifier for the camera.
 |-------|---------|-------|
 | `sn_code` | `""` | Device serial number. Populated by ONVIF `GetDeviceInformation` or Skyworth discovery during registration. |
 | `pkdk` | `""` | Device public key identifier. Exposed by device firmware / private protocol for identity verification. |
-| `device_class` | auto | `"password_required"` (needs username/password auth) or `"direct_connect"` (no password needed). Auto-detected from RTSP probe response. |
+| `device_class` | auto | Auto-detected by RTSP probe: 401 response → `"password_required"` (needs username/password); 200 response → `"direct_connect"` (no password, connects immediately, only needs registration to config.yaml). |
 
 ### RTSP URL Construction
 
@@ -122,7 +122,7 @@ cameras:
     username: admin
     password: "my_password"
     rtsp_port: 554
-    rtsp_path: /stream1
+    rtsp_path: /stream0
     device_class: password_required
 
 auth:
@@ -141,7 +141,7 @@ cameras:
     username: admin
     password: ""
     rtsp_port: 554
-    rtsp_path: /stream1
+    rtsp_path: /stream0
     device_class: direct_connect
 
 auth:
@@ -175,7 +175,7 @@ cameras:
     username: admin
     password: ""
     rtsp_port: 554
-    rtsp_path: /stream1
+    rtsp_path: /stream0
     device_class: direct_connect
 
 auth:
