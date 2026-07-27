@@ -12,37 +12,72 @@ scripts/
 │   ├── ptz.py            # PTZ control (ONVIF + private protocol dual-channel)
 │   ├── tracking.py       # AI tracking algorithms
 │   ├── image_audio.py    # Picture & audio settings
-│   ├── device_mgmt.py    # Device discovery, connection, config, management
+│   ├── device_mgmt.py    # Device discovery, connection, config, management, cloud auth
 │   ├── alarm.py          # Alarm settings
 │   └── encoding_osd.py   # Video encoding & OSD
 └── auth/
     ├── token_manager.py  # Token lifecycle (generate → validate → destroy)
     ├── cloud_client.py   # Smart Cloud API client
     └── session.py        # Keepalive & session management
+
+local_auth_server/         # Standalone local auth server (OUTSIDE skill package)
+├── server.py             # HTTP server + Web UI (authorization server, currently local)
+├── config.py             # Server configuration constants
+└── __init__.py
 ```
 
 ## Connection & Authorization Flow
 
 The connection process involves two actors: the **Agent** (AI) and the **Tool** (device_mgmt.py + discovery.py). The tool handles protocol details internally; the Agent manages user interaction when password is needed.
 
-### Flow for Password-Required Cameras (no cached credentials)
+### Flow for Cached Cameras (config.yaml has credentials)
+
+```
+1. Agent → calls connect_device(cam_name)
+   └─ Tool reads username/password from config.yaml automatically
+   └─ Tool verifies credentials via ONVIF WS-UsernameToken authentication
+   └─ Tool connects via ONVIF auth / TCP channel with cached credentials
+   └─ Tool returns ConnectResult(success=True, auth_method="password")
+   └─ No user interaction required
+```
+
+### Flow for Password-Required Cameras (with Local Auth Server)
 
 ```
 1. Agent → calls connect_device(camera_name)
-   └─ Tool sends RTSP DESCRIBE probe to camera
-   └─ Tool receives 401 Unauthorized response
-   └─ Tool returns ConnectResult(status="needs_password", needs_password=True, ip=..., rtsp_port=...)
+   └─ Tool checks config.yaml → no cached password
+   └─ Tool detects device_class == "password_required"
+   └─ Tool calls request_cloud_auth() → POST to local auth server
+   └─ Tool returns ConnectResult(status="pending_auth", needs_password=True, claw_id=...)
 
-2. Agent → prompts user for camera password
-   └─ User provides password to Agent
+2. Agent → calls poll_auth_status() repeatedly (every ~5s, max 120s)
+   └─ Tool GETs /api/auth/status from local auth server
+   └─ User opens browser at http://127.0.0.1:18899 and clicks "Authorize"
+   └─ poll_auth_status returns AuthStatus.AUTHORIZED
 
-3. Agent → calls connect_device(camera_name, password=user_input, ip=..., rtsp_port=...)
-   └─ Tool attempts ONVIF auth → RTSP auth → TCP channel (port 9010)
+3. Agent → prompts user for camera password
+
+4. Agent → calls connect_device(camera_name, password=user_input, ip=..., rtsp_port=...)
+   └─ Tool attempts ONVIF WS-UsernameToken auth → TCP channel (port 9010)
    └─ Tool returns ConnectResult(success=True, auth_method="password")
 
-4. Agent → calls register_camera(...)
-   └─ Credentials written to config.yaml
+5. Agent → calls register_camera(...)
+   └─ Credentials written to config.yaml (dual-format fields for compatibility)
    └─ Future sessions: Phase 0 reads config.yaml → auto-connect, no password needed
+```
+
+### Flow for Password-Required Cameras (Auth Server Unreachable — Fallback)
+
+```
+1. Agent → calls connect_device(camera_name)
+   └─ Tool detects device_class == "password_required"
+   └─ Tool calls request_cloud_auth() → connection refused
+   └─ Tool returns ConnectResult(status="needs_password", needs_password=True)
+
+2. Agent → prompts user for password directly (no browser step)
+
+3. Agent → calls connect_device(camera_name, password=user_input, ip=..., rtsp_port=...)
+   └─ Same as step 4 above
 ```
 
 ### Flow for Direct-Connect Cameras
@@ -54,15 +89,23 @@ The connection process involves two actors: the **Agent** (AI) and the **Tool** 
    └─ Tool returns ConnectResult(success=True, auth_method="direct")
 ```
 
-### Flow for Cached Cameras (config.yaml has credentials)
+### ONVIF WS-UsernameToken Authentication
+
+When connecting with credentials, the tool uses ONVIF WS-UsernameToken PasswordDigest:
 
 ```
-1. Agent → calls connect_device(cam_name)
-   └─ Tool reads username/password from config.yaml automatically
-   └─ Tool connects via ONVIF auth / TCP channel with cached credentials
-   └─ Tool returns ConnectResult(success=True, auth_method="password")
-   └─ No user interaction required
+PasswordDigest = Base64(SHA-1(nonce + created + password))
 ```
+
+This is injected as a SOAP header for ONVIF service calls. RTSP URLs are auto-constructed with embedded credentials:
+
+```
+rtsp://{username}:{password}@{ip}:{rtsp_port}{rtsp_path}
+```
+
+### Claw ID
+
+A **Claw ID** uniquely identifies the local machine for authorization requests. Format: `claw-{MAC}-{timestamp}`. Generated once and persisted to `config.yaml` to ensure re-sending auth requests doesn't create duplicate popups in the browser UI.
 
 ## Device Discovery
 
@@ -112,8 +155,9 @@ When WS-Discovery fails (firewall, non-ONVIF cameras, wrong subnet):
 
 | Type | Auth | Agent Behavior |
 |------|------|---------------|
-| Password-Required (cached) | ONVIF username/password from config.yaml | Auto-connect — no user input needed |
-| Password-Required (uncached) | RTSP probe → 401 → user provides password | Detect `needs_password` → prompt user → connect with password → register credentials |
+| Password-Required (cached) | ONVIF WS-UsernameToken from config.yaml | Auto-connect — no user input needed |
+| Password-Required (uncached, auth server available) | `request_cloud_auth()` → browser confirmation → `poll_auth_status()` → user provides password | Detect `pending_auth` → poll auth → prompt password → connect → register |
+| Password-Required (uncached, no auth server) | RTSP probe → 401 → user provides password | Detect `needs_password` → prompt user → connect with password → register credentials |
 | Direct-Connect | None | Auto-connect — RTSP probe returns 200 OK |
 
 ## PTZ Dual-Protocol Architecture
@@ -195,6 +239,27 @@ Standard ONVIF paths (`/Streaming/Channels/101`, `/h264/ch1/main/av_stream`, `/l
 ```
 onvif-zeep      # ONVIF protocol (SOAP/WS-Discovery)
 opencv-python   # Video capture, frame processing, snapshot
-requests        # HTTP client (TCP channel, device probing)
+requests        # HTTP client (TCP channel, device probing, local auth server)
 psutil          # Network interface enumeration for LAN scanning
+pyyaml          # config.yaml read/write (credential persistence, claw_id)
 ```
+
+## Authorization Server Architecture
+
+The authorization server (`local_auth_server/server.py`) is a **standalone Python process** outside the skill package that implements the authorization flow. Currently runs locally; the architecture is pluggable — `local_auth_url` in config.yaml can point to a cloud service in the future.
+
+**API Endpoints:**
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/api/auth/request` | Skill submits auth request `{sn, claw_id, device_ip, device_model}` |
+| `GET` | `/api/auth/status` | Skill polls status `?sn=xxx&claw_id=yyy` |
+| `POST` | `/api/auth/action` | User submits browser action `{sn, claw_id, action}` |
+| `GET` | `/api/auth/list` | List all auth requests (used by Web UI) |
+| `GET` | `/` | Authorization management Web UI |
+
+**State Management:** In-memory dict keyed by `(sn, claw_id)` tuple, thread-safe via `threading.Lock`. States: `pending` → `authorized` or `rejected`.
+
+**Web UI:** Auto-refreshes every 3 seconds. Shows pending requests with Authorize/Reject buttons. Auto-opens browser on server start.
+
+**Configuration:** Default port `18899`, configurable via `--port` argument or `LOCAL_AUTH_URL` environment variable.

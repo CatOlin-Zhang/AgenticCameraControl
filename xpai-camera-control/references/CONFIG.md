@@ -11,6 +11,9 @@ Place `config.yaml` at the skill root (`xpai-camera-control/config.yaml`) to def
 ## Full Schema
 
 ```yaml
+# ── Machine identity ──
+claw_id: string             # Auto-generated machine ID (claw-{MAC}-{timestamp}), persisted on first use
+
 # ── Camera definitions ──
 cameras:
   - name: string              # Required. Unique camera identifier
@@ -21,21 +24,33 @@ cameras:
     device_model: string      # Model name (e.g. "LC2418")
     product_version: string   # Product version (e.g. "ZCR461")
 
-    # ONVIF-specific
+    # ONVIF-specific (dual-format fields for cross-scheme compatibility)
     ip: string                # Camera IP address
     port: int                 # ONVIF service port (default: 80, parsed from XAddrs)
+    onvif_port: int           # Alias for port (password auth scheme compatibility)
     username: string          # Login username (default: "admin")
     password: string          # Login password
     rtsp_port: int            # RTSP port (default: 554)
-    rtsp_path: string         # Main stream path (default: "/stream0")
-    rtsp_sub_path: string     # Sub stream path (default: "/md0_1")
+    rtsp_path: string         # Main stream path (default: "/stream1")
+    rtsp_path_main: string    # Alias for rtsp_path (password auth scheme compatibility)
+    rtsp_sub_path: string     # Sub stream path (default: "/stream2")
+    rtsp_path_sub: string     # Alias for rtsp_sub_path (password auth scheme compatibility)
 
     # Device identity (populated by discovery or manual entry)
     sn_code: string           # Device serial number
+    sn: string                # Alias for sn_code (password auth scheme compatibility)
     pkdk: string              # Device public key identifier (for identity verification)
 
     # Device classification
     device_class: string      # "password_required" | "direct_connect" (auto-detected via RTSP probe)
+
+# ── Auth configuration ──
+auth:
+  local_auth_url: string      # Local auth server URL (default: "http://127.0.0.1:18899")
+  cloud_url: string           # Cloud authorization API endpoint (reserved for future use)
+  token_timeout: int          # Token validity in seconds (default: 300)
+  auth_timeout: int           # Cloud HTTP request timeout in seconds (default: 30)
+  auto_request_auth: bool     # Auto-request auth on connect (default: true)
 ```
 
 ---
@@ -70,39 +85,50 @@ Unique string identifier for the camera.
 |-------|---------|-------|
 | `ip` | `""` | Required for ONVIF cameras. |
 | `port` | `80` | ONVIF service port. **Discovered cameras auto-fill from WS-Discovery XAddrs** (may not be 80). |
+| `onvif_port` | — | Alias for `port`. Written for compatibility with password auth scheme. |
 | `username` | `"admin"` | ONVIF login username. |
-| `password` | `""` | ONVIF login password. |
+| `password` | `""` | ONVIF login password. Auto-cached to config.yaml after successful connection. |
 | `rtsp_port` | `554` | RTSP streaming port. |
-| `rtsp_path` | `"/stream0"` | Main stream RTSP path. Skyworth cameras use `/stream0` (main); alternatives: `/stream1`, `/md0_0`, `/Streaming/Channels/101`, `/h264/ch1/main/av_stream`. |
-| `rtsp_sub_path` | `"/md0_1"` | Sub (lower quality) stream RTSP path. Skyworth cameras use `/md0_1`; alternatives: `/stream2`, `/Streaming/Channels/102`. |
+| `rtsp_path` | `"/stream1"` | Main stream RTSP path. Aliases: `rtsp_path_main`. Skyworth cameras use `/stream0`, `/stream1`, `/md0_0`. |
+| `rtsp_sub_path` | `"/stream2"` | Sub stream RTSP path. Aliases: `rtsp_path_sub`. Skyworth cameras use `/md0_1`, `/stream2`. |
 
 ### Device Identity Parameters
 
 | Field | Default | Notes |
 |-------|---------|-------|
 | `sn_code` | `""` | Device serial number. Populated by ONVIF `GetDeviceInformation` or Skyworth discovery during registration. |
+| `sn` | `""` | Alias for `sn_code`. Written for compatibility with password auth scheme. |
 | `pkdk` | `""` | Device public key identifier. Exposed by device firmware / private protocol for identity verification. |
-| `device_class` | auto | Auto-detected by RTSP probe: 401 response → `"password_required"` (needs username/password); 200 response → `"direct_connect"` (no password, connects immediately, only needs registration to config.yaml). |
+| `device_class` | auto | Auto-detected by RTSP probe: 401 response → `"password_required"` (needs username/password); 200 response → `"direct_connect"` (no password, connects immediately). |
 
 ### RTSP URL Construction
 
-The system builds RTSP URLs as:
+The system builds RTSP URLs via `_build_rtsp_url()`, which auto-injects credentials:
 
 ```
 rtsp://{username}:{password}@{ip}:{rtsp_port}{rtsp_path}
 ```
 
-When ONVIF is available, the URL is fetched dynamically via `GetStreamUri` which may return a different path. Bare RTSP URLs from ONVIF are auto-injected with auth credentials.
+When ONVIF is available, the URL is fetched dynamically via `GetStreamUri` which may return a different path. Bare RTSP URLs from ONVIF are auto-injected with auth credentials (existing credentials in the URL are replaced). URL encoding is applied to username and password.
+
+### Claw ID
+
+Auto-generated machine identifier persisted at the top level of `config.yaml`:
+
+| Field | Format | Notes |
+|-------|--------|-------|
+| `claw_id` | `claw-{MAC12}-{yyyyMMddHHmmssSSS}` | Generated on first use via `get_or_create_claw_id()`. Used in `request_cloud_auth()` to identify the requesting machine. Re-using the same claw_id prevents duplicate browser popups. |
 
 ---
 
-## Auth Config Details _(reserved for future use)_
+## Auth Config Details
 
-The `auth` section is reserved for future cloud-based authorization support. Currently unused.
+The `auth` section configures authorization settings for the camera control system.
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `cloud_url` | `""` | Reserved. Smart Cloud API endpoint for future authorization service. |
+| `local_auth_url` | `"http://127.0.0.1:18899"` | Local authorization server URL. Must be running for browser-based auth flow with password-required cameras. Start with `python local_auth_server/server.py`. |
+| `cloud_url` | `""` | Cloud authorization API endpoint (reserved for future use; currently `local_auth_url` handles all auth requests). |
 | `token_timeout` | `300` | Reserved. Token validity in seconds. |
 | `auth_timeout` | `30` | Reserved. Cloud HTTP request timeout in seconds. |
 | `auto_request_auth` | `true` | Reserved. |
@@ -111,21 +137,30 @@ The `auth` section is reserved for future cloud-based authorization support. Cur
 
 ## Example Configs
 
-### Single ONVIF camera (password-required)
+### Single ONVIF camera (password-required, with local auth)
 
 ```yaml
+claw_id: "claw-AABBCCDDEEFF-20260727143052000"
+
 cameras:
   - name: office_cam
     connection_type: onvif
     ip: 192.168.1.100
     port: 80
+    onvif_port: 80
     username: admin
     password: "my_password"
     rtsp_port: 554
-    rtsp_path: /stream0
+    rtsp_path: /stream1
+    rtsp_path_main: /stream1
+    rtsp_sub_path: /stream2
+    rtsp_path_sub: /stream2
+    sn_code: "SN20240001"
+    sn: "SN20240001"
     device_class: password_required
 
 auth:
+  local_auth_url: "http://127.0.0.1:18899"
   cloud_url: ""
   auto_request_auth: true
 ```
@@ -141,10 +176,11 @@ cameras:
     username: admin
     password: ""
     rtsp_port: 554
-    rtsp_path: /stream0
+    rtsp_path: /stream1
     device_class: direct_connect
 
 auth:
+  local_auth_url: "http://127.0.0.1:18899"
   cloud_url: ""
   auto_request_auth: true
 ```
@@ -152,16 +188,21 @@ auth:
 ### Mixed: ONVIF (password) + USB + direct-connect
 
 ```yaml
+claw_id: "claw-AABBCCDDEEFF-20260727143052000"
+
 cameras:
   - name: main_ipc
     connection_type: onvif
     ip: 192.168.1.100
     port: 80
+    onvif_port: 80
     username: admin
     password: secret123
     rtsp_port: 554
-    rtsp_path: /Streaming/Channels/101
+    rtsp_path: /stream1
+    rtsp_path_main: /stream1
     sn_code: "SN20240001"
+    sn: "SN20240001"
     device_class: password_required
 
   - name: desk_webcam
@@ -175,10 +216,11 @@ cameras:
     username: admin
     password: ""
     rtsp_port: 554
-    rtsp_path: /stream0
+    rtsp_path: /stream1
     device_class: direct_connect
 
 auth:
+  local_auth_url: "http://127.0.0.1:18899"
   cloud_url: ""
   auto_request_auth: true
 ```

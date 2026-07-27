@@ -74,24 +74,40 @@ result = tk.connect_device("书房摄像头")
 ### Password-required camera with cached credentials
 
 ```python
-# Credentials already in config.yaml from previous session
+# Credentials already on config.yaml from previous session
 result = tk.connect_device("客厅摄像头")
-# Tool reads username/password from config.yaml, connects via ONVIF/TCP auth
+# Tool reads username/password from config.yaml, verifies via ONVIF WS-UsernameToken
 # auth_method will be "password"
 ```
 
-### Password-required camera with no cached credentials (probe flow)
+### Password-required camera with Local Auth Server (pending_auth flow)
 
 ```python
-# Step 1: Initiate connection — tool probes RTSP stream
+# Step 1: Initiate connection — tool detects password_required, sends auth request
 result = tk.connect_device("discovered_192_168_1_100")
 
-# Step 2: Check if password is needed
-if result.status == "needs_password":
-    # Agent prompts user for password
-    password = input("Please enter the camera password: ")
+# Step 2: Check if we're in pending_auth state
+if result.status == "pending_auth":
+    # Local auth server received the request, user sees it in browser
+    print(f"Waiting for user to confirm in browser: {result.error_message}")
 
-    # Step 3: Re-connect with user-provided password
+    # Step 3: Poll auth status (every ~5s, max 120s)
+    import time
+    for _ in range(24):  # 24 * 5s = 120s max
+        time.sleep(5)
+        auth = tk.poll_auth_status("discovered_192_168_1_100")
+        if auth.status == tk.AuthStatus.AUTHORIZED:
+            print("User authorized in browser!")
+            break
+        elif auth.status == tk.AuthStatus.REJECTED:
+            print("User rejected authorization")
+            exit()
+        print(f"Still waiting... ({auth.message})")
+
+    # Step 4: After authorization, prompt user for password
+    password = input("Authorization confirmed. Please enter camera password: ")
+
+    # Step 5: Re-connect with password
     result = tk.connect_device(
         "discovered_192_168_1_100",
         password=password,
@@ -100,7 +116,7 @@ if result.status == "needs_password":
     )
 
 if result.success:
-    # Step 4: Register to config.yaml — credentials saved for future sessions
+    # Step 6: Register to config.yaml — credentials saved for future sessions
     tk.register_camera(
         name="客厅摄像头",
         ip="192.168.1.100",
@@ -112,6 +128,55 @@ if result.success:
     print("Connected and registered. Future sessions will auto-connect.")
 else:
     print(f"Connection failed: {result.error_message}")
+```
+
+### Password-required camera without Local Auth Server (fallback)
+
+```python
+# Step 1: Initiate connection — auth server unreachable, falls back to needs_password
+result = tk.connect_device("discovered_192_168_1_100")
+
+# Step 2: Direct password prompt (no browser step)
+if result.status == "needs_password":
+    password = input("Please enter the camera password: ")
+
+    # Step 3: Re-connect with user-provided password
+    result = tk.connect_device(
+        "discovered_192_168_1_100",
+        password=password,
+        ip=result.ip or "192.168.1.100",
+        rtsp_port=result.rtsp_port or 554,
+    )
+
+if result.success:
+    tk.register_camera(
+        name="客厅摄像头",
+        ip="192.168.1.100",
+        port=80,
+        username="admin",
+        password=password,
+        device_class="password_required",
+    )
+    print("Connected and registered. Future sessions will auto-connect.")
+else:
+    print(f"Connection failed: {result.error_message}")
+```
+
+### Cloud Auth Tools (direct usage)
+
+```python
+# Manually request authorization (normally called by connect_device internally)
+auth_result = tk.request_cloud_auth(
+    camera_name="客厅摄像头",
+    sn="SN20240001",
+    device_ip="192.168.1.100",
+    device_model="LC2418",
+)
+print(f"Auth request sent, claw_id={auth_result.claw_id}")
+
+# Poll for result
+status = tk.poll_auth_status("客厅摄像头")
+print(f"Status: {status.status} — {status.message}")
 ```
 
 ---
@@ -134,6 +199,28 @@ result = tk.toggle_recording("客厅摄像头", action="stop")
 ```
 
 > For non-ASCII path handling and same-process connection requirements, see [ARCHITECTURE.md — Known Issues](ARCHITECTURE.md#known-issues--implementation-notes).
+
+### End-to-End: User says "I want to see the camera"
+
+```python
+# Assumes camera is already connected (Phase 0/2 complete)
+
+# Step 1: Capture screenshot for preview
+shot = tk.capture_video_screenshot("客厅摄像头")
+# → file_path: "snapshots/客厅摄像头_20260727_143052.jpg"
+
+# Step 2: Get RTSP stream URL for live viewing
+stream = tk.get_audio_video_stream("客厅摄像头")
+# → stream_url: "rtsp://admin:pass@192.168.1.100:554/stream1"
+# → codec: "H.264", resolution: "2560x1440", fps: 25
+
+# Step 3: Agent delivers results to user
+# (a) Show the screenshot image using markdown:
+#     ![客厅摄像头截图](snapshots/客厅摄像头_20260727_143052.jpg)
+# (b) Tell user the RTSP URL:
+#     "RTSP live stream: rtsp://admin:***@192.168.1.100:554/stream1
+#      You can open this URL in VLC, ffplay, or PotPlayer for live viewing."
+```
 
 ---
 

@@ -5,15 +5,36 @@ Toolkit 5: 设备管理与维护
   - get_registered_cameras  从 config.yaml 加载已注册摄像头配置
   - register_camera         将摄像头信息写入 config.yaml（持久化凭据）
   - search_devices          搜索局域网可用摄像头（支持 WS-Discovery / USB / 创维私有协议）
-  - connect_device          设备连接（先尝试免密拉流，失败则提示用户输入密码）
+  - connect_device          设备连接（自动读取 config.yaml 凭据；无凭据时走本地授权或提示密码）
+  - request_cloud_auth      向本地授权服务器发起授权请求（模拟智慧云）
+  - poll_auth_status        轮询本地授权服务器，检查 Agent 授权状态
   - disconnect_device       断开摄像头连接并释放资源
   - query_device_model      查询设备型号/固件/状态/网络信息
   - update_firmware         固件更新与升级
   - system_maintenance      系统维护（重启/云台矫正）
 """
+import base64
+import hashlib
+import os
+import secrets
+import socket
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse, quote
+
+try:
+    import requests as _requests_lib
+except ImportError:
+    _requests_lib = None
+
+try:
+    import yaml as _yaml_lib
+except ImportError:
+    _yaml_lib = None
 
 from .discovery import (
     SkDiscoveredDevice,
@@ -191,6 +212,176 @@ class AuthStatusResult:
     message: str = ""                          # 状态说明（如 "用户已授权" 或 "超时未确认"）
 
 
+@dataclass
+class CloudAuthRequestResult:
+    """向本地授权服务器发起授权请求的结果"""
+    success: bool                              # POST 是否成功送达（HTTP 200）
+    claw_id: str = ""                          # 本次使用的 clawID（已持久化，重发时复用）
+    error_message: str = ""                    # 失败原因
+
+
+# ──────────────────────────────────────────────
+#  本地授权服务器地址 & 配置路径
+# ──────────────────────────────────────────────
+
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
+
+# 本地授权服务器 URL（可通过环境变量 LOCAL_AUTH_URL 覆盖）
+_LOCAL_AUTH_URL = os.environ.get("LOCAL_AUTH_URL", "http://127.0.0.1:18899")
+
+
+# ──────────────────────────────────────────────
+#  ONVIF WS-UsernameToken 鉴权辅助函数
+# ──────────────────────────────────────────────
+
+_ONVIF_NS = {
+    "soap": "http://www.w3.org/2003/05/soap-envelope",
+    "tds": "http://www.onvif.org/ver10/device/wsdl",
+    "trt": "http://www.onvif.org/ver10/media/wsdl",
+    "tt": "http://www.onvif.org/ver10/schema",
+}
+
+
+def _onvif_digest_auth_header(username: str, password: str) -> str:
+    """生成 ONVIF WS-UsernameToken PasswordDigest 的 SOAP Header XML 片段。"""
+    nonce_raw = secrets.token_bytes(16)
+    created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    digest_input = nonce_raw + created.encode("utf-8") + password.encode("utf-8")
+    password_digest = base64.b64encode(hashlib.sha1(digest_input).digest()).decode()
+    nonce_b64 = base64.b64encode(nonce_raw).decode()
+    return (
+        '<wsse:UsernameToken xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" '
+        'xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">'
+        f'<wsse:Username>{username}</wsse:Username>'
+        f'<wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">{password_digest}</wsse:Password>'
+        f'<wsse:Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">{nonce_b64}</wsse:Nonce>'
+        f'<wsu:Created>{created}</wsu:Created>'
+        '</wsse:UsernameToken>'
+    )
+
+
+def _onvif_post_with_auth(
+    ip: str, port: int, path: str, body: str,
+    username: str, password: str, timeout: float = 5.0,
+) -> Tuple[int, str]:
+    """POST SOAP 到 ONVIF endpoint，自动注入 WS-UsernameToken 鉴权头。返回 (status_code, body_text)。"""
+    if _requests_lib is None:
+        raise RuntimeError("requests 未安装")
+    auth_xml = _onvif_digest_auth_header(username, password)
+    if "xmlns:wsse=" not in body:
+        body = body.replace(
+            "<soap:Envelope ",
+            '<soap:Envelope xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" '
+            'xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" ',
+            1,
+        )
+    if "<soap:Header/>" in body:
+        body = body.replace("<soap:Header/>", f"<soap:Header>{auth_xml}</soap:Header>", 1)
+    elif "<soap:Header>" in body:
+        body = body.replace("<soap:Header>", f"<soap:Header>{auth_xml}", 1)
+
+    resp = _requests_lib.post(
+        f"http://{ip}:{port}{path}",
+        data=body.encode("utf-8"),
+        headers={"Content-Type": "application/soap+xml; charset=utf-8"},
+        timeout=timeout,
+    )
+    return resp.status_code, resp.text
+
+
+def _build_rtsp_url(ip: str, port: int, path: str, username: str = "", password: str = "") -> str:
+    """构造完整 RTSP URL，自动注入凭据。
+
+    支持两种 path 形态:
+      - 纯路径 "/md0_0" → rtsp://user:pwd@ip:port/md0_0
+      - 完整 URL "rtsp://host:port/md0_0" → 注入凭据
+    """
+    path = (path or "").strip()
+    if path.lower().startswith(("rtsp://", "http://", "https://")):
+        parsed = urlparse(path)
+        if "@" in parsed.netloc:
+            _, host_port = parsed.netloc.split("@", 1)
+        else:
+            host_port = parsed.netloc
+        new_netloc = (
+            f"{quote(username, safe='')}:{quote(password or '', safe='')}@{host_port}"
+            if username else host_port
+        )
+        new_path = parsed.path or "/"
+        if not new_path.startswith("/"):
+            new_path = "/" + new_path
+        from urllib.parse import urlunparse
+        return urlunparse((parsed.scheme, new_netloc, new_path,
+                           parsed.params, parsed.query, parsed.fragment))
+
+    if not path.startswith("/"):
+        path = "/" + path
+    if username:
+        return f"rtsp://{quote(username, safe='')}:{quote(password or '', safe='')}@{ip}:{port}{path}"
+    return f"rtsp://{ip}:{port}{path}"
+
+
+# ──────────────────────────────────────────────
+#  Claw ID 管理
+# ──────────────────────────────────────────────
+
+def _get_local_mac() -> str:
+    """跨平台取本机 MAC；失败返回占位 MAC。"""
+    import platform
+    try:
+        if platform.system() == "Windows":
+            import re
+            import subprocess
+            out = subprocess.check_output("getmac", shell=True).decode("gbk", "ignore")
+            m = re.search(r"([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}", out)
+            if m:
+                return m.group(0).replace("-", ":").upper()
+        else:
+            import uuid as _uuid
+            return ":".join(f"{b:02X}" for b in _uuid.getnode().to_bytes(6, "big"))
+    except Exception:
+        pass
+    return "00:00:00:00:00:00"
+
+
+def generate_claw_id() -> str:
+    """生成 Claw ID（MAC + 毫秒时间戳）。格式: claw-<mac12>-<yyyyMMddHHMMSSmmm>"""
+    mac = _get_local_mac().replace(":", "").upper()
+    now = datetime.now()
+    ts = now.strftime("%Y%m%d%H%M%S") + f"{now.microsecond // 1000:03d}"
+    return f"claw-{mac}-{ts}"
+
+
+def get_or_create_claw_id() -> str:
+    """从 config.yaml 读取 clawID；不存在则生成并持久化。"""
+    if _yaml_lib is None:
+        return generate_claw_id()
+
+    try:
+        if CONFIG_PATH.exists():
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = _yaml_lib.safe_load(f) or {}
+        else:
+            data = {}
+    except (OSError, _yaml_lib.YAMLError):
+        return generate_claw_id()
+
+    existing = data.get("claw_id", "")
+    if existing:
+        return existing
+
+    claw_id = generate_claw_id()
+    data["claw_id"] = claw_id
+    try:
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            _yaml_lib.safe_dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    except OSError:
+        pass
+
+    return claw_id
+
+
 # ──────────────────────────────────────────────
 #  工具函数
 # ──────────────────────────────────────────────
@@ -283,20 +474,25 @@ def register_camera(
 
     cameras = data.get("cameras", [])
 
-    # 构建新条目
+    # 构建新条目（同时写入两种方案的字段名以兼容）
     new_entry = {
         "name": name,
         "connection_type": connection_type,
         "ip": ip,
         "port": port,
+        "onvif_port": port,           # 密码认证方案兼容字段
         "username": username,
         "password": password,
         "rtsp_port": rtsp_port,
         "rtsp_path": rtsp_path,
+        "rtsp_path_main": rtsp_path,  # 密码认证方案兼容字段
         "rtsp_sub_path": rtsp_sub_path,
+        "rtsp_path_sub": rtsp_sub_path,  # 密码认证方案兼容字段
         "device_class": device_class,
         "sn_code": sn_code,
+        "sn": sn_code,               # 密码认证方案兼容字段
         "pkdk": pkdk,
+        "registered_at": datetime.now(timezone.utc).isoformat(),
     }
     if connection_type == "usb":
         new_entry["device_index"] = device_index
@@ -454,12 +650,13 @@ def connect_device(
     """
     设备连接。流程：
 
-    1. 如果 config.yaml 有缓存凭据 → 自动使用缓存密码连接
-    2. 如果传入了 password → 使用提供的密码连接
-    3. 如果无密码 → 先尝试无密码拉流探测：
-       a. 成功 → 免密设备，直接连接
-       b. 返回 401/认证失败 → 返回 status="needs_password"，Agent 提示用户输入密码
-    4. Agent 获取到密码后再次调用 connect_device(camera_name, password=xxx)
+    1. 如果 config.yaml 有缓存凭据 → 自动使用缓存密码连接（ONVIF 鉴权验证）
+    2. 如果传入了 password → 使用提供的密码连接（ONVIF 鉴权验证 → 自动缓存）
+    3. 如果无密码且 device_class == "password_required"：
+       a. 尝试本地授权服务器 → 返回 status="pending_auth"
+       b. 授权服务器不可达 → 返回 status="needs_password"，Agent 提示用户输入密码
+    4. 如果无密码且非 password_required → 尝试免密拉流探测
+    5. Agent 获取到密码后再次调用 connect_device(camera_name, password=xxx)
 
     安全约束: 显式提示（需要密码时提示用户输入）
 
@@ -476,7 +673,7 @@ def connect_device(
         ConnectResult:
             - success: 连接是否成功
             - auth_method: "password" 或 "direct"
-            - status: "connected" / "needs_password" / "failed"
+            - status: "connected" / "pending_auth" / "needs_password" / "failed"
             - needs_password: True 表示需要密码
             - error_message: 失败原因
     """
@@ -491,6 +688,7 @@ def connect_device(
         dev_rtsp_path = cached.rtsp_path
         dev_username = cached.username or username
         dev_pwd = password or cached.password or ""
+        dev_class = cached.device_class or ""
     elif ip:
         dev_ip = ip
         dev_port = port or 80
@@ -498,19 +696,30 @@ def connect_device(
         dev_rtsp_path = rtsp_path
         dev_username = username
         dev_pwd = password or ""
+        dev_class = ""
     else:
         return ConnectResult(
             success=False, status="failed",
             error_message=f"未找到设备 {camera_name} 的连接信息（config.yaml 中无记录且未提供 IP）",
         )
 
-    # ── Step 2: 如果有密码（缓存或用户提供），直接尝试连接 ──
+    # ── Step 2: 如果有密码（缓存或用户提供），直接尝试 ONVIF 鉴权连接 ──
     if dev_pwd:
         result = _try_connect_with_password(
             camera_name, dev_ip, dev_port, dev_rtsp_port, dev_rtsp_path,
             dev_username, dev_pwd,
         )
         if result.success:
+            # 连接成功 → 缓存密码（如有变更）
+            if not cached or cached.password != dev_pwd:
+                register_camera(
+                    name=camera_name, ip=dev_ip, port=dev_port,
+                    username=dev_username, password=dev_pwd,
+                    rtsp_port=dev_rtsp_port, rtsp_path=dev_rtsp_path,
+                    device_class=dev_class or "password_required",
+                    sn_code=cached.sn_code if cached else "",
+                    connection_type=cached.connection_type if cached else "onvif",
+                )
             return result
         # 密码认证失败
         return ConnectResult(
@@ -519,7 +728,40 @@ def connect_device(
             error_message=f"密码认证失败: {result.error_message}，请确认密码后重试",
         )
 
-    # ── Step 3: 无密码 → 先尝试免密拉流探测 ──
+    # ── Step 3: 无密码 → password_required 设备走本地授权 ──
+    if dev_class == "password_required":
+        # 尝试向本地授权服务器发起请求
+        auth_result = request_cloud_auth(
+            camera_name=camera_name,
+            sn=cached.sn_code if cached else camera_name,
+            device_ip=dev_ip,
+            device_model=cached.model if cached else "",
+        )
+        if auth_result.success:
+            return ConnectResult(
+                success=False,
+                status="pending_auth",
+                needs_password=True,
+                error_message=(
+                    f"已向本地授权服务器发起授权请求（claw_id={auth_result.claw_id}）。"
+                    f"请在浏览器中打开 {_LOCAL_AUTH_URL} 确认授权，"
+                    f"然后 Agent 调用 poll_auth_status() 轮询结果，"
+                    f"授权通过后提示用户输入密码并重新调用 connect_device。"
+                ),
+            )
+        else:
+            # 本地授权服务器不可达 → 降级为 needs_password
+            return ConnectResult(
+                success=False,
+                status="needs_password",
+                needs_password=True,
+                error_message=(
+                    f"本地授权服务器不可达 ({auth_result.error_message})。"
+                    f"设备 {camera_name}({dev_ip}) 需要密码，请直接输入密码。"
+                ),
+            )
+
+    # ── Step 4: 非 password_required → 尝试免密拉流探测 ──
     access = _probe_stream_access(dev_ip, dev_rtsp_port, dev_rtsp_path)
 
     if access == "open":
@@ -532,6 +774,14 @@ def connect_device(
             "username": "",
             "password": "",
         }
+        # 缓存为 direct_connect
+        if not cached:
+            register_camera(
+                name=camera_name, ip=dev_ip, port=dev_port,
+                username="", password="",
+                rtsp_port=dev_rtsp_port, rtsp_path=dev_rtsp_path,
+                device_class="direct_connect",
+            )
         return ConnectResult(
             success=True,
             auth_method="direct",
@@ -794,60 +1044,73 @@ def _find_cached_camera(camera_name: str) -> Optional[CameraConfig]:
 
 
 def _load_config_cameras() -> List[CameraConfig]:
-    """从 config.yaml 加载摄像头配置列表（内部辅助）"""
-    import os
-    import yaml
+    """从 config.yaml 加载摄像头配置列表（内部辅助）。
+    
+    兼容两种 config.yaml 字段格式:
+      - MCP 方案: port / sn_code / rtsp_path / rtsp_sub_path
+      - 密码认证方案: onvif_port / sn / rtsp_path_main / rtsp_path_sub
+    """
+    if not CONFIG_PATH.exists():
+        # 兜底搜索
+        alt_paths = [
+            os.path.join(os.path.dirname(__file__), "..", "..", "confg.yaml"),
+            "config.yaml",
+        ]
+        for p in alt_paths:
+            p = os.path.normpath(p)
+            if os.path.exists(p):
+                break
+        else:
+            return []
 
-    # 查找 config.yaml：优先当前目录，其次 skill 根目录
-    config_paths = [
-        os.path.join(os.path.dirname(__file__), "..", "..", "config.yaml"),
-        os.path.join(os.path.dirname(__file__), "..", "..", "confg.yaml"),
-        "config.yaml",
-    ]
+    config_path = CONFIG_PATH if CONFIG_PATH.exists() else os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "config.yaml")
+    )
 
-    for path in config_paths:
-        path = os.path.normpath(path)
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f) or {}
-                cameras_data = data.get("cameras", [])
-                configs = []
-                for entry in cameras_data:
-                    cfg = CameraConfig(
-                        name=entry.get("name", ""),
-                        connection_type=entry.get("connection_type", "onvif"),
-                        ip=entry.get("ip", ""),
-                        port=int(entry.get("port", 80)),
-                        username=entry.get("username", "admin"),
-                        password=entry.get("password", ""),
-                        rtsp_port=int(entry.get("rtsp_port", 554)),
-                        rtsp_path=entry.get("rtsp_path", "/stream1"),
-                        rtsp_sub_path=entry.get("rtsp_sub_path", "/stream2"),
-                        device_class=entry.get("device_class", ""),
-                        sn_code=entry.get("sn_code", ""),
-                        pkdk=entry.get("pkdk", ""),
-                        device_index=int(entry.get("device_index", 0)),
-                        device_model=entry.get("device_model", ""),
-                        product_version=entry.get("product_version", ""),
-                    )
-                    configs.append(cfg)
-                return configs
-            except Exception:
-                continue
-    return []
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            import yaml
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return []
+
+    cameras_data = data.get("cameras", [])
+    configs = []
+    for entry in cameras_data:
+        try:
+            cfg = CameraConfig(
+                name=entry.get("name", ""),
+                connection_type=entry.get("connection_type", "onvif"),
+                ip=entry.get("ip", ""),
+                port=int(entry.get("onvif_port", entry.get("port", 80))),
+                username=entry.get("username", "admin"),
+                password=entry.get("password", ""),
+                rtsp_port=int(entry.get("rtsp_port", 554)),
+                rtsp_path=entry.get("rtsp_path_main", entry.get("rtsp_path", "/stream1")),
+                rtsp_sub_path=entry.get("rtsp_path_sub", entry.get("rtsp_sub_path", "/stream2")),
+                device_class=entry.get("device_class", ""),
+                sn_code=entry.get("sn", entry.get("sn_code", "")),
+                pkdk=entry.get("pkdk", ""),
+                device_index=int(entry.get("device_index", 0)),
+                device_model=entry.get("device_model", ""),
+                product_version=entry.get("product_version", ""),
+            )
+            configs.append(cfg)
+        except Exception:
+            continue
+    return configs
 
 
 def poll_auth_status(
     camera_name: str,
 ) -> AuthStatusResult:
     """
-    轮询远程授权服务器，检查 Agent 是否已被授权连接该摄像头。
+    轮询本地授权服务器，检查 Agent 是否已被授权连接该摄像头。
 
     在 connect_device() 返回 status="pending_auth" 后，Agent 应反复调用此函数
     （建议间隔 5 秒，最长等待 120 秒），直到：
     - status == "authorized" → Agent 提示用户输入密码，再调用 connect_device(camera_name, password)
-    - status == "rejected"   → 用户在 APP 端拒绝了授权，流程终止
+    - status == "rejected"   → 用户拒绝了授权，流程终止
     - status == "error"      → 服务器异常，流程终止
 
     安全约束: 无特殊约束
@@ -861,7 +1124,127 @@ def poll_auth_status(
             - camera_name: 摄像头名称
             - message: 状态说明
     """
-    raise NotImplementedError("poll_auth_status 待实现")
+    if _requests_lib is None:
+        return AuthStatusResult(
+            status=AuthStatus.ERROR, camera_name=camera_name,
+            message="requests 未安装，无法轮询授权状态",
+        )
+
+    # 从 config.yaml 查设备 SN（如有）
+    claw_id = get_or_create_claw_id()
+    cached = _find_cached_camera(camera_name)
+    sn = cached.sn_code if cached else camera_name
+
+    url = f"{_LOCAL_AUTH_URL}/api/auth/status"
+    try:
+        resp = _requests_lib.get(url, params={"sn": sn, "claw_id": claw_id}, timeout=5.0)
+    except Exception as e:
+        return AuthStatusResult(
+            status=AuthStatus.ERROR, camera_name=camera_name,
+            message=f"本地授权服务器不可达: {e}（请确认已启动 python local_auth_server/server.py）",
+        )
+
+    if resp.status_code != 200:
+        return AuthStatusResult(
+            status=AuthStatus.ERROR, camera_name=camera_name,
+            message=f"本地授权服务器返回 HTTP {resp.status_code}",
+        )
+
+    try:
+        data = resp.json()
+    except ValueError:
+        return AuthStatusResult(
+            status=AuthStatus.ERROR, camera_name=camera_name,
+            message=f"服务器响应非 JSON: {resp.text[:200]}",
+        )
+
+    raw_status = str(data.get("status", "")).strip().lower()
+    msg = str(data.get("message", ""))
+
+    if raw_status in ("authorized", "success", "ok"):
+        return AuthStatusResult(status=AuthStatus.AUTHORIZED, camera_name=camera_name, message=msg or "用户已授权")
+    elif raw_status in ("rejected", "deny", "denied"):
+        return AuthStatusResult(status=AuthStatus.REJECTED, camera_name=camera_name, message=msg or "用户拒绝授权")
+    elif raw_status in ("pending", "wait", "waiting"):
+        return AuthStatusResult(status=AuthStatus.PENDING, camera_name=camera_name, message=msg or "等待用户确认")
+    else:
+        return AuthStatusResult(
+            status=AuthStatus.ERROR, camera_name=camera_name,
+            message=f"未识别的状态: {raw_status or data}",
+        )
+
+
+def request_cloud_auth(
+    camera_name: str,
+    sn: str = "",
+    device_ip: str = "",
+    device_model: str = "",
+) -> CloudAuthRequestResult:
+    """
+    向本地授权服务器发起设备授权请求（模拟智慧云）。
+
+    在 search_devices 发现设备后、connect_device 之前调用。
+    向本地服务器 POST {sn, claw_id, device_ip, device_model}，
+    服务器在网页端弹出授权确认，Agent 随后调用 poll_auth_status 轮询。
+
+    clawID 从 config.yaml 读取（首次自动生成并持久化），HTTP 丢包重发时
+    复用同一 clawID，确保不会重复弹窗。
+
+    安全约束: 无特殊约束（仅发起请求，不携带密码等敏感信息）
+
+    Args:
+        camera_name:  摄像头名称
+        sn:           设备序列号（可选，从 camera_name 自动查找）
+        device_ip:    设备 IP（可选）
+        device_model: 设备型号（可选）
+
+    Returns:
+        CloudAuthRequestResult:
+            - success: POST 是否成功（HTTP 200）
+            - claw_id: 本次使用的 clawID（重发时传入相同值）
+            - error_message: 失败原因
+    """
+    claw_id = get_or_create_claw_id()
+
+    if _requests_lib is None:
+        return CloudAuthRequestResult(
+            success=False, claw_id=claw_id,
+            error_message="requests 未安装，无法发送 HTTP 请求",
+        )
+
+    # 自动补全 SN / IP
+    if not sn or not device_ip:
+        cached = _find_cached_camera(camera_name)
+        if cached:
+            sn = sn or cached.sn_code or camera_name
+            device_ip = device_ip or cached.ip
+
+    body = {
+        "sn": sn,
+        "claw_id": claw_id,
+        "device_ip": device_ip,
+        "device_model": device_model,
+    }
+    try:
+        resp = _requests_lib.post(
+            f"{_LOCAL_AUTH_URL}/api/auth/request",
+            json=body,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            timeout=10.0,
+        )
+    except Exception as e:
+        return CloudAuthRequestResult(
+            success=False, claw_id=claw_id,
+            error_message=f"本地授权服务器不可达: {e}（请确认已启动 python local_auth_server/server.py）",
+        )
+
+    if resp.status_code != 200:
+        return CloudAuthRequestResult(
+            success=False, claw_id=claw_id,
+            error_message=f"本地授权服务器返回 HTTP {resp.status_code}: {resp.text[:200]}",
+        )
+
+    return CloudAuthRequestResult(success=True, claw_id=claw_id)
 
 
 def disconnect_device(

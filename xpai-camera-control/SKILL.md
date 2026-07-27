@@ -4,7 +4,7 @@ description: Discover, connect, and control Skyworth cameras on the local networ
 license: MIT
 compatibility: Requires Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. Cameras must be on the same LAN for discovery.
 metadata:
-  version: "0.2.0"
+  version: "0.3.0"
 ---
 
 # Camera Control Skill
@@ -44,7 +44,7 @@ python scripts/mcp_server.py
 }
 ```
 
-The MCP server exposes **33 tools** covering all 8 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and parameters.
+The MCP server exposes **35 tools** covering all 8 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and parameters.
 
 ## Core Workflow
 
@@ -62,14 +62,17 @@ When Phase 0 cache is unavailable, call `search_devices()` to discover cameras o
 
 ### Phase 2 — Connect & Authorize
 
-For each discovered camera, call `connect_device()` to connect. **The specific connection process is handled internally by the tool** (stream probe → detect auth requirement → connect or prompt). The Agent's responsibilities are as follows:
+For each discovered camera, call `connect_device()` to connect. **The specific connection process is handled internally by the tool** (cached credentials → ONVIF auth → authorization server → stream probe). The Agent's responsibilities are as follows:
 
 | Scenario | Agent Operation |
 |----------|----------------|
+| **Cached credentials** (config.yaml has password) | Tool auto-loads credentials → ONVIF auth verification → `ConnectResult(success=True)` — no user interaction |
 | **direct_connect** (stream probe succeeds) | Tool connects directly via RTSP → `ConnectResult(auth_method="direct")` — no user interaction |
-| **needs_password** (stream probe returns 401) | Tool returns `ConnectResult(status="needs_password", needs_password=True)` → Agent prompts user for password → Agent calls `connect_device(name, password=user_input)` with the IP/port info from the first call |
-| **Cached credentials** (config.yaml has password) | Tool auto-loads credentials → connects via ONVIF/RTSP/TCP → `ConnectResult(success=True)` — no user interaction |
+| **pending_auth** (password_required, authorization server available) | Tool sends request to authorization server → `ConnectResult(status="pending_auth", needs_password=True)` → Agent calls `poll_auth_status()` (every ~5s, max 120s) → when authorized, prompt user for password → call `connect_device(name, password=xxx)` |
+| **needs_password** (stream probe returns 401 or auth server unreachable) | Tool returns `ConnectResult(status="needs_password", needs_password=True)` → Agent prompts user for password → calls `connect_device(name, password=user_input)` |
 | **Connection successful** | Agent calls `register_camera()` to persist credentials to config.yaml → future sessions auto-connect via Phase 0 |
+
+**Authorization Server:** Password-required cameras without cached credentials use the authorization server (`local_auth_url` in config.yaml). Currently backed by a local server (`local_auth_server/server.py`); future versions will point to a cloud service. The user confirms authorization in the browser, then the Agent polls for the result. See [Authorization Server](#authorization-server) section below.
 
 ### Phase 3 — Stream & Capture
 
@@ -80,6 +83,11 @@ After a successful connection, perform streaming operations:
 - `manage_storage_status()` — queries disk usage and configures storage path/format/policy
 
 Screenshot files are saved to `snapshots/` directory by default; recordings go to `recordings/`.
+
+**Result delivery (when user wants to "see" a camera):**
+After capturing a screenshot and fetching the stream URL, the Agent **MUST** deliver both results to the user:
+1. **Show the screenshot** — display the image from `file_path` to the user (e.g. via markdown image syntax `![screenshot](file_path)`)
+2. **Provide the RTSP URL** — output the `stream_url` from `get_audio_video_stream()` so the user can open it in a media player (VLC, ffplay, PotPlayer, etc.) for live viewing
 
 ### Phase 4 — PTZ Control
 
@@ -106,7 +114,7 @@ Detailed code examples and parameter descriptions are available in [references/W
 
 | Module | Key Functions | Reference |
 |--------|--------------|----------|
-| `device_mgmt.py` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device` | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
+| `device_mgmt.py` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device`, `request_cloud_auth`, `poll_auth_status` | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
 | `discovery.py` | `discover_sky_devices`, `SkyDiscoveryListener` | [commands/discovery.md](references/commands/discovery.md) |
 | `stream.py` | `capture_video_screenshot`, `get_audio_video_stream`, `toggle_recording`, `manage_storage_status` | [commands/stream.md](references/commands/stream.md) |
 | `ptz.py` | `control_ptz`, `control_lens_zoom`, `get_ptz_parameters`, `save_ptz_preset`, `go_to_preset`, `calibrate_ptz`, `move_to_position`, `stop_ptz`, `start_patrol_cruise` | [commands/ptz.md](references/commands/ptz.md) |
@@ -122,6 +130,50 @@ Detailed code examples and parameter descriptions are available in [references/W
 | **Explicit Prompt** | Inform the user of the operation content before execution and wait for confirmation | PTZ, streaming, screenshots, picture settings, tracking |
 | **Code Validation** | Validate parameters, device status, and connection availability | Recording, microphone/speaker, firmware update, alarm configuration |
 | **Explicit Authorization** | Requires user password input | Firmware update, restart, factory reset, alarm push |
+| **Cloud Auth Flow** | Authorization server browser confirmation + password input | Password-required cameras without cached credentials (pending_auth flow) |
+
+## Gotchas
+
+- **ONVIF port is not always 80.** Discovered cameras must parse the port from WS-Discovery `XAddrs` — do not assume default 80.
+- **`GetStreamUri` returns bare RTSP URLs without credentials.** The toolkit auto-injects auth via `_build_rtsp_url()` — do not use the raw URL directly.
+- **Chinese characters in Windows paths cause `cv2.imwrite()` to silently fail.** The toolkit uses `cv2.imencode()` + `numpy.tofile()` as a workaround.
+- **Connection state is in-memory only.** `connect_device()` and subsequent operations (`capture_video_screenshot()`, etc.) must run in the **same Python process** — cross-process calls will fail.
+- **Skyworth cameras use non-standard RTSP paths.** The toolkit auto-tries `/stream0` → `/md0_0` → `/stream1` → `/md0_1` → standard ONVIF paths.
+- **Authorization server unreachable → auto-degrades.** If `local_auth_url` is not reachable, `connect_device()` falls back to `needs_password` status (direct password input).
+
+## Error Handling Policy
+
+When any MCP tool call fails or crashes, the Agent **MUST** follow these rules:
+
+1. **Do NOT write workaround scripts or re-implement tool functionality.** Never attempt to bypass a tool failure by writing custom Python code, shell commands, or alternative implementations.
+2. **Analyze the error.** Read the error message, traceback, or tool return value (e.g. `success=False`, `error_message`) to identify the root cause.
+3. **Report to the user.** Clearly explain:
+   - **What failed** — which tool, what operation
+   - **Why it failed** — root cause from the `error_message` field and context
+   - **How to fix it** — concrete actionable steps the user can take
+4. **Wait for the user's decision.** Do not proceed with retries, fallbacks, or alternative approaches until the user confirms.
+
+
+## Authorization Server
+
+A standalone authorization server (`local_auth_server/server.py`, **outside** the skill package) implements the authorization flow. Currently runs locally; the architecture is pluggable — `local_auth_url` in config.yaml can point to a cloud service in the future. Required for password-required cameras when no cached credentials exist.
+
+**Setup & Usage:**
+
+```bash
+# Start local auth server (from project root)
+python local_auth_server/server.py              # default port 18899
+python local_auth_server/server.py --port 9090  # custom port
+```
+
+The server automatically opens a browser window at `http://127.0.0.1:18899`. When a camera requires authorization:
+1. Skill calls `request_cloud_auth()` → POST to local server
+2. A pending request appears in the browser UI
+3. User clicks "Authorize" or "Reject" in the browser
+4. Skill polls `poll_auth_status()` every ~5s until result is returned
+5. If authorized, Agent prompts user for the camera password and calls `connect_device(camera_name, password=xxx)`
+
+**Note:** The authorization server must be started **before** the MCP server if password-required cameras are expected. If the server is unreachable, the flow degrades gracefully to `needs_password` (direct password input without browser confirmation).
 
 
 ## Configuration
@@ -132,9 +184,11 @@ Camera configurations are saved in the skill's root directory under `config.yaml
 
 - Cameras and host must be on the same local network
 - RTSP streams require local network connectivity
-- Password-required cameras return `needs_password` status if no cached credentials exist
+- Password-required cameras: authorization server must be running for browser-based auth flow; otherwise falls back to direct password input
+- ONVIF authentication uses WS-UsernameToken (PasswordDigest) — credentials are auto-injected into RTSP URLs via `_build_rtsp_url()`
 - Screenshot/recording requires `opencv-python` (included in requirements.txt)
 - MCP server mode uses stdio transport only
+- `claw_id` is auto-generated and persisted in config.yaml to prevent duplicate auth popups
 
 ## References
 
@@ -143,3 +197,4 @@ Camera configurations are saved in the skill's root directory under `config.yaml
 - [references/ARCHITECTURE.md](references/ARCHITECTURE.md) — System architecture, connection flow, device discovery protocols, session rules, and known issues
 - [references/CONFIG.md](references/CONFIG.md) — config.yaml complete schema and examples
 - [requirements.txt](requirements.txt) — Python dependencies for MCP Server mode
+- [local_auth_server/](../local_auth_server/) — Standalone authorization server (outside skill package; currently local, pluggable for cloud)

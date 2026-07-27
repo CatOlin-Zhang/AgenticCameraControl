@@ -90,6 +90,7 @@ from .device_mgmt import (
     connect_device,
     disconnect_device,
     poll_auth_status,
+    request_cloud_auth,
     query_device_model,
     update_firmware,
     system_maintenance,
@@ -108,6 +109,10 @@ from .device_mgmt import (
     RegisterResult,
     AuthStatusResult,
     AuthStatus,
+    CloudAuthRequestResult,
+    generate_claw_id,
+    get_or_create_claw_id,
+    _build_rtsp_url,
 )
 
 # ── discovery (创维私有协议) ──
@@ -217,6 +222,7 @@ __all__ = [
     "connect_device",
     "disconnect_device",
     "poll_auth_status",
+    "request_cloud_auth",
     "query_device_model",
     "update_firmware",
     "system_maintenance",
@@ -235,6 +241,10 @@ __all__ = [
     "RegisterResult",
     "AuthStatusResult",
     "AuthStatus",
+    "CloudAuthRequestResult",
+    "generate_claw_id",
+    "get_or_create_claw_id",
+    "_build_rtsp_url",
     # discovery (创维私有协议)
     "SkDiscoveredDevice",
     "SkChannelInfo",

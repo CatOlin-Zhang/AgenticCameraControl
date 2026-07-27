@@ -126,6 +126,31 @@ TOOLS = [
             "required": ["camera_name"],
         },
     ),
+    Tool(
+        name="request_cloud_auth",
+        description="向本地授权服务器发起设备授权请求（模拟智慧云）。用户在浏览器中确认授权后，Agent 调用 poll_auth_status 轮询结果。",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "camera_name": {"type": "string", "description": "摄像头名称"},
+                "sn": {"type": "string", "description": "设备序列号（可选，自动查找）"},
+                "device_ip": {"type": "string", "description": "设备 IP（可选）"},
+                "device_model": {"type": "string", "description": "设备型号（可选）"},
+            },
+            "required": ["camera_name"],
+        },
+    ),
+    Tool(
+        name="poll_auth_status",
+        description="轮询本地授权服务器，检查 Agent 是否已被授权。应在 request_cloud_auth 后反复调用（间隔 5s，最长 120s）。",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "camera_name": {"type": "string", "description": "摄像头名称"},
+            },
+            "required": ["camera_name"],
+        },
+    ),
 
     # ── Stream ──
     Tool(
@@ -263,7 +288,7 @@ TOOLS = [
     ),
     Tool(
         name="save_ptz_preset",
-        description="保存当前云台位置为预置点。",
+        description="保存当前云台位置为预置点。", ##TODO
         inputSchema={
             "type": "object",
             "properties": {
@@ -644,6 +669,10 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
         return _serialize(tk.disconnect_device(**args))
     elif name == "query_device_model":
         return _serialize(tk.query_device_model(**args))
+    elif name == "request_cloud_auth":
+        return _serialize(tk.request_cloud_auth(**args))
+    elif name == "poll_auth_status":
+        return _serialize(tk.poll_auth_status(**args))
 
     # ── Stream ──
     elif name == "get_audio_video_stream":

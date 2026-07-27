@@ -170,11 +170,9 @@ def get_audio_video_stream(
     if sub_stream:
         rtsp_path = conn_info.get("rtsp_sub_path", "/stream2")
 
-    # 构建 RTSP URL
-    if username and password:
-        rtsp_url = f"rtsp://{username}:{password}@{ip}:{rtsp_port}{rtsp_path}"
-    else:
-        rtsp_url = f"rtsp://{ip}:{rtsp_port}{rtsp_path}"
+    # 构建 RTSP URL（使用 _build_rtsp_url 自动注入凭据）
+    from .device_mgmt import _build_rtsp_url
+    rtsp_url = _build_rtsp_url(ip, rtsp_port, rtsp_path, username, password)
 
     # ── Step 4: 验证流可用性并获取元数据 ──
     try:
@@ -216,7 +214,7 @@ def get_audio_video_stream(
         for alt in alt_paths:
             if alt == rtsp_path:
                 continue
-            alt_url = f"rtsp://{username}:{password}@{ip}:{rtsp_port}{alt}" if username and password else f"rtsp://{ip}:{rtsp_port}{alt}"
+            alt_url = _build_rtsp_url(ip, rtsp_port, alt, username, password)
             cap = cv2.VideoCapture(alt_url, cv2.CAP_FFMPEG)
             if cap.isOpened():
                 rtsp_url = alt_url
@@ -342,10 +340,8 @@ def capture_video_screenshot(
         username = conn_info.get("username", "")
         password = conn_info.get("password", "")
 
-        if username and password:
-            rtsp_url = f"rtsp://{username}:{password}@{ip}:{rtsp_port}{rtsp_path}"
-        else:
-            rtsp_url = f"rtsp://{ip}:{rtsp_port}{rtsp_path}"
+        from .device_mgmt import _build_rtsp_url
+        rtsp_url = _build_rtsp_url(ip, rtsp_port, rtsp_path, username, password)
 
         cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
 
@@ -357,7 +353,7 @@ def capture_video_screenshot(
             for alt in alt_paths:
                 if alt == rtsp_path:
                     continue
-                alt_url = f"rtsp://{username}:{password}@{ip}:{rtsp_port}{alt}" if username and password else f"rtsp://{ip}:{rtsp_port}{alt}"
+                alt_url = _build_rtsp_url(ip, rtsp_port, alt, username, password)
                 cap = cv2.VideoCapture(alt_url, cv2.CAP_FFMPEG)
                 if cap.isOpened():
                     break
