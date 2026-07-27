@@ -9,7 +9,7 @@ scripts/
 ├── toolkit/
 │   ├── discovery.py      # Skyworth private protocol discovery & TCP channel
 │   ├── stream.py         # Audio/video streaming & storage
-│   ├── ptz.py            # PTZ & cruise control
+│   ├── ptz.py            # PTZ control (ONVIF + private protocol dual-channel)
 │   ├── tracking.py       # AI tracking algorithms
 │   ├── image_audio.py    # Picture & audio settings
 │   ├── device_mgmt.py    # Device discovery, connection, config, management
@@ -115,6 +115,38 @@ When WS-Discovery fails (firewall, non-ONVIF cameras, wrong subnet):
 | Password-Required (cached) | ONVIF username/password from config.yaml | Auto-connect — no user input needed |
 | Password-Required (uncached) | RTSP probe → 401 → user provides password | Detect `needs_password` → prompt user → connect with password → register credentials |
 | Direct-Connect | None | Auto-connect — RTSP probe returns 200 OK |
+
+## PTZ Dual-Protocol Architecture
+
+PTZ control in `scripts/toolkit/ptz.py` implements a **dual-protocol strategy** with automatic fallback:
+
+```
+1. Agent calls control_ptz(camera_name, direction, speed)
+   └─ Tool tries ONVIF PTZ Service (ContinuousMove + auto Stop)
+   └─ If ONVIF succeeds → returns PTZMoveResult(protocol="onvif")
+   └─ If ONVIF fails (no onvif_camera, no PTZ service, timeout)...
+   └─ Tool falls back to Skyworth private protocol (SK_SETTING_SET_PTZ via TCP 9010)
+   └─ If private succeeds → returns PTZMoveResult(protocol="sky_private")
+   └─ If both fail → returns PTZMoveResult(success=False, error_message=...)
+```
+
+**Connection state** is read from `device_mgmt._connected_devices` via a lazy import (avoids circular dependency at module load time). Each connection entry contains:
+- `onvif_camera`: the ONVIF camera object (for ONVIF PTZ Service calls)
+- `ip`, `username`, `password`, `tcp_port`: credentials for TCP channel (private protocol)
+
+**Protocol capability matrix:**
+
+| Function | ONVIF | Private Protocol |
+|----------|:-----:|:----------------:|
+| `control_ptz` (direction) | `ContinuousMove` + `Stop` | `SK_SETTING_SET_PTZ` cmd |
+| `control_lens_zoom` | `ContinuousMove` (zoom axis) | `SK_SETTING_SET_PTZ` zoom+/zoom- |
+| `get_ptz_parameters` | `GetStatus` | `SK_SETTING_GET_PTZ` |
+| `stop_ptz` | `Stop` | `SK_SETTING_SET_PTZ` stop |
+| `save_ptz_preset` | `SetPreset` | — |
+| `go_to_preset` | `GotoPreset` | — |
+| `calibrate_ptz` | — | `SK_SETTING_SET_PTZ` calibrate |
+| `move_to_position` | — | `SK_SETTING_SET_PTZ` move (x/y/z) |
+| `start_patrol_cruise` | Loop `GotoPreset` | — |
 
 ## Session Rules
 

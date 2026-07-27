@@ -1,6 +1,6 @@
 ---
 name: xpai-camera-control
-description: Discover, connect, and control Skyworth cameras on the local network. Capabilities include device detection, streaming, snapshot capture, PTZ pan/tilt/zoom control, device management, AI tracking, alarm configuration, video encoding settings, and picture/audio adjustments. Supports both WorkBuddy Skill mode and MCP Server mode. Use when the user wants to discover cameras, view a camera feed, capture snapshots, control PTZ, manage camera settings, or mentions ONVIF, RTSP, IP camera, webcam, or Skyworth cameras.
+description: Discover, connect, and control Skyworth cameras on the local network. Capabilities include device detection, streaming, snapshot capture, PTZ pan/tilt/zoom control, device management, AI tracking, alarm configuration, video encoding settings, and picture/audio adjustments. Runs as an MCP Server. Use when the user wants to discover cameras, view a camera feed, capture snapshots, control PTZ, manage camera settings, or mentions ONVIF, RTSP, IP camera, webcam, or Skyworth cameras.
 license: MIT
 compatibility: Requires Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. Cameras must be on the same LAN for discovery.
 metadata:
@@ -14,18 +14,14 @@ metadata:
 Trigger this skill when the user:
 - Wants to see a camera feed, capture a snapshot, or record video
 - Asks to find or discover cameras on the network
-- Requests pan, tilt, zoom, or camera movement
+- Requests pan, tilt, zoom, camera movement, or PTZ calibration
 - Mentions ONVIF, RTSP, IP camera, webcam, or specific camera brands
 - Wants to configure camera settings (night vision, alarms, video encoding, OSD)
 - Wants to set up this skill as an MCP server for use with MCP-compatible clients
 
-## Running Modes
+## Running Mode: MCP Server
 
-### Mode 1: WorkBuddy Skill (default)
-Load this SKILL.md in WorkBuddy and the toolkit functions are called directly via `import scripts.toolkit as tk`. No additional setup needed.
-
-### Mode 2: MCP Server
-Run `scripts/mcp_server.py` as a standalone MCP server that exposes all camera control functions as MCP tools via stdio transport. Compatible with any MCP client (Claude Desktop, WorkBuddy, etc.).
+Run `scripts/mcp_server.py` as a standalone MCP server that exposes all camera control functions as MCP tools via stdio transport. Compatible with any MCP client (Claude Desktop, etc.).
 
 ```bash
 # Install dependencies
@@ -48,7 +44,7 @@ python scripts/mcp_server.py
 }
 ```
 
-The MCP server exposes **31 tools** covering all 8 toolkit modules. See [references/COMMANDS.md](references/COMMANDS.md) for the complete list of tool signatures and parameters.
+The MCP server exposes **34 tools** covering all 8 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and parameters.
 
 ## Core Workflow
 
@@ -87,26 +83,37 @@ Screenshot files are saved to `snapshots/` directory by default; recordings go t
 
 ### Phase 4 — PTZ Control
 
-Only ONVIF cameras support: `control_ptz()` for direction control, `save_ptz_preset()` / `go_to_preset()` for presets. USB and pure RTSP cameras do not support PTZ.
+PTZ control uses a **dual-protocol strategy**: ONVIF is tried first, automatically falling back to the Skyworth private protocol (`SK_SETTING_SET_PTZ` via TCP port 9010) when ONVIF is unavailable.
+
+| Capability | Tools | Protocol |
+|------------|-------|----------|
+| Directional movement (8 directions) | `control_ptz` | ONVIF → private fallback |
+| Zoom in/out | `control_lens_zoom` | ONVIF → private fallback |
+| Get position & ranges | `get_ptz_parameters` | ONVIF → private fallback |
+| Stop all movement | `stop_ptz` | ONVIF → private fallback |
+| Save/go to preset | `save_ptz_preset`, `go_to_preset` | ONVIF only |
+| Physical calibration | `calibrate_ptz` | Private protocol only |
+| Move to absolute (x,y,z) | `move_to_position` | Private protocol only |
+| Patrol cruise | `start_patrol_cruise` | ONVIF only |
+
+`control_ptz` and `control_lens_zoom` auto-stop after `duration_seconds` (default 1s) and 1.5s respectively. Direction parameter supports both English (`up`/`down`/`left`/`right`/`upleft`/`upright`/`downleft`/`downright`) and Chinese aliases (上/下/左/右/左上/右上/左下/右下).
 
 Detailed code examples and parameter descriptions are available in [references/WORKFLOW.md](references/WORKFLOW.md).
 
 ## Toolkit Modules
 
-8 modules in `scripts/toolkit/`, call with `import scripts.toolkit as tk`:
+8 modules in `scripts/toolkit/`:
 
-| Module | Key Functions | Purpose |
-|--------|--------------|--------|
-| `device_mgmt.py` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device` | Config, discovery, connection, management |
-| `discovery.py` | `discover_sky_devices`, `send_tcp_command`, `SkyDiscoveryListener` | Skyworth private protocol discovery & TCP channel |
-| `stream.py` | `capture_video_screenshot`, `get_audio_video_stream`, `toggle_recording`, `manage_storage_status` | Streaming, screenshot (OpenCV), recording (OpenCV), storage |
-| `ptz.py` | `control_ptz`, `control_lens_zoom`, `save_ptz_preset`, `go_to_preset` | PTZ control |
-| `tracking.py` | `track_human_shapes`, `track_vehicles`, `monitor_zone_entry` | AI tracking |
-| `image_audio.py` | `adjust_picture_settings`, `configure_night_vision`, `configure_microphone` | Image and audio settings |
-| `alarm.py` | `configure_alarm_settings`, `configure_alarm_push` | Alarm settings |
-| `encoding_osd.py` | `configure_video_encoding`, `configure_osd_settings` | Encoding and OSD |
-
-Complete function signatures and security constraints are listed in [references/COMMANDS.md](references/COMMANDS.md).
+| Module | Key Functions | Reference |
+|--------|--------------|----------|
+| `device_mgmt.py` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device` | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
+| `discovery.py` | `discover_sky_devices`, `send_tcp_command`, `SkyDiscoveryListener` | [commands/discovery.md](references/commands/discovery.md) |
+| `stream.py` | `capture_video_screenshot`, `get_audio_video_stream`, `toggle_recording`, `manage_storage_status` | [commands/stream.md](references/commands/stream.md) |
+| `ptz.py` | `control_ptz`, `control_lens_zoom`, `get_ptz_parameters`, `save_ptz_preset`, `go_to_preset`, `calibrate_ptz`, `move_to_position`, `stop_ptz`, `start_patrol_cruise` | [commands/ptz.md](references/commands/ptz.md) |
+| `tracking.py` | `track_human_shapes`, `track_vehicles`, `monitor_zone_entry` | [commands/tracking.md](references/commands/tracking.md) |
+| `image_audio.py` | `adjust_picture_settings`, `flip_video_display`, `configure_night_vision`, `set_floodlight_mode`, `configure_microphone`, `configure_speaker` | [commands/image_audio.md](references/commands/image_audio.md) |
+| `alarm.py` | `configure_alarm_settings`, `configure_alarm_push` | [commands/alarm.md](references/commands/alarm.md) |
+| `encoding_osd.py` | `configure_video_encoding`, `configure_osd_settings` | [commands/encoding_osd.md](references/commands/encoding_osd.md) |
 
 ## Security Constraints
 
@@ -123,13 +130,13 @@ Camera configurations are saved in the skill's root directory under `config.yaml
 
 ## MCP Server Tools
 
-When running in MCP server mode, all toolkit functions are exposed as MCP tools. The complete list of 29 tools:
+When running in MCP server mode, all toolkit functions are exposed as MCP tools. The MCP server exposes **34 tools** across 8 categories:
 
-**Device Management (7):** `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device`, `query_device_model`, `poll_auth_status`
+**Device Management (6):** `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device`, `query_device_model`
 
 **Stream & Capture (4):** `get_audio_video_stream`, `capture_video_screenshot`, `toggle_recording`, `manage_storage_status`
 
-**PTZ Control (6):** `control_ptz`, `control_lens_zoom`, `get_ptz_parameters`, `save_ptz_preset`, `go_to_preset`, `start_patrol_cruise`
+**PTZ Control (9):** `control_ptz`, `control_lens_zoom`, `get_ptz_parameters`, `save_ptz_preset`, `go_to_preset`, `calibrate_ptz`, `move_to_position`, `stop_ptz`, `start_patrol_cruise`
 
 **AI Tracking (3):** `track_vehicles`, `track_human_shapes`, `monitor_zone_entry`
 
@@ -186,8 +193,8 @@ Standard ONVIF paths (`/Streaming/Channels/101`, `/h264/ch1/main/av_stream`, `/l
 
 ## References
 
+- [references/commands/](references/commands/) — Per-module tool reference (parameter signatures, safety constraints, implementation details)
 - [references/WORKFLOW.md](references/WORKFLOW.md) — Complete workflow examples and code snippets
-- [references/COMMANDS.md](references/COMMANDS.md) — Full function signatures, parameters, return values, and security constraints
 - [references/ARCHITECTURE.md](references/ARCHITECTURE.md) — System architecture, connection flow, device discovery protocols, and session rules
 - [references/CONFIG.md](references/CONFIG.md) — config.yaml complete schema and examples
-- [requirements.txt](requirements.txt) — Python dependencies for both Skill and MCP Server modes
+- [requirements.txt](requirements.txt) — Python dependencies for MCP Server mode

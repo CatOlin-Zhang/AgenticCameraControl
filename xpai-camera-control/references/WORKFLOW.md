@@ -141,21 +141,87 @@ result = tk.toggle_recording("客厅摄像头", action="stop")
 
 ## Phase 4 — PTZ Control: Detailed Code
 
-```python
-# Directional movement (auto-stop after ~1 second)
-tk.control_ptz("客厅摄像头", tk.PTZDirection.UP, speed=0.5)
-tk.control_ptz("客厅摄像头", tk.PTZDirection.LEFT, speed=0.5)
+PTZ uses a **dual-protocol strategy**: ONVIF is tried first, automatically falling back to the Skyworth private protocol when unavailable. All return results include a `protocol` field indicating which protocol was actually used.
 
-# Zoom
+### Directional movement (8 directions + Chinese aliases)
+
+```python
+# Basic 4 directions (auto-stop after duration_seconds, default 1.0s)
+tk.control_ptz("客厅摄像头", tk.PTZDirection.UP, speed=0.5)
+tk.control_ptz("客厅摄像头", tk.PTZDirection.LEFT, speed=0.5, duration_seconds=2.0)
+
+# Diagonal directions
+tk.control_ptz("客厅摄像头", tk.PTZDirection.UPLEFT, speed=0.5)
+tk.control_ptz("客厅摄像头", tk.PTZDirection.DOWNRIGHT, speed=0.5)
+
+# Chinese direction aliases are supported
+tk.control_ptz("客厅摄像头", "上", speed=0.5)
+tk.control_ptz("客厅摄像头", "左上", speed=0.5)
+```
+
+### Zoom control
+
+```python
+# Zoom in (auto-stop after 1.5s)
 tk.control_lens_zoom("客厅摄像头", tk.ZoomAction.IN, speed=0.5)
 
-# Preset positions
-tk.save_ptz_preset("客厅摄像头", "大门")
-tk.go_to_preset("客厅摄像头", "大门")
-
-# Get current PTZ status
-params = tk.get_ptz_parameters("客厅摄像头")
-print(f"Pan: {params.pan}, Tilt: {params.tilt}, Zoom: {params.zoom}")
+# Zoom out
+tk.control_lens_zoom("客厅摄像头", tk.ZoomAction.OUT, speed=0.5)
 ```
+
+### Preset positions (ONVIF only)
+
+```python
+# Save current position as preset
+tk.save_ptz_preset("客厅摄像头", "大门")
+
+# Go to saved preset
+tk.go_to_preset("客厅摄像头", "大门")
+```
+
+### Get current PTZ status
+
+```python
+params = tk.get_ptz_parameters("客厅摄像头")
+print(f"Position: pan={params.pan}, tilt={params.tilt}, zoom={params.zoom}")
+print(f"Range: x_range={params.pan_range}, y_range={params.tilt_range}, z_range={params.zoom_range}")
+print(f"Moving: {params.is_moving}, Protocol: {params.protocol}")
+```
+
+### Stop PTZ immediately
+
+```python
+# Stop all PTZ movement (ONVIF first, private fallback)
+tk.stop_ptz("客厅摄像头")
+```
+
+### Physical calibration (private protocol only)
+
+```python
+# Calibrate PTZ zero point (takes 10-30 seconds, Skyworth cameras only)
+result = tk.calibrate_ptz("客厅摄像头")
+print(f"Calibration: {'OK' if result.success else result.error_message}")
+```
+
+### Move to absolute coordinate (private protocol only)
+
+```python
+# First query the valid coordinate ranges
+params = tk.get_ptz_parameters("客厅摄像头")
+print(f"Valid range: x=[0,{params.pan_range}], y=[0,{params.tilt_range}], z=[0,{params.zoom_range}]")
+
+# Move to specific absolute position
+tk.move_to_position("客厅摄像头", x=1000, y=500, z=1.0)
+```
+
+### Patrol cruise (ONVIF only)
+
+```python
+# Start patrol through all saved presets (background thread)
+result = tk.start_patrol_cruise("客厅摄像头")
+print(f"Cruise started: {result.preset_count} presets, protocol={result.protocol}")
+```
+
 ---
+
 ONVIF `GetStreamUri` may return a different path — prefer the dynamic URL when ONVIF is available.

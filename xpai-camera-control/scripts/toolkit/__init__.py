@@ -33,6 +33,8 @@ from .ptz import (
     save_ptz_preset,
     go_to_preset,
     calibrate_ptz,
+    move_to_position,
+    stop_ptz,
     start_patrol_cruise,
     PTZMoveResult,
     PTZParameters,
@@ -41,6 +43,7 @@ from .ptz import (
     CruiseResult,
     PTZDirection,
     ZoomAction,
+    PTZInfo,
 )
 
 # ── tracking ──
@@ -164,6 +167,8 @@ __all__ = [
     "save_ptz_preset",
     "go_to_preset",
     "calibrate_ptz",
+    "move_to_position",
+    "stop_ptz",
     "start_patrol_cruise",
     "PTZMoveResult",
     "PTZParameters",
@@ -172,6 +177,7 @@ __all__ = [
     "CruiseResult",
     "PTZDirection",
     "ZoomAction",
+    "PTZInfo",
     # tracking
     "track_vehicles",
     "track_human_shapes",

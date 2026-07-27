@@ -38,7 +38,7 @@ TOOLS = [
     # ── Device Management ──
     Tool(
         name="get_registered_cameras",
-        description="从 config.yaml 加载所有已注册摄像头配置。每次对话开始时必须先调用此函数，检查是否有缓存的摄像头信息。",
+        description="加载所有已注册摄像头配置。会话开始时必须先调用。",
         inputSchema={
             "type": "object",
             "properties": {},
@@ -47,29 +47,29 @@ TOOLS = [
     ),
     Tool(
         name="register_camera",
-        description="将摄像头信息写入 config.yaml，持久化凭据供下次自动连接。首次成功连接摄像头后调用。",
+        description="持久化摄像头凭据到配置文件，供下次自动连接。",
         inputSchema={
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "摄像头唯一名称"},
                 "ip": {"type": "string", "description": "IP 地址"},
-                "port": {"type": "integer", "description": "ONVIF 端口（默认 80）", "default": 80},
-                "username": {"type": "string", "description": "登录用户名（默认 admin）", "default": "admin"},
+                "port": {"type": "integer", "description": "ONVIF 端口", "default": 80},
+                "username": {"type": "string", "description": "登录用户名", "default": "admin"},
                 "password": {"type": "string", "description": "登录密码"},
-                "rtsp_port": {"type": "integer", "description": "RTSP 端口（默认 554）", "default": 554},
-                "rtsp_path": {"type": "string", "description": "主流路径（默认 /stream1）", "default": "/stream1"},
+                "rtsp_port": {"type": "integer", "description": "RTSP 端口", "default": 554},
+                "rtsp_path": {"type": "string", "description": "主流路径", "default": "/stream1"},
                 "device_class": {"type": "string", "description": "设备类型: password_required / direct_connect"},
                 "connection_type": {"type": "string", "description": "连接类型: onvif / usb", "default": "onvif"},
                 "sn_code": {"type": "string", "description": "序列号"},
                 "pkdk": {"type": "string", "description": "设备公钥标识"},
-                "rtsp_sub_path": {"type": "string", "description": "子流路径（默认 /stream2）", "default": "/stream2"},
+                "rtsp_sub_path": {"type": "string", "description": "子流路径", "default": "/stream2"},
             },
             "required": ["name"],
         },
     ),
     Tool(
         name="search_devices",
-        description="搜索局域网可用摄像头。支持 WS-Discovery、创维私有协议(SKY_DISCOVERY)、USB 三种发现方式。",
+        description="搜索局域网可用摄像头，支持 WS-Discovery、SKY_DISCOVERY、USB 三种方式。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -81,7 +81,7 @@ TOOLS = [
                 },
                 "timeout": {
                     "type": "number",
-                    "description": "超时时间（秒，默认 15）",
+                    "description": "超时秒数",
                     "default": 15.0,
                 },
             },
@@ -89,24 +89,24 @@ TOOLS = [
     ),
     Tool(
         name="connect_device",
-        description="连接摄像头设备。自动从 config.yaml 加载缓存的凭据；若无缓存则探测是否需要密码。",
+        description="连接摄像头。自动加载缓存凭据；无缓存时探测是否需要密码。",
         inputSchema={
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "摄像头名称"},
-                "password": {"type": "string", "description": "用户提供的密码（可选）"},
-                "ip": {"type": "string", "description": "设备 IP（新发现设备时需传入）"},
-                "port": {"type": "integer", "description": "ONVIF 端口（默认 80）"},
-                "rtsp_port": {"type": "integer", "description": "RTSP 端口（默认 554）"},
-                "rtsp_path": {"type": "string", "description": "RTSP 路径（默认 /stream1）"},
-                "username": {"type": "string", "description": "登录用户名（默认 admin）"},
+                "password": {"type": "string", "description": "用户密码（可选）"},
+                "ip": {"type": "string", "description": "设备 IP"},
+                "port": {"type": "integer", "description": "ONVIF 端口"},
+                "rtsp_port": {"type": "integer", "description": "RTSP 端口"},
+                "rtsp_path": {"type": "string", "description": "RTSP 路径"},
+                "username": {"type": "string", "description": "登录用户名"},
             },
             "required": ["camera_name"],
         },
     ),
     Tool(
         name="disconnect_device",
-        description="断开与摄像头的连接，释放所有资源（停止流、释放会话、关闭连接）。",
+        description="断开摄像头连接，释放所有资源。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -117,7 +117,7 @@ TOOLS = [
     ),
     Tool(
         name="query_device_model",
-        description="查询设备型号、固件版本、在线状态、网络信息。",
+        description="查询设备型号、固件版本、在线状态。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -130,14 +130,14 @@ TOOLS = [
     # ── Stream ──
     Tool(
         name="get_audio_video_stream",
-        description="拉取实时音视频流。获取 RTSP URL 并验证流可用性，返回编码格式、分辨率、帧率等元数据。",
+        description="获取实时视频流 URL，返回编码格式、分辨率、帧率等元数据。",
         inputSchema={
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "摄像头名称"},
                 "sub_stream": {
                     "type": "boolean",
-                    "description": "是否使用子码流（低画质）",
+                    "description": "使用子码流（低画质）",
                     "default": False,
                 },
             },
@@ -146,19 +146,19 @@ TOOLS = [
     ),
     Tool(
         name="capture_video_screenshot",
-        description="截取当前视频流画面并保存为 JPEG 文件。从 RTSP 流中捕获一帧，自动丢弃前几帧以获得稳定画面。",
+        description="截取当前视频流画面并保存为 JPEG。",
         inputSchema={
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "摄像头名称"},
-                "save_path": {"type": "string", "description": "保存目录路径（默认 snapshots/）"},
+                "save_path": {"type": "string", "description": "保存目录"},
             },
             "required": ["camera_name"],
         },
     ),
     Tool(
         name="toggle_recording",
-        description="启动或停止本地录像。开始录像时将 RTSP 流录制到本地 MP4 文件。",
+        description="启动或停止本地录像，录制为 MP4 文件。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -166,16 +166,16 @@ TOOLS = [
                 "action": {
                     "type": "string",
                     "enum": ["start", "stop"],
-                    "description": "start 开始录像 / stop 停止录像",
+                    "description": "start / stop",
                 },
-                "save_path": {"type": "string", "description": "录像保存目录（默认 recordings/）"},
+                "save_path": {"type": "string", "description": "录像保存目录"},
             },
             "required": ["camera_name", "action"],
         },
     ),
     Tool(
         name="manage_storage_status",
-        description="查询存储状态或设置存储路径、格式与策略（overwrite / stop_when_full / circular）。",
+        description="查询存储状态或设置存储路径、格式与策略。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -183,19 +183,19 @@ TOOLS = [
                 "action": {
                     "type": "string",
                     "enum": ["query", "set"],
-                    "description": "query 查询 / set 设置",
+                    "description": "query / set",
                     "default": "query",
                 },
-                "path": {"type": "string", "description": "存储路径（action=set 时有效）"},
+                "path": {"type": "string", "description": "存储路径"},
                 "format": {
                     "type": "string",
                     "enum": ["mp4", "avi", "jpg"],
-                    "description": "文件格式（action=set 时有效）",
+                    "description": "文件格式",
                 },
                 "policy": {
                     "type": "string",
                     "enum": ["overwrite", "stop_when_full", "circular"],
-                    "description": "存储策略（action=set 时有效）",
+                    "description": "存储策略",
                 },
             },
             "required": ["camera_name"],
@@ -205,7 +205,7 @@ TOOLS = [
     # ── PTZ ──
     Tool(
         name="control_ptz",
-        description="控制云台转动（上/下/左/右/左上/右下等 8 个方向）。仅 ONVIF 设备支持。",
+        description="控制云台转动方向，支持 8 个方向。移动指定秒数后自动停止。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -217,12 +217,12 @@ TOOLS = [
                 },
                 "speed": {
                     "type": "number",
-                    "description": "转动速度 0.0–1.0（默认 0.5）",
+                    "description": "速度 0.0–1.0",
                     "default": 0.5,
                 },
                 "duration_seconds": {
                     "type": "number",
-                    "description": "转动时长（秒，默认 1.0）",
+                    "description": "转动时长（秒）",
                     "default": 1.0,
                 },
             },
@@ -231,19 +231,19 @@ TOOLS = [
     ),
     Tool(
         name="control_lens_zoom",
-        description="控制镜头变焦（放大/缩小）。仅 ONVIF 设备支持。",
+        description="控制镜头变焦放大或缩小。变焦后自动停止。",
         inputSchema={
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "摄像头名称"},
                 "zoom_action": {
                     "type": "string",
-                    "enum": ["in", "out", "stop"],
-                    "description": "in 放大 / out 缩小 / stop 停止",
+                    "enum": ["in", "out"],
+                    "description": "in 放大 / out 缩小",
                 },
                 "speed": {
                     "type": "number",
-                    "description": "变焦速度 0.0–1.0（默认 0.5）",
+                    "description": "速度 0.0–1.0",
                     "default": 0.5,
                 },
             },
@@ -252,7 +252,7 @@ TOOLS = [
     ),
     Tool(
         name="get_ptz_parameters",
-        description="获取当前云台参数（pan/tilt/zoom 位置和范围）。",
+        description="获取当前云台位置、范围和运动状态。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -275,7 +275,7 @@ TOOLS = [
     ),
     Tool(
         name="go_to_preset",
-        description="将云台移动到指定预置点位置。",
+        description="将云台移动到已保存的预置点位置。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -283,6 +283,42 @@ TOOLS = [
                 "preset_name": {"type": "string", "description": "预置点名称"},
             },
             "required": ["camera_name", "preset_name"],
+        },
+    ),
+    Tool(
+        name="calibrate_ptz",
+        description="执行云台物理校准，回到初始位并重新标定零位。耗时约 10–30 秒。",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "camera_name": {"type": "string", "description": "摄像头名称"},
+            },
+            "required": ["camera_name"],
+        },
+    ),
+    Tool(
+        name="move_to_position",
+        description="移动云台到指定绝对坐标。坐标范围通过 get_ptz_parameters 查询。",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "camera_name": {"type": "string", "description": "摄像头名称"},
+                "x": {"type": "integer", "description": "水平坐标"},
+                "y": {"type": "integer", "description": "垂直坐标"},
+                "z": {"type": "number", "description": "变焦倍数", "default": 1.0},
+            },
+            "required": ["camera_name", "x", "y"],
+        },
+    ),
+    Tool(
+        name="stop_ptz",
+        description="立即停止云台所有移动。",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "camera_name": {"type": "string", "description": "摄像头名称"},
+            },
+            "required": ["camera_name"],
         },
     ),
     Tool(
@@ -295,16 +331,16 @@ TOOLS = [
                 "action": {
                     "type": "string",
                     "enum": ["start", "stop"],
-                    "description": "start 启动巡航 / stop 停止巡航",
+                    "description": "start / stop",
                 },
                 "preset_list": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "预置点名称列表（action=start 时使用）",
+                    "description": "预置点名称列表",
                 },
                 "dwell_seconds": {
                     "type": "number",
-                    "description": "每个预置点停留时间（秒，默认 5）",
+                    "description": "每个预置点停留秒数",
                     "default": 5.0,
                 },
             },
@@ -315,7 +351,7 @@ TOOLS = [
     # ── Tracking ──
     Tool(
         name="track_vehicles",
-        description="启动或停止车辆追踪（AI 识别行驶车辆并控制云台跟随）。",
+        description="启动或停止车辆追踪。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -323,7 +359,7 @@ TOOLS = [
                 "action": {
                     "type": "string",
                     "enum": ["start", "stop"],
-                    "description": "start 启动追踪 / stop 停止追踪",
+                    "description": "start / stop",
                 },
             },
             "required": ["camera_name", "action"],
@@ -331,7 +367,7 @@ TOOLS = [
     ),
     Tool(
         name="track_human_shapes",
-        description="启动或停止人形追踪（AI 识别行人并控制云台跟随）。",
+        description="启动或停止人形追踪，云台自动跟随目标。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -339,7 +375,7 @@ TOOLS = [
                 "action": {
                     "type": "string",
                     "enum": ["start", "stop"],
-                    "description": "start 启动追踪 / stop 停止追踪",
+                    "description": "start / stop",
                 },
             },
             "required": ["camera_name", "action"],
@@ -347,7 +383,7 @@ TOOLS = [
     ),
     Tool(
         name="monitor_zone_entry",
-        description="区域监控——启动或停止指定矩形区域的入侵检测。",
+        description="启动或停止矩形区域入侵检测。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -355,13 +391,13 @@ TOOLS = [
                 "action": {
                     "type": "string",
                     "enum": ["start", "stop"],
-                    "description": "start 启动监控 / stop 停止监控",
+                    "description": "start / stop",
                 },
-                "zone_name": {"type": "string", "description": "监控区域名称"},
-                "x1": {"type": "number", "description": "区域左上角 X 坐标"},
-                "y1": {"type": "number", "description": "区域左上角 Y 坐标"},
-                "x2": {"type": "number", "description": "区域右下角 X 坐标"},
-                "y2": {"type": "number", "description": "区域右下角 Y 坐标"},
+                "zone_name": {"type": "string", "description": "区域名称"},
+                "x1": {"type": "number", "description": "左上角 X"},
+                "y1": {"type": "number", "description": "左上角 Y"},
+                "x2": {"type": "number", "description": "右下角 X"},
+                "y2": {"type": "number", "description": "右下角 Y"},
             },
             "required": ["camera_name", "action"],
         },
@@ -370,7 +406,7 @@ TOOLS = [
     # ── Image & Audio ──
     Tool(
         name="adjust_picture_settings",
-        description="调整画面参数（亮度、对比度、饱和度、锐度、曝光值）。",
+        description="调整画面亮度、对比度、饱和度、锐度、曝光值。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -386,7 +422,7 @@ TOOLS = [
     ),
     Tool(
         name="flip_video_display",
-        description="设置画面翻转模式（正常/水平翻转/垂直翻转/180°旋转）。",
+        description="设置画面翻转模式。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -402,7 +438,7 @@ TOOLS = [
     ),
     Tool(
         name="configure_night_vision",
-        description="配置夜视模式（自动/全天红外/全天全彩/定时切换）。",
+        description="配置夜视模式。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -418,7 +454,7 @@ TOOLS = [
     ),
     Tool(
         name="set_floodlight_mode",
-        description="设置补光灯模式（自动/常亮/常灭/联动报警）。",
+        description="设置补光灯模式。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -434,12 +470,12 @@ TOOLS = [
     ),
     Tool(
         name="configure_microphone",
-        description="配置麦克风（开关、音量、降噪等级）。",
+        description="配置麦克风开关、音量、降噪。",
         inputSchema={
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "摄像头名称"},
-                "enabled": {"type": "boolean", "description": "是否开启麦克风"},
+                "enabled": {"type": "boolean", "description": "开启麦克风"},
                 "volume": {"type": "number", "description": "音量 0–100"},
                 "noise_reduction": {"type": "integer", "description": "降噪等级 0–5"},
             },
@@ -448,12 +484,12 @@ TOOLS = [
     ),
     Tool(
         name="configure_speaker",
-        description="配置扬声器（开关、音量）。",
+        description="配置扬声器开关、音量。",
         inputSchema={
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "摄像头名称"},
-                "enabled": {"type": "boolean", "description": "是否开启扬声器"},
+                "enabled": {"type": "boolean", "description": "开启扬声器"},
                 "volume": {"type": "number", "description": "音量 0–100"},
             },
             "required": ["camera_name"],
@@ -463,15 +499,15 @@ TOOLS = [
     # ── Alarm ──
     Tool(
         name="configure_alarm_settings",
-        description="配置报警设置（移动侦测、遮挡报警、声音报警的开关和灵敏度）。",
+        description="配置报警设置，包括移动侦测、遮挡报警、声音报警。",
         inputSchema={
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "摄像头名称"},
-                "motion_detection": {"type": "boolean", "description": "是否开启移动侦测"},
+                "motion_detection": {"type": "boolean", "description": "开启移动侦测"},
                 "motion_sensitivity": {"type": "integer", "description": "移动侦测灵敏度 1–10"},
-                "tamper_detection": {"type": "boolean", "description": "是否开启遮挡报警"},
-                "audio_detection": {"type": "boolean", "description": "是否开启声音报警"},
+                "tamper_detection": {"type": "boolean", "description": "开启遮挡报警"},
+                "audio_detection": {"type": "boolean", "description": "开启声音报警"},
                 "audio_sensitivity": {"type": "integer", "description": "声音报警灵敏度 1–10"},
             },
             "required": ["camera_name"],
@@ -479,7 +515,7 @@ TOOLS = [
     ),
     Tool(
         name="configure_alarm_push",
-        description="配置报警推送方式（APP推送/邮件/短信/电话）。",
+        description="配置报警推送方式。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -489,7 +525,7 @@ TOOLS = [
                     "enum": ["app_push", "email", "sms", "phone"],
                     "description": "推送方式",
                 },
-                "enabled": {"type": "boolean", "description": "是否启用该推送"},
+                "enabled": {"type": "boolean", "description": "启用该推送"},
             },
             "required": ["camera_name", "push_type", "enabled"],
         },
@@ -498,7 +534,7 @@ TOOLS = [
     # ── Encoding & OSD ──
     Tool(
         name="configure_video_encoding",
-        description="配置视频编码参数（编码格式、分辨率、码率、帧率、I帧间隔）。",
+        description="配置视频编码参数。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -523,13 +559,13 @@ TOOLS = [
     ),
     Tool(
         name="configure_osd_settings",
-        description="配置 OSD 水印设置（时间戳、摄像头名称、自定义文字的显示位置和对齐方式）。",
+        description="配置 OSD 水印设置。",
         inputSchema={
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "摄像头名称"},
-                "show_timestamp": {"type": "boolean", "description": "是否显示时间戳"},
-                "show_camera_name": {"type": "boolean", "description": "是否显示摄像头名称"},
+                "show_timestamp": {"type": "boolean", "description": "显示时间戳"},
+                "show_camera_name": {"type": "boolean", "description": "显示摄像头名称"},
                 "custom_text": {"type": "string", "description": "自定义文字"},
                 "position": {
                     "type": "string",
@@ -544,13 +580,13 @@ TOOLS = [
     # ── Discovery (创维私有协议) ──
     Tool(
         name="discover_sky_devices",
-        description="通过创维私有协议（SK_DISCOVERY_SEARCH）搜索局域网内的创维摄像头。使用组播地址 239.230.236.230:9008。",
+        description="搜索局域网内的创维摄像头。",
         inputSchema={
             "type": "object",
             "properties": {
                 "timeout": {
                     "type": "number",
-                    "description": "超时时间（秒，默认 15）",
+                    "description": "超时秒数",
                     "default": 15.0,
                 },
             },
@@ -558,7 +594,7 @@ TOOLS = [
     ),
     Tool(
         name="send_tcp_command",
-        description="通过创维 TCP 通道（端口 9010）向设备发送命令。需要 Basic Auth 认证。",
+        description="通过 TCP 通道向创维设备发送命令。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -657,6 +693,12 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
         return _serialize(tk.save_ptz_preset(**args))
     elif name == "go_to_preset":
         return _serialize(tk.go_to_preset(**args))
+    elif name == "calibrate_ptz":
+        return _serialize(tk.calibrate_ptz(**args))
+    elif name == "move_to_position":
+        return _serialize(tk.move_to_position(**args))
+    elif name == "stop_ptz":
+        return _serialize(tk.stop_ptz(**args))
     elif name == "start_patrol_cruise":
         return _serialize(tk.start_patrol_cruise(**args))
 
