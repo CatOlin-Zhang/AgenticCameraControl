@@ -44,7 +44,7 @@ python scripts/mcp_server.py
 }
 ```
 
-The MCP server exposes **34 tools** covering all 8 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and parameters.
+The MCP server exposes **33 tools** covering all 8 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and parameters.
 
 ## Core Workflow
 
@@ -107,7 +107,7 @@ Detailed code examples and parameter descriptions are available in [references/W
 | Module | Key Functions | Reference |
 |--------|--------------|----------|
 | `device_mgmt.py` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device` | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
-| `discovery.py` | `discover_sky_devices`, `send_tcp_command`, `SkyDiscoveryListener` | [commands/discovery.md](references/commands/discovery.md) |
+| `discovery.py` | `discover_sky_devices`, `SkyDiscoveryListener` | [commands/discovery.md](references/commands/discovery.md) |
 | `stream.py` | `capture_video_screenshot`, `get_audio_video_stream`, `toggle_recording`, `manage_storage_status` | [commands/stream.md](references/commands/stream.md) |
 | `ptz.py` | `control_ptz`, `control_lens_zoom`, `get_ptz_parameters`, `save_ptz_preset`, `go_to_preset`, `calibrate_ptz`, `move_to_position`, `stop_ptz`, `start_patrol_cruise` | [commands/ptz.md](references/commands/ptz.md) |
 | `tracking.py` | `track_human_shapes`, `track_vehicles`, `monitor_zone_entry` | [commands/tracking.md](references/commands/tracking.md) |

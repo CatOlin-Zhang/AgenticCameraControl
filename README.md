@@ -1,98 +1,261 @@
----
-name: xpai-camera-control
-description: Discover, connect, and control Skyworth cameras on the local network. Capabilities include device detection, streaming, snapshot capture, PTZ pan/tilt/zoom control, device management, AI tracking, alarm configuration, video encoding settings, and picture/audio adjustments. Use when the user wants to discover cameras, view a camera feed, capture snapshots, control PTZ, manage camera settings, or mentions ONVIF, RTSP, IP camera, webcam, or Skyworth cameras.
-license: MIT
-compatibility: Requires Python 3.10+, OpenCV, onvif-zeep, requests, psutil, and access to internet. Cameras must be on the same LAN for discovery.
-metadata:
-  version: "0.1.0"
+# AgenticCameraControl
+
+**[中文](#中文) | [English](#english)**
+
 ---
 
-# Camera Control Skill
+## 中文
 
-## When to Use
+局域网 IP 摄像头的智能控制系统。支持 ONVIF 协议摄像头和 USB 摄像头的自动发现、连接、视频流拉取、云台控制、设备管理等功能。
 
-Trigger this skill when the user:
-- Wants to see a camera feed, capture a snapshot, or record video
-- Asks to find or discover cameras on the network
-- Requests pan, tilt, zoom, or camera movement
-- Mentions ONVIF, RTSP, IP camera, webcam, or specific camera brands
-- Wants to configure camera settings (night vision, alarms, video encoding, OSD)
+核心模块 `xpai-camera-control` 可作为 MCP (Model Context Protocol) Server 运行，将 33 个摄像头控制工具暴露给 AI Agent 使用。
 
-## Core Workflow
+### 功能概览
 
-### Phase 0 — Session Init (must be done at the very beginning of the session)
+| 类别 | 能力 |
+|------|------|
+| **设备发现** | 局域网自动搜索摄像头，支持 WS-Discovery、USB 扫描 |
+| **设备连接** | 自动探测认证方式，凭据缓存与自动重连 |
+| **视频流** | RTSP 流地址获取、截图、录像、存储管理 |
+| **云台控制** | 8 方向移动、变焦、预置点、校准、绝对坐标定位、巡航 |
+| **AI 追踪** | 车辆追踪、人形追踪、区域入侵检测 |
+| **图像音频** | 画面设置、翻转、夜视、白光灯、麦克风、扬声器 |
+| **报警设置** | 报警声音、推送方式配置 |
+| **编码与 OSD** | 视频编码参数、OSD 叠加文字设置 |
 
-At the beginning of each session, check if there are any registered cameras in config.yaml:
+### 快速开始
 
-1. Call `get_registered_cameras()` to read the camera configurations (including credentials) saved in config.yaml
-2. For each registered camera, call `connect_device(cam.name)` — the tool will automatically use the credentials in config.yaml to connect, **no need for the user to input a password again**
-3. If config.yaml is empty or all registered cameras fail to connect → enter Phase 1
+#### 环境要求
 
-### Phase 1 — Discover Cameras
+- Python 3.10+
+- 摄像头与主机在同一局域网
 
-When Phase 0 cache is unavailable, call `search_devices()` to discover cameras on the local network.
+#### 安装依赖
 
-### Phase 2 — Connect & Authorize
+```bash
+cd xpai-camera-control
+pip install -r requirements.txt
+```
 
-For each discovered camera, call `connect_device()` to connect. **The specific connection process is handled internally by the tool** (stream probe → detect auth requirement → connect or prompt). The Agent's responsibilities are as follows:
+#### 运行 MCP Server
 
-| Scenario | Agent Operation |
-|----------|----------------|
-| **direct_connect** (stream probe succeeds) | Tool connects directly via RTSP → `ConnectResult(auth_method="direct")` — no user interaction |
-| **needs_password** (stream probe returns 401) | Tool returns `ConnectResult(status="needs_password", needs_password=True)` → Agent prompts user for password → Agent calls `connect_device(name, password=user_input)` with the IP/port info from the first call |
-| **Cached credentials** (config.yaml has password) | Tool auto-loads credentials → connects via ONVIF/RTSP/TCP → `ConnectResult(success=True)` — no user interaction |
-| **Connection successful** | Agent calls `register_camera()` to persist credentials to config.yaml → future sessions auto-connect via Phase 0 |
+```bash
+python scripts/mcp_server.py
+```
 
-### Phase 3 — Stream & Capture
+Server 通过 stdio 传输协议与 MCP 客户端通信，兼容 Claude Desktop 等 MCP 客户端。
 
-After a successful connection, perform streaming operations: `capture_video_screenshot()` for screenshots, `get_audio_video_stream()` for stream addresses, and `toggle_recording()` for recording. Screenshot files are saved in the system temporary directory.
+#### 作为 Python 库使用
 
-### Phase 4 — PTZ Control
+```python
+import scripts.toolkit as tk
 
-Only ONVIF cameras support: `control_ptz()` for direction control, `save_ptz_preset()` / `go_to_preset()` for presets. USB and pure RTSP cameras do not support PTZ.
+# 搜索局域网摄像头
+result = tk.search_devices(method="sky_discovery", timeout=10)
 
-Detailed code examples and parameter descriptions are available in [references/WORKFLOW.md](references/WORKFLOW.md).
+# 连接设备
+tk.connect_device("my_camera", ip="192.168.1.100")
 
-## Toolkit Modules
+# 截图
+screenshot = tk.capture_video_screenshot("my_camera")
+print(screenshot.file_path)
 
-8 modules in `scripts/toolkit/`, call with `import scripts.toolkit as tk`:
+# 云台控制
+tk.control_ptz("my_camera", direction="up", duration_seconds=2.0)
+```
 
-| Module | Key Functions | Purpose |
-|--------|--------------|--------|
-| `device_mgmt.py` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device` | Config, discovery, connection, management |
-| `discovery.py` | `discover_sky_devices`, `send_tcp_command`, `SkyDiscoveryListener` | Skyworth private protocol discovery & TCP channel |
-| `stream.py` | `capture_video_screenshot`, `get_audio_video_stream`, `toggle_recording` | Streaming, screenshot, recording |
-| `ptz.py` | `control_ptz`, `control_lens_zoom`, `save_ptz_preset`, `go_to_preset` | PTZ control |
-| `tracking.py` | `track_human_shapes`, `track_vehicles`, `monitor_zone_entry` | AI tracking |
-| `image_audio.py` | `adjust_picture_settings`, `configure_night_vision`, `configure_microphone` | Image and audio settings |
-| `alarm.py` | `configure_alarm_settings`, `configure_alarm_push` | Alarm settings |
-| `encoding_osd.py` | `configure_video_encoding`, `configure_osd_settings` | Encoding and OSD |
+### 项目结构
 
-Complete function signatures and security constraints are listed in [references/COMMANDS.md](references/COMMANDS.md).
+```
+AgenticCameraControl/
+├── xpai-camera-control/          # 核心技能包（MCP Server）
+│   ├── scripts/
+│   │   ├── mcp_server.py         # MCP Server 入口
+│   │   ├── toolkit/              # 工具函数集
+│   │   │   ├── discovery.py      # 设备发现
+│   │   │   ├── device_mgmt.py    # 设备管理与连接
+│   │   │   ├── stream.py         # 音视频流与存储
+│   │   │   ├── ptz.py            # 云台控制
+│   │   │   ├── tracking.py       # AI 追踪
+│   │   │   ├── image_audio.py    # 图像与音频设置
+│   │   │   ├── alarm.py          # 报警设置
+│   │   │   └── encoding_osd.py   # 编码与 OSD
+│   │   └── auth/                 # 认证模块
+│   ├── references/               # 技术参考文档
+│   │   └── commands/             # 各模块工具签名与参数说明
+│   ├── SKILL.md                  # Agent 技能描述文件
+│   ├── config.yaml               # 摄像头配置（运行时自动生成）
+│   └── requirements.txt          # Python 依赖
+├── phase1/                       # 阶段一：动态扫描 + 基础控制
+├── phase2/                       # 阶段二：SN 码认证体系
+└── phase3/                       # 阶段三：ONVIF 心跳包被动发现
+```
 
-## Security Constraints
+### 工具模块
 
-| Constraint | Rule | Applies To |
-|------------|------|-----------|
-| **Explicit Prompt** | Inform the user of the operation content before execution and wait for confirmation | PTZ, streaming, screenshots, picture settings, tracking |
-| **Code Validation** | Validate parameters, device status, and connection availability | Recording, microphone/speaker, firmware update, alarm configuration |
-| **Explicit Authorization** | Requires user password input | Firmware update, restart, factory reset, alarm push |
+8 个模块，共 33 个 MCP 工具：
 
+| 模块 | 说明 | 参考文档 |
+|------|------|----------|
+| `device_mgmt.py` | 设备注册、搜索、连接、断开 | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md) |
+| `discovery.py` | 局域网设备发现 | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md) |
+| `stream.py` | 视频流、截图、录像、存储 | [commands/stream.md](xpai-camera-control/references/commands/stream.md) |
+| `ptz.py` | 云台方向/变焦/预置点/校准/巡航 | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md) |
+| `tracking.py` | 车辆/人形追踪、区域监控 | [commands/tracking.md](xpai-camera-control/references/commands/tracking.md) |
+| `image_audio.py` | 画面/夜视/白光灯/音频设置 | [commands/image_audio.md](xpai-camera-control/references/commands/image_audio.md) |
+| `alarm.py` | 报警声音与推送配置 | [commands/alarm.md](xpai-camera-control/references/commands/alarm.md) |
+| `encoding_osd.py` | 视频编码与 OSD 文字叠加 | [commands/encoding_osd.md](xpai-camera-control/references/commands/encoding_osd.md) |
 
-## Configuration
+### 安全边界
 
-Camera configurations are saved in the skill's root directory under `config.yaml`. After a successful connection, the credentials are automatically written to config.yaml and are reused in subsequent conversations. Complete schema can be found in [references/CONFIG.md](references/CONFIG.md).
+本 skill 包遵循以下安全约束，确保不会对用户计算机产生预期之外的影响：
 
-## Limitations
+| 承诺 | 说明 |
+|------|------|
+| 请求-响应模式 | 所有工具为同步请求-响应，不启动后台线程或守护进程 |
+| 仅局域网通信 | 所有网络流量限于局域网内，无外网通信 |
+| 文件写入受限 | 仅写入 `config.yaml`、`snapshots/`、`recordings/` |
+| 无系统修改 | 不修改注册表、环境变量、系统服务 |
+| 无进程派生 | 不启动子进程或外部程序 |
 
-- Cameras and host must be on the same local network 
-- RTSP streams require local network connectivity
-- Password-required cameras return `needs_password` status if no cached credentials exist
+### 配置
 
+摄像头配置保存在 `xpai-camera-control/config.yaml`。首次连接成功后凭据会自动持久化，后续会话自动重连。完整 schema 见 [CONFIG.md](xpai-camera-control/references/CONFIG.md)。
 
-## References
+### 限制
 
-- [references/WORKFLOW.md](references/WORKFLOW.md) — Complete workflow examples, code snippets, and detailed usage for demo mode
-- [references/COMMANDS.md](references/COMMANDS.md) — Full function signatures, parameters, return values, and security constraints
-- [references/ARCHITECTURE.md](references/ARCHITECTURE.md) — System architecture, connection flow, device discovery protocols, and session rules
-- [references/CONFIG.md](references/CONFIG.md) — config.yaml complete schema and examples
+- 摄像头与主机须在同一局域网
+- 截图/录像功能依赖 `opencv-python`
+- MCP Server 仅支持 stdio 传输
+
+---
+
+## English
+
+An intelligent control system for IP cameras on local networks. Supports auto-discovery, connection, video streaming, PTZ control, and device management for ONVIF-compliant cameras and USB webcams.
+
+The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Server, exposing 33 camera control tools to AI Agents.
+
+### Features
+
+| Category | Capabilities |
+|----------|-------------|
+| **Discovery** | Auto-search cameras on LAN, supports WS-Discovery and USB scanning |
+| **Connection** | Auto-detect auth method, credential caching and auto-reconnect |
+| **Streaming** | RTSP stream URL retrieval, screenshots, recording, storage management |
+| **PTZ Control** | 8-directional movement, zoom, presets, calibration, absolute positioning, patrol cruise |
+| **AI Tracking** | Vehicle tracking, human shape tracking, zone intrusion detection |
+| **Image & Audio** | Picture settings, flip display, night vision, floodlight, microphone, speaker |
+| **Alarm** | Alarm sound and push notification configuration |
+| **Encoding & OSD** | Video encoding parameters, OSD text overlay |
+
+### Quick Start
+
+#### Requirements
+
+- Python 3.10+
+- Cameras and host on the same local network
+
+#### Install Dependencies
+
+```bash
+cd xpai-camera-control
+pip install -r requirements.txt
+```
+
+#### Run MCP Server
+
+```bash
+python scripts/mcp_server.py
+```
+
+The server communicates with MCP clients via stdio transport, compatible with Claude Desktop and other MCP clients.
+
+#### Use as a Python Library
+
+```python
+import scripts.toolkit as tk
+
+# Discover cameras on the LAN
+result = tk.search_devices(method="sky_discovery", timeout=10)
+
+# Connect to a device
+tk.connect_device("my_camera", ip="192.168.1.100")
+
+# Capture a screenshot
+screenshot = tk.capture_video_screenshot("my_camera")
+print(screenshot.file_path)
+
+# PTZ control
+tk.control_ptz("my_camera", direction="up", duration_seconds=2.0)
+```
+
+### Project Structure
+
+```
+AgenticCameraControl/
+├── xpai-camera-control/          # Core skill package (MCP Server)
+│   ├── scripts/
+│   │   ├── mcp_server.py         # MCP Server entry point
+│   │   ├── toolkit/              # Tool functions
+│   │   │   ├── discovery.py      # Device discovery
+│   │   │   ├── device_mgmt.py    # Device management & connection
+│   │   │   ├── stream.py         # Audio/video streaming & storage
+│   │   │   ├── ptz.py            # PTZ control
+│   │   │   ├── tracking.py       # AI tracking
+│   │   │   ├── image_audio.py    # Image & audio settings
+│   │   │   ├── alarm.py          # Alarm settings
+│   │   │   └── encoding_osd.py   # Encoding & OSD
+│   │   └── auth/                 # Authentication module
+│   ├── references/               # Technical reference docs
+│   │   └── commands/             # Per-module tool signatures & parameters
+│   ├── SKILL.md                  # Agent skill description file
+│   ├── config.yaml               # Camera config (auto-generated at runtime)
+│   └── requirements.txt          # Python dependencies
+├── phase1/                       # Phase 1: Dynamic scanning + basic control
+├── phase2/                       # Phase 2: SN-based authentication
+└── phase3/                       # Phase 3: ONVIF heartbeat passive discovery
+```
+
+### Toolkit Modules
+
+8 modules, 33 MCP tools in total:
+
+| Module | Description | Reference |
+|--------|-------------|-----------|
+| `device_mgmt.py` | Device registration, search, connection, disconnection | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md) |
+| `discovery.py` | LAN device discovery | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md) |
+| `stream.py` | Video streaming, screenshots, recording, storage | [commands/stream.md](xpai-camera-control/references/commands/stream.md) |
+| `ptz.py` | PTZ direction/zoom/presets/calibration/cruise | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md) |
+| `tracking.py` | Vehicle/human tracking, zone monitoring | [commands/tracking.md](xpai-camera-control/references/commands/tracking.md) |
+| `image_audio.py` | Picture/night vision/floodlight/audio settings | [commands/image_audio.md](xpai-camera-control/references/commands/image_audio.md) |
+| `alarm.py` | Alarm sound & push notification config | [commands/alarm.md](xpai-camera-control/references/commands/alarm.md) |
+| `encoding_osd.py` | Video encoding & OSD text overlay | [commands/encoding_osd.md](xpai-camera-control/references/commands/encoding_osd.md) |
+
+### Security Boundary
+
+This skill package operates within strict security constraints to ensure no unexpected impact on the user's system:
+
+| Guarantee | Description |
+|-----------|-------------|
+| Request-response only | All tools are synchronous request-response. No background threads or daemons. |
+| LAN-only communication | All network traffic stays within the local network. No internet communication. |
+| Restricted file writes | Only writes to `config.yaml`, `snapshots/`, and `recordings/` |
+| No system modifications | No registry changes, environment variable modifications, or system service installations. |
+| No process spawning | No subprocesses or external programs are launched. |
+
+### Configuration
+
+Camera configurations are stored in `xpai-camera-control/config.yaml`. Credentials are automatically persisted after the first successful connection and reused in subsequent sessions. See [CONFIG.md](xpai-camera-control/references/CONFIG.md) for the full schema.
+
+### Limitations
+
+- Cameras and host must be on the same local network
+- Screenshot/recording features require `opencv-python`
+- MCP Server supports stdio transport only
+
+---
+
+## License
+
+MIT

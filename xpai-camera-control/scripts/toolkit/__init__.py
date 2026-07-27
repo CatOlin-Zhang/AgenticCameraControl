@@ -111,6 +111,8 @@ from .device_mgmt import (
 )
 
 # ── discovery (创维私有协议) ──
+# 注意: send_tcp_command 保留导出供二次开发者直接调用，
+# 但不作为 MCP 工具暴露（已在 mcp_server.py 中移除注册）。
 from .discovery import (
     SkDiscoveredDevice,
     SkChannelInfo,

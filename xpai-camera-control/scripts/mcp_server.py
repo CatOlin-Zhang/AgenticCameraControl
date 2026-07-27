@@ -592,23 +592,8 @@ TOOLS = [
             },
         },
     ),
-    Tool(
-        name="send_tcp_command",
-        description="通过 TCP 通道向创维设备发送命令。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "ip": {"type": "string", "description": "设备 IP 地址"},
-                "service_type": {"type": "string", "description": "服务类型（如 device）"},
-                "cmd_name": {"type": "string", "description": "命令名称（如 SK_DEVICE_GET_INFO）"},
-                "username": {"type": "string", "description": "用户名", "default": "admin"},
-                "password": {"type": "string", "description": "密码"},
-                "timeout": {"type": "number", "description": "超时时间（秒）", "default": 5.0},
-                "port": {"type": "integer", "description": "TCP 端口", "default": 9010},
-            },
-            "required": ["ip", "service_type", "cmd_name", "password"],
-        },
-    ),
+    # 注意: send_tcp_command 为内部函数，不作为 MCP 工具暴露。
+    # 私有协议通信由 connect_device / control_ptz 等高层工具内部调用。
 ]
 
 
@@ -760,8 +745,6 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     # ── Discovery ──
     elif name == "discover_sky_devices":
         return _serialize(tk.discover_sky_devices(**args))
-    elif name == "send_tcp_command":
-        return _serialize(tk.send_tcp_command(**args))
 
     else:
         raise ValueError(f"Unknown tool: {name}")

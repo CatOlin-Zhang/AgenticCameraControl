@@ -15,16 +15,11 @@ Discover Skyworth cameras via private UDP protocol (SK_DISCOVERY_SEARCH).
 | **Parameters** | `timeout`: listen duration in seconds. `target_sn`: filter by specific SN (empty = all). `bind_port`: UDP receive port (default 9028 for tool). `use_broadcast`/`use_multicast`: enable broadcast/multicast sending. |
 | **Implementation** | UDP broadcast + multicast to `239.230.236.230:9008` → listen for SK_DISCOVERY_SEARCH_R on port 9028 |
 
-### `send_tcp_command(ip, command: dict, username="admin", password="", timeout: float = 10.0, port: int = 9010) -> dict`
+### `send_tcp_command(ip, command: dict, ...) -> dict` _(internal, not exposed as MCP tool)_
 
-Send a JSON command to a Skyworth camera via TCP channel (HTTP protocol with Basic Auth).
+Internal function used by `ptz.py` and `device_mgmt.py` for private protocol communication over TCP channel (HTTP + Basic Auth). Not available as an MCP tool — all private protocol operations are encapsulated in higher-level tools (`connect_device`, `control_ptz`, `calibrate_ptz`, etc.).
 
-| Aspect | Detail |
-|--------|--------|
-| **Safety** | None |
-| **Returns** | Parsed JSON response dict |
-| **Parameters** | `ip`: camera IP. `command`: JSON-serializable command dict (e.g. `{"cmd": "SK_DEVICE_GET_INFO"}`). `username`/`password`: Basic Auth credentials. `timeout`: socket timeout. `port`: TCP port (default 9010). |
-| **Implementation** | `POST /xiaopaitech/device_service HTTP/1.1` with Basic Auth header + JSON body |
+二次开发者可通过 `from scripts.toolkit.discovery import send_tcp_command` 直接调用。
 
 ### `SkyDiscoveryListener(callback, interval: float = 30.0)` _(not yet exposed as MCP tool)_
 
