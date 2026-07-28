@@ -9,9 +9,6 @@ Toolkit 5: 设备管理与维护
   - request_cloud_auth      向本地授权服务器发起授权请求（模拟智慧云）
   - poll_auth_status        轮询本地授权服务器，检查 Agent 授权状态
   - disconnect_device       断开摄像头连接并释放资源
-  - query_device_model      查询设备型号/固件/状态/网络信息
-  - update_firmware         固件更新与升级
-  - system_maintenance      系统维护（重启/云台矫正）
 """
 import base64
 import hashlib
@@ -68,12 +65,6 @@ class AuthStatus(str, Enum):
     ERROR = "error"                          # 服务器错误
 
 
-class MaintenanceAction(str, Enum):
-    REBOOT = "reboot"                        # 重启设备
-    CALIBRATE_PTZ = "calibrate_ptz"          # 云台矫正
-    FACTORY_RESET = "factory_reset"          # 恢复出厂设置
-
-
 # ──────────────────────────────────────────────
 #  数据结构
 # ──────────────────────────────────────────────
@@ -82,7 +73,7 @@ class MaintenanceAction(str, Enum):
 class DiscoveredDevice:
     """发现的设备信息"""
     ip: str                                   # IP 地址
-    onvif_port: int = 80                       # ONVIF 服务端口
+    onvif_port: int = 0                        # ONVIF 服务端口（0=未知，待连接时探测验证）
     rtsp_port: int = 554                       # RTSP 端口
     device_class: DeviceClass = DeviceClass.PASSWORD_REQUIRED
     sn_code: str = ""                          # 设备序列号
@@ -122,9 +113,10 @@ class ConnectResult:
     """设备连接返回结果"""
     success: bool                              # 连接是否成功
     auth_method: str = ""                      # 认证方式 ("password" / "direct")
-    status: str = "connected"                  # "connected" | "needs_password" | "failed"
+    status: str = "connected"                  # "connected" | "pending_auth" | "needs_password" | "failed"
     error_message: str = ""                    # 失败原因
     needs_password: bool = False               # True 表示需要密码，Agent 应提示用户输入
+    onvif_port: int = 0                        # 实际验证过的 ONVIF 端口（0=未验证成功）
 
 
 @dataclass
@@ -136,51 +128,12 @@ class DisconnectResult:
 
 
 @dataclass
-class DeviceInfo:
-    """设备详细信息"""
-    manufacturer: str = ""                     # 厂商
-    model: str = ""                            # 型号
-    firmware_version: str = ""                 # 固件版本
-    serial_number: str = ""                    # 序列号 (SN)
-    hardware_id: str = ""                      # 硬件 ID
-    ip_address: str = ""                       # IP 地址
-    mac_address: str = ""                      # MAC 地址
-    is_online: bool = False                    # 是否在线
-    network_type: str = ""                     # 网络类型 (WiFi / Ethernet)
-
-
-@dataclass
-class DeviceInfoResult:
-    """查询设备信息返回结果"""
-    success: bool
-    info: Optional[DeviceInfo] = None
-    error_message: str = ""
-
-
-@dataclass
-class FirmwareResult:
-    """固件更新返回结果"""
-    success: bool
-    old_version: str = ""                      # 旧版本号
-    new_version: str = ""                      # 新版本号
-    error_message: str = ""
-
-
-@dataclass
-class MaintenanceResult:
-    """系统维护返回结果"""
-    success: bool
-    action_performed: str = ""                 # 执行的维护操作名称
-    error_message: str = ""
-
-
-@dataclass
 class CameraConfig:
     """从 config.yaml 加载的摄像头配置"""
     name: str                                  # 摄像头名称
     connection_type: str = "onvif"             # "onvif" | "usb"
     ip: str = ""                               # IP 地址
-    port: int = 80                             # ONVIF 端口
+    port: int = 0                              # ONVIF 端口（0=未知，待探测验证）
     username: str = "admin"                    # 用户名
     password: str = ""                         # 密码（从 config.yaml 加载，不暴露给用户）
     rtsp_port: int = 554                       # RTSP 端口
@@ -287,6 +240,51 @@ def _onvif_post_with_auth(
         timeout=timeout,
     )
     return resp.status_code, resp.text
+
+
+# 常见 ONVIF 服务端口（创维实测 2000；80 多为 Web UI，需实际验证）
+_ONVIF_CANDIDATE_PORTS = [2000, 80, 8000, 8899]
+
+_ONVIF_PROBE_BODY = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" '
+    'xmlns:tds="http://www.onvif.org/ver10/device/wsdl">'
+    '<soap:Header/><soap:Body><tds:GetSystemDateAndTime/></soap:Body></soap:Envelope>'
+)
+
+
+def _probe_onvif_port(ip: str, hint_port: int = 0, timeout: float = 2.0) -> int:
+    """探测并验证设备真实的 ONVIF 服务端口。
+
+    向候选端口 POST 免鉴权的 GetSystemDateAndTime，只有返回 SOAP Envelope
+    的端口才认定为 ONVIF 端口（Web UI 端口会返回 HTML/404，可确定性区分）。
+    候选顺序: hint_port（调用方线索）→ 常见端口列表。
+
+    Returns:
+        验证成功的端口号；全部失败返回 0（表示未知，不可当事实持久化）。
+    """
+    if _requests_lib is None:
+        return 0
+    candidates = []
+    for p in [hint_port, *_ONVIF_CANDIDATE_PORTS]:
+        if p and p not in candidates:
+            candidates.append(p)
+    for p in candidates:
+        try:
+            resp = _requests_lib.post(
+                f"http://{ip}:{p}/onvif/device_service",
+                data=_ONVIF_PROBE_BODY.encode("utf-8"),
+                headers={"Content-Type": "application/soap+xml; charset=utf-8"},
+                timeout=timeout,
+            )
+            # 状态码不作硬性要求（部分设备对免鉴权请求回 400/401 的 SOAP Fault，
+            # 但只要 body 是 SOAP Envelope 即证明该端口提供 ONVIF 服务）
+            text = (resp.text or "")[:2048].lower()
+            if "envelope" in text and "<html" not in text:
+                return p
+        except Exception:
+            continue
+    return 0
 
 
 def _build_rtsp_url(ip: str, port: int, path: str, username: str = "", password: str = "") -> str:
@@ -405,7 +403,7 @@ def get_registered_cameras() -> List[CameraConfig]:
 def register_camera(
     name: str,
     ip: str = "",
-    port: int = 80,
+    port: int = 0,
     username: str = "admin",
     password: str = "",
     rtsp_port: int = 554,
@@ -431,7 +429,7 @@ def register_camera(
     Args:
         name:            摄像头唯一名称
         ip:              IP 地址
-        port:            ONVIF 端口（默认 80）
+        port:            ONVIF 端口（0=未知；只应传入验证过的真实端口，不要传假设值）
         username:        登录用户名（默认 "admin"）
         password:        登录密码（保存到 config.yaml，不显示给用户）
         rtsp_port:       RTSP 端口（默认 554）
@@ -572,7 +570,7 @@ def _search_sky_devices(timeout: float) -> SearchResult:
         for sd in sky_devices:
             dev = DiscoveredDevice(
                 ip=sd.ip,
-                onvif_port=sd.web_port,     # 创维设备的 ONVIF 服务一般在 web 端口
+                onvif_port=0,               # SK 协议只回报 web 端口，非 ONVIF 端口；置 0 待 connect_device 探测验证
                 rtsp_port=sd.rtsp_port,
                 device_class=DeviceClass.PASSWORD_REQUIRED,
                 sn_code=sd.sn,
@@ -630,12 +628,179 @@ def _search_usb_devices(timeout: float) -> SearchResult:
 
 
 def _search_ws_discovery_devices(timeout: float) -> SearchResult:
-    """通过 WS-Discovery 协议搜索 ONVIF 设备（占位，待集成）"""
-    # 后续可集成 phase1/phase3 的 WS-Discovery 实现
-    return SearchResult(
-        success=False,
-        error_message="WS-Discovery 暂未实现，请使用 sky_discovery 或 usb",
-    )
+    """通过 WS-Discovery 协议搜索 ONVIF 设备。
+
+    向多播地址 239.255.255.250:3702 发送 Probe（多网卡逐一发送），
+    解析 ProbeMatch 响应提取 IP、ONVIF 端口（XAddrs）、品牌/型号（Scopes）。
+    发现后用免密 RTSP 探测对设备分类（open → direct_connect）。
+    """
+    import select
+    import uuid
+
+    probe_wait = max(1.0, min(timeout, 5.0))
+
+    # ── Step 1: 每个本机网卡发送一次多播 Probe ──
+    socks = []
+    for local_ip in _list_local_ipv4():
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((local_ip, 0))
+            s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
+                         socket.inet_aton(local_ip))
+            s.setblocking(False)
+            probe = _WS_PROBE_TEMPLATE.format(msg_id=uuid.uuid4()).encode("utf-8")
+            s.sendto(probe, (_WS_DISCOVERY_ADDR, _WS_DISCOVERY_PORT))
+            socks.append(s)
+        except Exception:
+            try:
+                s.close()
+            except Exception:
+                pass
+
+    if not socks:
+        return SearchResult(
+            success=False,
+            error_message="无可用网络接口，WS-Discovery 探测失败",
+        )
+
+    # ── Step 2: 在超时窗口内收集 ProbeMatch 响应 ──
+    found: Dict[str, dict] = {}
+    deadline = time.time() + probe_wait
+    while time.time() < deadline:
+        try:
+            ready, _, _ = select.select(socks, [], [], 0.5)
+        except Exception:
+            break
+        for s in ready:
+            try:
+                data, addr = s.recvfrom(65535)
+            except Exception:
+                continue
+            info = _parse_ws_probe_match(data)
+            if info and addr[0] not in found:
+                found[addr[0]] = info
+    for s in socks:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+    # ── Step 3: 免密 RTSP 探测分类 ──
+    devices = []
+    for ip, info in sorted(found.items()):
+        access = _probe_stream_access(ip, 554, "/stream1")
+        device_class = (
+            DeviceClass.DIRECT_CONNECT if access == "open"
+            else DeviceClass.PASSWORD_REQUIRED
+        )
+        devices.append(DiscoveredDevice(
+            ip=ip,
+            onvif_port=info["onvif_port"],
+            rtsp_port=554,
+            device_class=device_class,
+            model=info["model"],
+            manufacturer=info["brand"],
+            discovery_method="ws_discovery",
+        ))
+
+    return SearchResult(success=True, devices=devices)
+
+
+# ── WS-Discovery 协议常量与解析辅助 ──
+
+_WS_DISCOVERY_ADDR = "239.255.255.250"
+_WS_DISCOVERY_PORT = 3702
+
+_WS_PROBE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+            xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
+            xmlns:tds="http://schemas.xmlsoap.org/ws/2005/04/discovery"
+            xmlns:tns="http://www.onvif.org/ver10/network/wsdl/RemoteDiscoveryBinding">
+  <s:Header>
+    <wsa:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</wsa:Action>
+    <wsa:MessageID>uuid:{msg_id}</wsa:MessageID>
+    <wsa:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</wsa:To>
+  </s:Header>
+  <s:Body>
+    <tds:Probe>
+      <tds:Types>tns:NetworkVideoTransmitter</tds:Types>
+    </tds:Probe>
+  </s:Body>
+</s:Envelope>"""
+
+
+def _list_local_ipv4() -> List[str]:
+    """枚举本机所有非回环 IPv4 地址（多网卡时向每个接口发送多播探测）"""
+    addrs: List[str] = []
+    try:
+        import psutil
+        for _, addr_list in psutil.net_if_addrs().items():
+            for a in addr_list:
+                if a.family == socket.AF_INET and not a.address.startswith("127."):
+                    addrs.append(a.address)
+    except Exception:
+        pass
+    if not addrs:
+        # psutil 不可用时回退到默认路由接口
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            addrs.append(s.getsockname()[0])
+            s.close()
+        except Exception:
+            pass
+    return addrs
+
+
+def _parse_ws_probe_match(data: bytes) -> Optional[dict]:
+    """解析 WS-Discovery ProbeMatch/Hello XML。
+
+    提取 XAddrs（解析真实 ONVIF 端口——不一定是 80，创维实测为 2000）
+    和 Scopes（品牌 /name/、型号 /hardware/）。
+    Types 含 NetworkVideoTransmitter 才视为摄像头。
+    """
+    import xml.etree.ElementTree as ET
+    from urllib.parse import unquote
+
+    try:
+        text = data.decode("utf-8", errors="ignore")
+        start = text.find("<")
+        if start < 0:
+            return None
+        root = ET.fromstring(text[start:])
+    except Exception:
+        return None
+
+    def _find_text(tag: str) -> str:
+        for elem in root.iter():
+            if elem.tag.endswith("}" + tag) or elem.tag == tag:
+                return (elem.text or "").strip()
+        return ""
+
+    types_text = _find_text("Types")
+    if types_text and "NetworkVideoTransmitter" not in types_text:
+        return None
+
+    xaddrs = _find_text("XAddrs")
+    onvif_port = 0   # 0 = 未知（无 XAddrs 时不假设 80）
+    if xaddrs:
+        try:
+            parsed = urlparse(xaddrs.split()[0])
+            # XAddrs URL 未显式写端口时，HTTP 默认 80 是协议事实，可采信
+            onvif_port = parsed.port or 80
+        except Exception:
+            pass
+
+    brand = ""
+    model = ""
+    for scope in _find_text("Scopes").split():
+        if "/name/" in scope:
+            brand = unquote(scope.split("/name/")[-1])
+        elif "/hardware/" in scope:
+            model = unquote(scope.split("/hardware/")[-1])
+
+    return {"onvif_port": onvif_port, "xaddrs": xaddrs, "brand": brand, "model": model}
 
 
 def connect_device(
@@ -664,7 +829,7 @@ def connect_device(
         camera_name: 摄像头名称（匹配 config.yaml 注册名或发现后的临时名）
         password:    用户提供的密码（可选；有缓存时自动使用）
         ip:          设备 IP（新发现的设备，未注册到 config.yaml 时需传入）
-        port:        ONVIF 端口（默认 80）
+        port:        ONVIF 端口（可选；不传或传错时由工具自动探测验证真实端口）
         rtsp_port:   RTSP 端口（默认 554）
         rtsp_path:   RTSP 路径（默认 /stream1）
         username:    登录用户名（默认 admin）
@@ -691,7 +856,7 @@ def connect_device(
         dev_class = cached.device_class or ""
     elif ip:
         dev_ip = ip
-        dev_port = port or 80
+        dev_port = port or 0   # 0 = 未知，交由连接流程探测验证（不再假设 80）
         dev_rtsp_port = rtsp_port or 554
         dev_rtsp_path = rtsp_path
         dev_username = username
@@ -710,10 +875,15 @@ def connect_device(
             dev_username, dev_pwd,
         )
         if result.success:
-            # 连接成功 → 缓存密码（如有变更）
-            if not cached or cached.password != dev_pwd:
+            # 连接成功 → 持久化凭据与验证过的 ONVIF 端口。
+            # result.onvif_port 为实测验证值（0=未验证成功）；未验证时不把假设端口写盘，
+            # 保证 config.yaml 落盘结果只取决于设备事实，不随调用方传参漂移。
+            verified_port = result.onvif_port
+            port_changed = bool(verified_port) and (not cached or cached.port != verified_port)
+            if not cached or cached.password != dev_pwd or port_changed:
                 register_camera(
-                    name=camera_name, ip=dev_ip, port=dev_port,
+                    name=camera_name, ip=dev_ip,
+                    port=verified_port or (cached.port if cached else 0),
                     username=dev_username, password=dev_pwd,
                     rtsp_port=dev_rtsp_port, rtsp_path=dev_rtsp_path,
                     device_class=dev_class or "password_required",
@@ -765,19 +935,31 @@ def connect_device(
     access = _probe_stream_access(dev_ip, dev_rtsp_port, dev_rtsp_path)
 
     if access == "open":
-        # 免密设备，直接连接
-        _connected_devices[camera_name] = {
+        # 免密设备，直接连接（ONVIF 端口同样以探测验证结果为准）
+        verified_port = _probe_onvif_port(dev_ip, hint_port=dev_port)
+        conn_info = {
             "ip": dev_ip,
-            "port": dev_port,
+            "port": verified_port or dev_port,
             "rtsp_port": dev_rtsp_port,
             "rtsp_path": dev_rtsp_path,
             "username": "",
             "password": "",
         }
-        # 缓存为 direct_connect
+        # 尽力建立 ONVIF 连接（部分免密设备支持默认凭据/匿名 ONVIF，供 PTZ 控制使用）
+        if verified_port or dev_port:
+            try:
+                from onvif import ONVIFCamera
+                cam = ONVIFCamera(host=dev_ip, port=verified_port or dev_port,
+                                  user=dev_username or "admin", passwd=dev_pwd or "")
+                cam.create_devicemgmt_service().GetDeviceInformation()
+                conn_info["onvif_camera"] = cam
+            except Exception:
+                pass  # ONVIF 不可用不影响拉流，仅 PTZ 功能受限
+        _connected_devices[camera_name] = conn_info
+        # 缓存为 direct_connect（仅持久化验证过的端口，未验证则留 0 待解析）
         if not cached:
             register_camera(
-                name=camera_name, ip=dev_ip, port=dev_port,
+                name=camera_name, ip=dev_ip, port=verified_port,
                 username="", password="",
                 rtsp_port=dev_rtsp_port, rtsp_path=dev_rtsp_path,
                 device_class="direct_connect",
@@ -824,7 +1006,15 @@ def _try_connect_with_password(
     """
     使用密码尝试连接设备（TCP 通道 → ONVIF → RTSP 逐级尝试）。
     连接成功则记录到 _connected_devices。
+
+    确定性保证: 传入的 onvif_port 只作为探测线索（hint），不直接采信。
+    先探测验证设备真实 ONVIF 端口，成功路径统一使用验证后的端口，
+    并通过 ConnectResult.onvif_port 回传（0=未验证成功），供上层决定是否持久化。
     """
+    # ── Step 0: 探测验证真实 ONVIF 端口（不信任调用方传入的假设值）──
+    verified_port = _probe_onvif_port(ip, hint_port=onvif_port)
+    effective_port = verified_port or onvif_port  # 探测失败时保留 hint 供内存会话使用
+
     # ── 尝试 1: 创维 TCP 通道 (9010) ──
     test_cmd = {
         "service_type": "device",
@@ -841,44 +1031,48 @@ def _try_connect_with_password(
     )
     if resp is not None:
         _connected_devices[camera_name] = {
-            "ip": ip, "port": onvif_port,
+            "ip": ip, "port": effective_port,
             "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
             "username": username, "password": password,
             "tcp_port": SK_TCP_PORT,
         }
         return ConnectResult(
             success=True, auth_method="password", status="connected",
+            onvif_port=verified_port,
         )
 
-    # ── 尝试 2: ONVIF 连接 ──
-    try:
-        from onvif import ONVIFCamera
-        cam = ONVIFCamera(host=ip, port=onvif_port, user=username, passwd=password)
-        dev_svc = cam.create_devicemgmt_service()
-        dev_svc.GetDeviceInformation()
-        _connected_devices[camera_name] = {
-            "ip": ip, "port": onvif_port,
-            "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
-            "username": username, "password": password,
-            "onvif_camera": cam,
-        }
-        return ConnectResult(
-            success=True, auth_method="password", status="connected",
-        )
-    except Exception as onvif_err:
-        # ONVIF 失败，继续尝试 RTSP
-        pass
+    # ── 尝试 2: ONVIF 连接（使用验证过的端口）──
+    if effective_port:
+        try:
+            from onvif import ONVIFCamera
+            cam = ONVIFCamera(host=ip, port=effective_port, user=username, passwd=password)
+            dev_svc = cam.create_devicemgmt_service()
+            dev_svc.GetDeviceInformation()
+            _connected_devices[camera_name] = {
+                "ip": ip, "port": effective_port,
+                "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
+                "username": username, "password": password,
+                "onvif_camera": cam,
+            }
+            return ConnectResult(
+                success=True, auth_method="password", status="connected",
+                onvif_port=effective_port,  # ONVIF 鉴权调用成功，该端口即验证事实
+            )
+        except Exception:
+            # ONVIF 失败，继续尝试 RTSP
+            pass
 
     # ── 尝试 3: RTSP 带认证拉流 ──
     access = _probe_stream_access(ip, rtsp_port, rtsp_path, username, password)
     if access == "open":
         _connected_devices[camera_name] = {
-            "ip": ip, "port": onvif_port,
+            "ip": ip, "port": effective_port,
             "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
             "username": username, "password": password,
         }
         return ConnectResult(
             success=True, auth_method="password", status="connected",
+            onvif_port=verified_port,
         )
 
     return ConnectResult(
@@ -1082,7 +1276,7 @@ def _load_config_cameras() -> List[CameraConfig]:
                 name=entry.get("name", ""),
                 connection_type=entry.get("connection_type", "onvif"),
                 ip=entry.get("ip", ""),
-                port=int(entry.get("onvif_port", entry.get("port", 80))),
+                port=int(entry.get("onvif_port", entry.get("port", 0)) or 0),
                 username=entry.get("username", "admin"),
                 password=entry.get("password", ""),
                 rtsp_port=int(entry.get("rtsp_port", 554)),
@@ -1285,79 +1479,3 @@ def disconnect_device(
         session_released=False,
         error_message="设备未在连接列表中",
     )
-
-
-def query_device_model(
-    camera_name: str,
-) -> DeviceInfoResult:
-    """
-    查询设备型号、固件版本、在线状态、网络信息。
-
-    通过 ONVIF GetDeviceInformation 获取设备详细信息，
-    包括厂商、型号、固件版本、序列号、硬件 ID、网络状态等。
-
-    安全约束: 无特殊约束
-
-    Args:
-        camera_name: 摄像头名称（自动填充）
-
-    Returns:
-        DeviceInfoResult:
-            - success: 是否查询成功
-            - info: DeviceInfo 对象（含 manufacturer/model/firmware/serial/hardware_id/ip/mac/online）
-            - error_message: 失败原因
-    """
-    raise NotImplementedError("query_device_model 待实现")
-
-
-def update_firmware(
-    camera_name: str,
-    firmware_path: Optional[str] = None,
-) -> FirmwareResult:
-    """
-    固件更新与升级。
-
-    通过 ONVIF Device Service 或创维私有协议推送固件到设备。
-    更新前校验：固件版本、设备状态、电量/网络稳定性。
-    更新过程中设备可能重启，期间不可操作。
-
-    安全约束: 显式授权 + 显式提示 + 代码校验
-
-    Args:
-        camera_name:   摄像头名称（自动填充）
-        firmware_path: 固件文件路径（可选，None 则从云端获取最新固件）
-
-    Returns:
-        FirmwareResult:
-            - success: 更新是否成功
-            - old_version: 更新前的版本号
-            - new_version: 更新后的版本号
-            - error_message: 失败原因
-    """
-    raise NotImplementedError("update_firmware 待实现")
-
-
-def system_maintenance(
-    camera_name: str,
-    action: MaintenanceAction = MaintenanceAction.REBOOT,
-) -> MaintenanceResult:
-    """
-    系统维护（重启设备、云台矫正、恢复出厂设置）。
-
-    - reboot:         重启设备（ONVIF SystemReboot），设备将在约 30s 后重新上线
-    - calibrate_ptz:  云台矫正（回到 Home 位并重新标定零位）
-    - factory_reset:  恢复出厂设置（危险操作，将清除所有配置）
-
-    安全约束: 显式授权 + 显式提示 + 代码校验
-
-    Args:
-        camera_name: 摄像头名称（自动填充）
-        action:      维护操作 (MaintenanceAction)
-
-    Returns:
-        MaintenanceResult:
-            - success: 操作是否成功
-            - action_performed: 执行的维护操作名称
-            - error_message: 失败原因
-    """
-    raise NotImplementedError("system_maintenance 待实现")

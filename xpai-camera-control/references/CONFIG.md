@@ -26,7 +26,7 @@ cameras:
 
     # ONVIF-specific (dual-format fields for cross-scheme compatibility)
     ip: string                # Camera IP address
-    port: int                 # ONVIF service port (default: 80, parsed from XAddrs)
+    port: int                 # ONVIF service port (0 = unknown/unverified; auto-probed & written back by connect_device — Skyworth: 2000)
     onvif_port: int           # Alias for port (password auth scheme compatibility)
     username: string          # Login username (default: "admin")
     password: string          # Login password
@@ -84,7 +84,7 @@ Unique string identifier for the camera.
 | Field | Default | Notes |
 |-------|---------|-------|
 | `ip` | `""` | Required for ONVIF cameras. |
-| `port` | `80` | ONVIF service port. **Discovered cameras auto-fill from WS-Discovery XAddrs** (may not be 80). |
+| `port` | `0` (unknown) | ONVIF service port. **Only verified ports are persisted** — `connect_device` probes candidates (2000/80/8000/8899) and writes back the real port automatically (Skyworth cameras: 2000; port 80 is the web UI). `0` means not yet verified. |
 | `onvif_port` | — | Alias for `port`. Written for compatibility with password auth scheme. |
 | `username` | `"admin"` | ONVIF login username. |
 | `password` | `""` | ONVIF login password. Auto-cached to config.yaml after successful connection. |
@@ -146,8 +146,8 @@ cameras:
   - name: office_cam
     connection_type: onvif
     ip: 192.168.1.100
-    port: 80
-    onvif_port: 80
+    port: 2000          # verified ONVIF port (written back by connect_device)
+    onvif_port: 2000
     username: admin
     password: "my_password"
     rtsp_port: 554
@@ -194,8 +194,8 @@ cameras:
   - name: main_ipc
     connection_type: onvif
     ip: 192.168.1.100
-    port: 80
-    onvif_port: 80
+    port: 2000
+    onvif_port: 2000
     username: admin
     password: secret123
     rtsp_port: 554
@@ -212,7 +212,7 @@ cameras:
   - name: garden_cam
     connection_type: onvif
     ip: 192.168.1.200
-    port: 80
+    port: 2000
     username: admin
     password: ""
     rtsp_port: 554

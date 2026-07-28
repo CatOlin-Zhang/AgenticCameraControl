@@ -2,6 +2,8 @@
 
 Skyworth private protocol discovery and TCP channel — `scripts/toolkit/discovery.py`
 
+> **MCP-only:** All tools below are invoked exclusively through the MCP server (`scripts/mcp_server.py`). Never import this module directly or write standalone scripts to call these functions.
+
 ---
 
 ### `discover_sky_devices(timeout: float = 5.0, target_sn="", bind_port: int = 9028, use_broadcast: bool = True, use_multicast: bool = True) -> List[SkDiscoveredDevice]`
@@ -17,16 +19,15 @@ Discover Skyworth cameras via private UDP protocol (SK_DISCOVERY_SEARCH).
 
 ### `send_tcp_command(ip, command: dict, ...) -> dict` _(internal, not exposed as MCP tool)_
 
-Internal function used by `ptz.py` and `device_mgmt.py` for private protocol communication over TCP channel (HTTP + Basic Auth). Not available as an MCP tool — all private protocol operations are encapsulated in higher-level tools (`connect_device`, `control_ptz`, `calibrate_ptz`, etc.).
+Internal function used by `ptz.py` and `device_mgmt.py` for private protocol communication over TCP channel (HTTP + Basic Auth). Not available as an MCP tool — all private protocol operations are encapsulated in higher-level tools (`connect_device`, `control_ptz`, `calibrate_ptz`, etc.). Do not call it directly; use the higher-level MCP tools instead.
 
-二次开发者可通过 `from scripts.toolkit.discovery import send_tcp_command` 直接调用。
-
-### `SkyDiscoveryListener(callback, interval: float = 30.0)` _(not yet exposed as MCP tool)_
+### `SkyDiscoveryListener(interval: float = 30.0, timeout: float = 5.0, bind_port: int = 9028, on_found=None)` _(not yet exposed as MCP tool)_
 
 Background discovery listener that periodically searches for Skyworth devices.
 
 | Aspect | Detail |
 |--------|--------|
 | **Safety** | None |
+| **Parameters** | `interval`: seconds between search rounds. `timeout`: per-round listen duration. `bind_port`: UDP receive port. `on_found`: optional callback. |
 | **Methods** | `start()`, `stop()`, `get_devices()` |
-| **Callback** | Receives a single `SkDiscoveredDevice` argument for each newly discovered device |
+| **Callback** | `on_found` receives a single `SkDiscoveredDevice` argument for each newly discovered device |

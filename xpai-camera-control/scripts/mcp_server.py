@@ -53,7 +53,7 @@ TOOLS = [
             "properties": {
                 "name": {"type": "string", "description": "摄像头唯一名称"},
                 "ip": {"type": "string", "description": "IP 地址"},
-                "port": {"type": "integer", "description": "ONVIF 端口", "default": 80},
+                "port": {"type": "integer", "description": "ONVIF 端口（只传验证过的真实端口；未知请省略，由 connect_device 探测后自动回写）"},
                 "username": {"type": "string", "description": "登录用户名", "default": "admin"},
                 "password": {"type": "string", "description": "登录密码"},
                 "rtsp_port": {"type": "integer", "description": "RTSP 端口", "default": 554},
@@ -96,7 +96,7 @@ TOOLS = [
                 "camera_name": {"type": "string", "description": "摄像头名称"},
                 "password": {"type": "string", "description": "用户密码（可选）"},
                 "ip": {"type": "string", "description": "设备 IP"},
-                "port": {"type": "integer", "description": "ONVIF 端口"},
+                "port": {"type": "integer", "description": "ONVIF 端口（可选；不传或传错时工具会自动探测验证真实端口）"},
                 "rtsp_port": {"type": "integer", "description": "RTSP 端口"},
                 "rtsp_path": {"type": "string", "description": "RTSP 路径"},
                 "username": {"type": "string", "description": "登录用户名"},
@@ -107,17 +107,6 @@ TOOLS = [
     Tool(
         name="disconnect_device",
         description="断开摄像头连接，释放所有资源。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-            },
-            "required": ["camera_name"],
-        },
-    ),
-    Tool(
-        name="query_device_model",
-        description="查询设备型号、固件版本、在线状态。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -230,7 +219,7 @@ TOOLS = [
     # ── PTZ ──
     Tool(
         name="control_ptz",
-        description="控制云台转动方向，支持 8 个方向。移动指定秒数后自动停止。",
+        description="控制云台转动方向，支持 8 个方向。移动指定秒数后自动停止。内置物理极限守护：到达极限时自动提前停止或拦截指令，结果中 degraded=True 时必须将 degrade_reason 显式告知用户。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -255,27 +244,6 @@ TOOLS = [
         },
     ),
     Tool(
-        name="control_lens_zoom",
-        description="控制镜头变焦放大或缩小。变焦后自动停止。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "zoom_action": {
-                    "type": "string",
-                    "enum": ["in", "out"],
-                    "description": "in 放大 / out 缩小",
-                },
-                "speed": {
-                    "type": "number",
-                    "description": "速度 0.0–1.0",
-                    "default": 0.5,
-                },
-            },
-            "required": ["camera_name", "zoom_action"],
-        },
-    ),
-    Tool(
         name="get_ptz_parameters",
         description="获取当前云台位置、范围和运动状态。",
         inputSchema={
@@ -284,30 +252,6 @@ TOOLS = [
                 "camera_name": {"type": "string", "description": "摄像头名称"},
             },
             "required": ["camera_name"],
-        },
-    ),
-    Tool(
-        name="save_ptz_preset",
-        description="保存当前云台位置为预置点。", ##TODO
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "preset_name": {"type": "string", "description": "预置点名称"},
-            },
-            "required": ["camera_name", "preset_name"],
-        },
-    ),
-    Tool(
-        name="go_to_preset",
-        description="将云台移动到已保存的预置点位置。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "preset_name": {"type": "string", "description": "预置点名称"},
-            },
-            "required": ["camera_name", "preset_name"],
         },
     ),
     Tool(
@@ -321,20 +265,7 @@ TOOLS = [
             "required": ["camera_name"],
         },
     ),
-    Tool(
-        name="move_to_position",
-        description="移动云台到指定绝对坐标。坐标范围通过 get_ptz_parameters 查询。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "x": {"type": "integer", "description": "水平坐标"},
-                "y": {"type": "integer", "description": "垂直坐标"},
-                "z": {"type": "number", "description": "变焦倍数", "default": 1.0},
-            },
-            "required": ["camera_name", "x", "y"],
-        },
-    ),
+    # 注意: move_to_position 已降级为内部函数 (_move_to_position)，不作为 MCP 工具暴露。
     Tool(
         name="stop_ptz",
         description="立即停止云台所有移动。",
@@ -342,261 +273,6 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "摄像头名称"},
-            },
-            "required": ["camera_name"],
-        },
-    ),
-    Tool(
-        name="start_patrol_cruise",
-        description="启动或停止云台巡航（按预置点序列循环转动）。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "action": {
-                    "type": "string",
-                    "enum": ["start", "stop"],
-                    "description": "start / stop",
-                },
-                "preset_list": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "预置点名称列表",
-                },
-                "dwell_seconds": {
-                    "type": "number",
-                    "description": "每个预置点停留秒数",
-                    "default": 5.0,
-                },
-            },
-            "required": ["camera_name", "action"],
-        },
-    ),
-
-    # ── Tracking ──
-    Tool(
-        name="track_vehicles",
-        description="启动或停止车辆追踪。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "action": {
-                    "type": "string",
-                    "enum": ["start", "stop"],
-                    "description": "start / stop",
-                },
-            },
-            "required": ["camera_name", "action"],
-        },
-    ),
-    Tool(
-        name="track_human_shapes",
-        description="启动或停止人形追踪，云台自动跟随目标。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "action": {
-                    "type": "string",
-                    "enum": ["start", "stop"],
-                    "description": "start / stop",
-                },
-            },
-            "required": ["camera_name", "action"],
-        },
-    ),
-    Tool(
-        name="monitor_zone_entry",
-        description="启动或停止矩形区域入侵检测。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "action": {
-                    "type": "string",
-                    "enum": ["start", "stop"],
-                    "description": "start / stop",
-                },
-                "zone_name": {"type": "string", "description": "区域名称"},
-                "x1": {"type": "number", "description": "左上角 X"},
-                "y1": {"type": "number", "description": "左上角 Y"},
-                "x2": {"type": "number", "description": "右下角 X"},
-                "y2": {"type": "number", "description": "右下角 Y"},
-            },
-            "required": ["camera_name", "action"],
-        },
-    ),
-
-    # ── Image & Audio ──
-    Tool(
-        name="adjust_picture_settings",
-        description="调整画面亮度、对比度、饱和度、锐度、曝光值。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "brightness": {"type": "number", "description": "亮度 0–100"},
-                "contrast": {"type": "number", "description": "对比度 0–100"},
-                "saturation": {"type": "number", "description": "饱和度 0–100"},
-                "sharpness": {"type": "number", "description": "锐度 0–100"},
-                "exposure_value": {"type": "number", "description": "曝光值"},
-            },
-            "required": ["camera_name"],
-        },
-    ),
-    Tool(
-        name="flip_video_display",
-        description="设置画面翻转模式。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "flip_mode": {
-                    "type": "string",
-                    "enum": ["normal", "horizontal", "vertical", "both"],
-                    "description": "翻转模式",
-                },
-            },
-            "required": ["camera_name", "flip_mode"],
-        },
-    ),
-    Tool(
-        name="configure_night_vision",
-        description="配置夜视模式。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "mode": {
-                    "type": "string",
-                    "enum": ["auto", "infrared_always", "full_color_always", "scheduled"],
-                    "description": "夜视模式",
-                },
-            },
-            "required": ["camera_name", "mode"],
-        },
-    ),
-    Tool(
-        name="set_floodlight_mode",
-        description="设置补光灯模式。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "mode": {
-                    "type": "string",
-                    "enum": ["auto", "always_on", "always_off", "alarm_link"],
-                    "description": "补光灯模式",
-                },
-            },
-            "required": ["camera_name", "mode"],
-        },
-    ),
-    Tool(
-        name="configure_microphone",
-        description="配置麦克风开关、音量、降噪。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "enabled": {"type": "boolean", "description": "开启麦克风"},
-                "volume": {"type": "number", "description": "音量 0–100"},
-                "noise_reduction": {"type": "integer", "description": "降噪等级 0–5"},
-            },
-            "required": ["camera_name"],
-        },
-    ),
-    Tool(
-        name="configure_speaker",
-        description="配置扬声器开关、音量。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "enabled": {"type": "boolean", "description": "开启扬声器"},
-                "volume": {"type": "number", "description": "音量 0–100"},
-            },
-            "required": ["camera_name"],
-        },
-    ),
-
-    # ── Alarm ──
-    Tool(
-        name="configure_alarm_settings",
-        description="配置报警设置，包括移动侦测、遮挡报警、声音报警。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "motion_detection": {"type": "boolean", "description": "开启移动侦测"},
-                "motion_sensitivity": {"type": "integer", "description": "移动侦测灵敏度 1–10"},
-                "tamper_detection": {"type": "boolean", "description": "开启遮挡报警"},
-                "audio_detection": {"type": "boolean", "description": "开启声音报警"},
-                "audio_sensitivity": {"type": "integer", "description": "声音报警灵敏度 1–10"},
-            },
-            "required": ["camera_name"],
-        },
-    ),
-    Tool(
-        name="configure_alarm_push",
-        description="配置报警推送方式。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "push_type": {
-                    "type": "string",
-                    "enum": ["app_push", "email", "sms", "phone"],
-                    "description": "推送方式",
-                },
-                "enabled": {"type": "boolean", "description": "启用该推送"},
-            },
-            "required": ["camera_name", "push_type", "enabled"],
-        },
-    ),
-
-    # ── Encoding & OSD ──
-    Tool(
-        name="configure_video_encoding",
-        description="配置视频编码参数。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "stream_type": {
-                    "type": "string",
-                    "enum": ["main", "sub"],
-                    "description": "码流类型",
-                },
-                "codec": {
-                    "type": "string",
-                    "enum": ["h264", "h265", "mjpeg"],
-                    "description": "编码格式",
-                },
-                "resolution": {"type": "string", "description": "分辨率（如 1920x1080）"},
-                "bitrate": {"type": "integer", "description": "码率 (kbps)"},
-                "fps": {"type": "integer", "description": "帧率"},
-                "gop": {"type": "integer", "description": "I 帧间隔"},
-            },
-            "required": ["camera_name"],
-        },
-    ),
-    Tool(
-        name="configure_osd_settings",
-        description="配置 OSD 水印设置。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-                "show_timestamp": {"type": "boolean", "description": "显示时间戳"},
-                "show_camera_name": {"type": "boolean", "description": "显示摄像头名称"},
-                "custom_text": {"type": "string", "description": "自定义文字"},
-                "position": {
-                    "type": "string",
-                    "enum": ["top_left", "top_right", "bottom_left", "bottom_right"],
-                    "description": "OSD 位置",
-                },
             },
             "required": ["camera_name"],
         },
@@ -648,10 +324,7 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     import scripts.toolkit as tk
     from scripts.toolkit.device_mgmt import DiscoveryMethod
     from scripts.toolkit.stream import RecordingAction, StorageAction
-    from scripts.toolkit.ptz import PTZDirection, ZoomAction
-    from scripts.toolkit.tracking import TrackingAction, ZoneAction
-    from scripts.toolkit.image_audio import FlipMode, NightVisionMode, FloodlightMode
-    from scripts.toolkit.alarm import PushType
+    from scripts.toolkit.ptz import PTZDirection
 
     # ── Device Management ──
     if name == "get_registered_cameras":
@@ -667,8 +340,6 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
         return _serialize(tk.connect_device(**args))
     elif name == "disconnect_device":
         return _serialize(tk.disconnect_device(**args))
-    elif name == "query_device_model":
-        return _serialize(tk.query_device_model(**args))
     elif name == "request_cloud_auth":
         return _serialize(tk.request_cloud_auth(**args))
     elif name == "poll_auth_status":
@@ -696,80 +367,12 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
         if "direction" in args:
             args["direction"] = PTZDirection(args["direction"])
         return _serialize(tk.control_ptz(**args))
-    elif name == "control_lens_zoom":
-        args = dict(args)
-        if "zoom_action" in args:
-            args["zoom_action"] = ZoomAction(args["zoom_action"])
-        return _serialize(tk.control_lens_zoom(**args))
     elif name == "get_ptz_parameters":
         return _serialize(tk.get_ptz_parameters(**args))
-    elif name == "save_ptz_preset":
-        return _serialize(tk.save_ptz_preset(**args))
-    elif name == "go_to_preset":
-        return _serialize(tk.go_to_preset(**args))
     elif name == "calibrate_ptz":
         return _serialize(tk.calibrate_ptz(**args))
-    elif name == "move_to_position":
-        return _serialize(tk.move_to_position(**args))
     elif name == "stop_ptz":
         return _serialize(tk.stop_ptz(**args))
-    elif name == "start_patrol_cruise":
-        return _serialize(tk.start_patrol_cruise(**args))
-
-    # ── Tracking ──
-    elif name == "track_vehicles":
-        args = dict(args)
-        if "action" in args:
-            args["action"] = TrackingAction(args["action"])
-        return _serialize(tk.track_vehicles(**args))
-    elif name == "track_human_shapes":
-        args = dict(args)
-        if "action" in args:
-            args["action"] = TrackingAction(args["action"])
-        return _serialize(tk.track_human_shapes(**args))
-    elif name == "monitor_zone_entry":
-        args = dict(args)
-        if "action" in args:
-            args["action"] = ZoneAction(args["action"])
-        return _serialize(tk.monitor_zone_entry(**args))
-
-    # ── Image & Audio ──
-    elif name == "adjust_picture_settings":
-        return _serialize(tk.adjust_picture_settings(**args))
-    elif name == "flip_video_display":
-        args = dict(args)
-        if "flip_mode" in args:
-            args["flip_mode"] = FlipMode(args["flip_mode"])
-        return _serialize(tk.flip_video_display(**args))
-    elif name == "configure_night_vision":
-        args = dict(args)
-        if "mode" in args:
-            args["mode"] = NightVisionMode(args["mode"])
-        return _serialize(tk.configure_night_vision(**args))
-    elif name == "set_floodlight_mode":
-        args = dict(args)
-        if "mode" in args:
-            args["mode"] = FloodlightMode(args["mode"])
-        return _serialize(tk.set_floodlight_mode(**args))
-    elif name == "configure_microphone":
-        return _serialize(tk.configure_microphone(**args))
-    elif name == "configure_speaker":
-        return _serialize(tk.configure_speaker(**args))
-
-    # ── Alarm ──
-    elif name == "configure_alarm_settings":
-        return _serialize(tk.configure_alarm_settings(**args))
-    elif name == "configure_alarm_push":
-        args = dict(args)
-        if "push_type" in args:
-            args["push_type"] = PushType(args["push_type"])
-        return _serialize(tk.configure_alarm_push(**args))
-
-    # ── Encoding & OSD ──
-    elif name == "configure_video_encoding":
-        return _serialize(tk.configure_video_encoding(**args))
-    elif name == "configure_osd_settings":
-        return _serialize(tk.configure_osd_settings(**args))
 
     # ── Discovery ──
     elif name == "discover_sky_devices":

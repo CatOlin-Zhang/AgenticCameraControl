@@ -1,6 +1,6 @@
 ---
 name: xpai-camera-control
-description: Discover, connect, and control Skyworth cameras on the local network. Capabilities include device detection, streaming, snapshot capture, PTZ pan/tilt/zoom control, device management, AI tracking, alarm configuration, video encoding settings, and picture/audio adjustments. Runs as an MCP Server. Use when the user wants to discover cameras, view a camera feed, capture snapshots, control PTZ, manage camera settings, or mentions ONVIF, RTSP, IP camera, webcam, or Skyworth cameras.
+description: Discover, connect, and control Skyworth cameras on the local network. Capabilities include device detection, streaming, snapshot capture, PTZ pan/tilt control, and device management. Runs as an MCP Server. Use when the user wants to discover cameras, view a camera feed, capture snapshots, control PTZ, manage camera settings, or mentions ONVIF, RTSP, IP camera, webcam, or Skyworth cameras.
 license: MIT
 compatibility: Requires Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. Cameras must be on the same LAN for discovery.
 metadata:
@@ -14,9 +14,8 @@ metadata:
 Trigger this skill when the user:
 - Wants to see a camera feed, capture a snapshot, or record video
 - Asks to find or discover cameras on the network
-- Requests pan, tilt, zoom, camera movement, or PTZ calibration
+- Requests pan, tilt, camera movement, or PTZ calibration
 - Mentions ONVIF, RTSP, IP camera, webcam, or specific camera brands
-- Wants to configure camera settings (night vision, alarms, video encoding, OSD)
 - Wants to set up this skill as an MCP server for use with MCP-compatible clients
 
 ## Running Mode: MCP Server
@@ -44,7 +43,15 @@ python scripts/mcp_server.py
 }
 ```
 
-The MCP server exposes **35 tools** covering all 8 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and parameters.
+The MCP server exposes **16 tools** covering all 4 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and parameters.
+
+### MCP-Only Interaction (Hard Rule)
+
+All camera operations **MUST** go through the MCP tools exposed by `scripts/mcp_server.py`:
+
+- If the `xpai-camera-control` tools are **not present** in your available tool set, do NOT fall back to scripting. First register the MCP server in the client configuration (installing `requirements.txt` if needed), wait for the tools to load, then call them.
+- **NEVER** import `scripts.toolkit` (or any module inside this package) directly, and **NEVER** write standalone scripts that re-implement or wrap tool functionality.
+- Rationale: direct imports bypass the security constraints of this skill (explicit user confirmation, parameter validation) and the in-memory connection state held by the MCP server process — scripted calls in a separate process will silently violate both.
 
 ## Core Workflow
 
@@ -58,7 +65,11 @@ At the beginning of each session, check if there are any registered cameras in c
 
 ### Phase 1 — Discover Cameras
 
-When Phase 0 cache is unavailable, call `search_devices()` to discover cameras on the local network.
+When Phase 0 cache is unavailable, call `search_devices()` to discover cameras on the local network. Try **both** network discovery methods — they cover disjoint device sets:
+
+- `method="ws_discovery"` — standard ONVIF WS-Discovery (`239.255.255.250:3702`). **The only method that finds non-Skyworth ONVIF cameras**; also finds Skyworth IPCs. ONVIF port is parsed from XAddrs (not always 80).
+- `method="sky_discovery"` — Skyworth private multicast (`239.230.236.230:9008`). Only Skyworth devices respond, but returns richer metadata (SN, channels, MAC).
+- `method="usb"` — local USB camera enumeration.
 
 ### Phase 2 — Connect & Authorize
 
@@ -96,40 +107,33 @@ PTZ control uses a **dual-protocol strategy**: ONVIF is tried first, automatical
 | Capability | Tools | Protocol |
 |------------|-------|----------|
 | Directional movement (8 directions) | `control_ptz` | ONVIF → private fallback |
-| Zoom in/out | `control_lens_zoom` | ONVIF → private fallback |
 | Get position & ranges | `get_ptz_parameters` | ONVIF → private fallback |
 | Stop all movement | `stop_ptz` | ONVIF → private fallback |
-| Save/go to preset | `save_ptz_preset`, `go_to_preset` | ONVIF only |
 | Physical calibration | `calibrate_ptz` | Private protocol only |
-| Move to absolute (x,y,z) | `move_to_position` | Private protocol only |
-| Patrol cruise | `start_patrol_cruise` | ONVIF only |
 
-`control_ptz` and `control_lens_zoom` auto-stop after `duration_seconds` (default 1s) and 1.5s respectively. Direction parameter supports both English (`up`/`down`/`left`/`right`/`upleft`/`upright`/`downleft`/`downright`) and Chinese aliases (上/下/左/右/左上/右上/左下/右下).
+`control_ptz` auto-stops after `duration_seconds` (default 1s). Direction parameter supports both English (`up`/`down`/`left`/`right`/`upleft`/`upright`/`downleft`/`downright`) and Chinese aliases (上/下/左/右/左上/右上/左下/右下).
 
-Detailed code examples and parameter descriptions are available in [references/WORKFLOW.md](references/WORKFLOW.md).
+**Physical Limit Guard:** `control_ptz` validates the command against the PTZ's actual physical travel range at the tool layer — the agent does not need to pre-validate durations. If the head is already at the limit, the command is intercepted before being sent; if the limit is reached mid-movement (e.g. "turn right 5s" but only 3s of travel remains), the tool stops early and replaces the request with the feasible movement. In both cases the result carries `degraded=True` and a human-readable `degrade_reason`. **The Agent MUST explicitly relay `degrade_reason` to the user whenever `degraded=True`** — never report a degraded move as if it completed as requested.
+
+Detailed tool-call examples and parameter descriptions are available in [references/WORKFLOW.md](references/WORKFLOW.md).
 
 ## Toolkit Modules
 
-8 modules in `scripts/toolkit/`:
+4 modules in `scripts/toolkit/`:
 
 | Module | Key Functions | Reference |
 |--------|--------------|----------|
 | `device_mgmt.py` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device`, `request_cloud_auth`, `poll_auth_status` | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
 | `discovery.py` | `discover_sky_devices`, `SkyDiscoveryListener` | [commands/discovery.md](references/commands/discovery.md) |
 | `stream.py` | `capture_video_screenshot`, `get_audio_video_stream`, `toggle_recording`, `manage_storage_status` | [commands/stream.md](references/commands/stream.md) |
-| `ptz.py` | `control_ptz`, `control_lens_zoom`, `get_ptz_parameters`, `save_ptz_preset`, `go_to_preset`, `calibrate_ptz`, `move_to_position`, `stop_ptz`, `start_patrol_cruise` | [commands/ptz.md](references/commands/ptz.md) |
-| `tracking.py` | `track_human_shapes`, `track_vehicles`, `monitor_zone_entry` | [commands/tracking.md](references/commands/tracking.md) |
-| `image_audio.py` | `adjust_picture_settings`, `flip_video_display`, `configure_night_vision`, `set_floodlight_mode`, `configure_microphone`, `configure_speaker` | [commands/image_audio.md](references/commands/image_audio.md) |
-| `alarm.py` | `configure_alarm_settings`, `configure_alarm_push` | [commands/alarm.md](references/commands/alarm.md) |
-| `encoding_osd.py` | `configure_video_encoding`, `configure_osd_settings` | [commands/encoding_osd.md](references/commands/encoding_osd.md) |
+| `ptz.py` | `control_ptz`, `get_ptz_parameters`, `calibrate_ptz`, `stop_ptz` | [commands/ptz.md](references/commands/ptz.md) |
 
 ## Security Constraints
 
 | Constraint | Rule | Applies To |
 |------------|------|-----------|
-| **Explicit Prompt** | Inform the user of the operation content before execution and wait for confirmation | PTZ, streaming, screenshots, picture settings, tracking |
-| **Code Validation** | Validate parameters, device status, and connection availability | Recording, microphone/speaker, firmware update, alarm configuration |
-| **Explicit Authorization** | Requires user password input | Firmware update, restart, factory reset, alarm push |
+| **Explicit Prompt** | Inform the user of the operation content before execution and wait for confirmation | PTZ, streaming, screenshots |
+| **Code Validation** | Validate parameters, device status, and connection availability | Recording, storage configuration |
 | **Cloud Auth Flow** | Authorization server browser confirmation + password input | Password-required cameras without cached credentials (pending_auth flow) |
 
 ## Gotchas
@@ -138,14 +142,14 @@ Detailed code examples and parameter descriptions are available in [references/W
 - **`GetStreamUri` returns bare RTSP URLs without credentials.** The toolkit auto-injects auth via `_build_rtsp_url()` — do not use the raw URL directly.
 - **Chinese characters in Windows paths cause `cv2.imwrite()` to silently fail.** The toolkit uses `cv2.imencode()` + `numpy.tofile()` as a workaround.
 - **Connection state is in-memory only.** `connect_device()` and subsequent operations (`capture_video_screenshot()`, etc.) must run in the **same Python process** — cross-process calls will fail.
-- **Skyworth cameras use non-standard RTSP paths.** The toolkit auto-tries `/stream0` → `/md0_0` → `/stream1` → `/md0_1` → standard ONVIF paths.
+- **Skyworth cameras use non-standard RTSP paths.** When the configured path fails, the toolkit auto-tries fallback paths in order: standard ONVIF paths (`/Streaming/Channels/101` → `/h264/ch1/main/av_stream` → `/live`) → Skyworth paths (`/stream0` → `/md0_0` → `/stream1` → `/md0_1`).
 - **Authorization server unreachable → auto-degrades.** If `local_auth_url` is not reachable, `connect_device()` falls back to `needs_password` status (direct password input).
 
 ## Error Handling Policy
 
-When any MCP tool call fails or crashes, the Agent **MUST** follow these rules:
+When any MCP tool call fails, crashes, **or the MCP tools are unavailable in the current session**, the Agent **MUST** follow these rules:
 
-1. **Do NOT write workaround scripts or re-implement tool functionality.** Never attempt to bypass a tool failure by writing custom Python code, shell commands, or alternative implementations.
+1. **Do NOT write workaround scripts or re-implement tool functionality.** Never attempt to bypass a tool failure — or missing tool registration — by writing custom Python code, shell commands, or alternative implementations. If the tools are missing, register the MCP server (see [MCP-Only Interaction](#mcp-only-interaction-hard-rule)) instead of importing the toolkit directly.
 2. **Analyze the error.** Read the error message, traceback, or tool return value (e.g. `success=False`, `error_message`) to identify the root cause.
 3. **Report to the user.** Clearly explain:
    - **What failed** — which tool, what operation

@@ -1,309 +1,262 @@
 # Workflow Reference
 
-Detailed workflow examples, code snippets. This file supplements the concise instructions in `SKILL.md`.
+Detailed workflow examples with MCP tool-call sequences. This file supplements the concise instructions in `SKILL.md`.
+
+> **⚠️ MCP-Only Interaction.** Every example below is an **MCP tool invocation** (tool name + JSON arguments) against the running `scripts/mcp_server.py` — **not** Python code to execute. Never import `scripts.toolkit` or write standalone scripts to reproduce these flows; doing so bypasses the skill's security constraints and the server's in-memory connection state. See [SKILL.md — MCP-Only Interaction](../SKILL.md#mcp-only-interaction-hard-rule).
+
+Notation used below: `tool_name(arg1=value, arg2=value)` describes a single MCP tool call with its JSON arguments; `→` describes the returned result fields.
 
 ---
 
-## Phase 0 — Session Init: Detailed Code
+## Phase 0 — Session Init: Detailed Tool Calls
 
-```python
-import scripts.toolkit as tk
+```text
+1. get_registered_cameras()
+   → list of CameraConfig entries from config.yaml (name, ip, ports, credentials, device_class)
 
-# 1. Read registered cameras from config.yaml
-registered = tk.get_registered_cameras()
+2. For each registered camera:
+   connect_device(camera_name=<cam.name>)
+   → success=true  : connected using cached credentials (auth_method reported)
+   → success=false : note error_message, fall through to Phase 1 for this device
 
-# 2. Auto-connect each registered camera using cached credentials
-for cam in registered:
-    result = tk.connect_device(cam.name)
-    if result.success:
-        print(f"Connected: {cam.name} (auth: {result.auth_method})")
-    else:
-        print(f"Failed: {cam.name} — {result.error_message}")
-        # Fall through to Phase 1 to rediscover this device
-
-# 3. If config.yaml empty or all connections failed → Phase 1
+3. If config.yaml is empty or all connections failed → Phase 1
 ```
 
 ---
 
-## Phase 1 — Discover Cameras: Detailed Code
+## Phase 1 — Discover Cameras: Detailed Tool Calls
 
 ### ONVIF WS-Discovery
 
-```python
-import scripts.toolkit as tk
-result = tk.search_devices(method="ws_discovery", timeout=15)
-for d in result.devices:
-    print(f"{d.ip} — {d.model} — {d.device_class}")
+> **Preferred for standard ONVIF cameras** (non-Skyworth devices don't answer `sky_discovery` multicast). Sends a Probe to `239.255.255.250:3702` on every local interface; the ONVIF port is parsed from XAddrs (**not always 80** — Skyworth uses 2000), and each device is classified via an anonymous RTSP probe (`direct_connect` / `password_required`).
+
+```text
+search_devices(method="ws_discovery", timeout=5)
+→ result.devices[]: ip, onvif_port, model, manufacturer, device_class per device
 ```
 
 For protocol details (multicast addresses, message types, key fields), see [ARCHITECTURE.md — Device Discovery](ARCHITECTURE.md#device-discovery).
 
 ### Skyworth Private Protocol Discovery
 
-```python
-import scripts.toolkit as tk
-result = tk.search_devices(method="sky_discovery", timeout=10)
-for d in result.devices:
-    print(f"{d.ip} — SN:{d.sn} — {d.sky_subtype} — {d.sky_name}")
-    print(f"  RTSP port: {d.rtsp_port}, Web port: {d.sky_web_port}, MAC: {d.sky_mac}")
+```text
+search_devices(method="sky_discovery", timeout=10)
+→ result.devices[]: ip, sn, sky_subtype, sky_name, rtsp_port, sky_web_port, sky_mac per device
 ```
 
 For message format and field definitions, see [ARCHITECTURE.md — Skyworth Private Protocol](ARCHITECTURE.md#skyworth-private-protocol).
 
 ### USB Camera Enumeration
 
-```python
-import scripts.toolkit as tk
-result = tk.search_devices(method="usb")
-# Returns list of local USB cameras with device indices
+```text
+search_devices(method="usb")
+→ list of local USB cameras with device indices
 ```
 
 ---
 
-## Phase 2 — Connect & Authorize: Detailed Code
+## Phase 2 — Connect & Authorize: Detailed Tool Calls
 
 ### Direct-connect camera (no password needed)
 
-```python
-result = tk.connect_device("书房摄像头")
-# Tool probes RTSP → receives 200 OK → connects directly
-# auth_method will be "direct"
+```text
+connect_device(camera_name="书房摄像头")
+→ tool probes RTSP → receives 200 OK → connects directly
+→ auth_method="direct"
 ```
 
 ### Password-required camera with cached credentials
 
-```python
-# Credentials already on config.yaml from previous session
-result = tk.connect_device("客厅摄像头")
-# Tool reads username/password from config.yaml, verifies via ONVIF WS-UsernameToken
-# auth_method will be "password"
+```text
+# Credentials already in config.yaml from a previous session
+connect_device(camera_name="客厅摄像头")
+→ tool reads username/password from config.yaml, verifies via ONVIF WS-UsernameToken
+→ auth_method="password"
 ```
 
 ### Password-required camera with Local Auth Server (pending_auth flow)
 
-```python
-# Step 1: Initiate connection — tool detects password_required, sends auth request
-result = tk.connect_device("discovered_192_168_1_100")
+```text
+Step 1 — Initiate connection (tool detects password_required, sends auth request):
+  connect_device(camera_name="discovered_192_168_1_100")
+  → status="pending_auth" : auth server received the request, user sees it in browser
 
-# Step 2: Check if we're in pending_auth state
-if result.status == "pending_auth":
-    # Local auth server received the request, user sees it in browser
-    print(f"Waiting for user to confirm in browser: {result.error_message}")
+Step 2 — Poll auth status (every ~5s, max 120s ≈ 24 polls):
+  poll_auth_status(camera_name="discovered_192_168_1_100")
+  → status="pending"    : keep waiting, poll again after ~5s
+  → status="authorized" : proceed to Step 3
+  → status="rejected"   : stop — inform the user and abort
 
-    # Step 3: Poll auth status (every ~5s, max 120s)
-    import time
-    for _ in range(24):  # 24 * 5s = 120s max
-        time.sleep(5)
-        auth = tk.poll_auth_status("discovered_192_168_1_100")
-        if auth.status == tk.AuthStatus.AUTHORIZED:
-            print("User authorized in browser!")
-            break
-        elif auth.status == tk.AuthStatus.REJECTED:
-            print("User rejected authorization")
-            exit()
-        print(f"Still waiting... ({auth.message})")
+Step 3 — After authorization, ask the user for the camera password
+  (conversationally — the Agent prompts the user, never reads stdin)
 
-    # Step 4: After authorization, prompt user for password
-    password = input("Authorization confirmed. Please enter camera password: ")
+Step 4 — Re-connect with the password:
+  connect_device(
+    camera_name="discovered_192_168_1_100",
+    password=<user_input>,
+    ip="192.168.1.100",     # from Phase 1 discovery result (DiscoveredDevice.ip)
+    rtsp_port=554            # from DiscoveredDevice.rtsp_port
+  )
 
-    # Step 5: Re-connect with password
-    result = tk.connect_device(
-        "discovered_192_168_1_100",
-        password=password,
-        ip=result.ip or "192.168.1.100",
-        rtsp_port=result.rtsp_port or 554,
-    )
-
-if result.success:
-    # Step 6: Register to config.yaml — credentials saved for future sessions
-    tk.register_camera(
-        name="客厅摄像头",
-        ip="192.168.1.100",
-        port=80,
-        username="admin",
-        password=password,
-        device_class="password_required",
-    )
-    print("Connected and registered. Future sessions will auto-connect.")
-else:
-    print(f"Connection failed: {result.error_message}")
+Step 5 — On success, persist credentials for future sessions:
+  register_camera(
+    name="客厅摄像头",
+    ip="192.168.1.100",
+    username="admin",
+    password=<user_input>,
+    device_class="password_required"
+  )
+  # NOTE: omit `port` — connect_device already probed & persisted the verified
+  #       ONVIF port (Skyworth: 2000, NOT the web port 80); never pass a guess.
+  → future sessions will auto-connect via Phase 0
 ```
 
 ### Password-required camera without Local Auth Server (fallback)
 
-```python
-# Step 1: Initiate connection — auth server unreachable, falls back to needs_password
-result = tk.connect_device("discovered_192_168_1_100")
+```text
+Step 1 — Initiate connection (auth server unreachable, falls back):
+  connect_device(camera_name="discovered_192_168_1_100")
+  → status="needs_password"
 
-# Step 2: Direct password prompt (no browser step)
-if result.status == "needs_password":
-    password = input("Please enter the camera password: ")
+Step 2 — Ask the user for the camera password directly (no browser step)
 
-    # Step 3: Re-connect with user-provided password
-    result = tk.connect_device(
-        "discovered_192_168_1_100",
-        password=password,
-        ip=result.ip or "192.168.1.100",
-        rtsp_port=result.rtsp_port or 554,
-    )
+Step 3 — Re-connect with the password:
+  connect_device(
+    camera_name="discovered_192_168_1_100",
+    password=<user_input>,
+    ip="192.168.1.100",
+    rtsp_port=554
+  )
 
-if result.success:
-    tk.register_camera(
-        name="客厅摄像头",
-        ip="192.168.1.100",
-        port=80,
-        username="admin",
-        password=password,
-        device_class="password_required",
-    )
-    print("Connected and registered. Future sessions will auto-connect.")
-else:
-    print(f"Connection failed: {result.error_message}")
+Step 4 — On success:
+  register_camera(name="客厅摄像头", ip="192.168.1.100",
+                  username="admin", password=<user_input>,
+                  device_class="password_required")
+  # omit `port` — the verified ONVIF port was already persisted by connect_device
 ```
 
 ### Cloud Auth Tools (direct usage)
 
-```python
+```text
 # Manually request authorization (normally called by connect_device internally)
-auth_result = tk.request_cloud_auth(
-    camera_name="客厅摄像头",
-    sn="SN20240001",
-    device_ip="192.168.1.100",
-    device_model="LC2418",
+request_cloud_auth(
+  camera_name="客厅摄像头",
+  sn="SN20240001",
+  device_ip="192.168.1.100",
+  device_model="LC2418"
 )
-print(f"Auth request sent, claw_id={auth_result.claw_id}")
+→ success, claw_id
 
 # Poll for result
-status = tk.poll_auth_status("客厅摄像头")
-print(f"Status: {status.status} — {status.message}")
+poll_auth_status(camera_name="客厅摄像头")
+→ status, message
 ```
 
 ---
 
-## Phase 3 — Stream & Capture: Detailed Code
+## Phase 3 — Stream & Capture: Detailed Tool Calls
 
-```python
+```text
 # Capture a snapshot
-result = tk.capture_video_screenshot("客厅摄像头")
-print(f"Screenshot saved to: {result.file_path}")
+capture_video_screenshot(camera_name="客厅摄像头")
+→ file_path of the saved JPEG
 
 # Get stream URL
-result = tk.get_audio_video_stream("客厅摄像头")
-print(f"RTSP URL: {result.stream_url}")
+get_audio_video_stream(camera_name="客厅摄像头")
+→ stream_url (RTSP), codec, resolution, fps
 
 # Start/stop recording
-result = tk.toggle_recording("客厅摄像头", action="start")
-# ...
-result = tk.toggle_recording("客厅摄像头", action="stop")
+toggle_recording(camera_name="客厅摄像头", action="start")
+toggle_recording(camera_name="客厅摄像头", action="stop")
 ```
 
 > For non-ASCII path handling and same-process connection requirements, see [ARCHITECTURE.md — Known Issues](ARCHITECTURE.md#known-issues--implementation-notes).
 
 ### End-to-End: User says "I want to see the camera"
 
-```python
+```text
 # Assumes camera is already connected (Phase 0/2 complete)
 
-# Step 1: Capture screenshot for preview
-shot = tk.capture_video_screenshot("客厅摄像头")
-# → file_path: "snapshots/客厅摄像头_20260727_143052.jpg"
+Step 1 — Capture screenshot for preview:
+  capture_video_screenshot(camera_name="客厅摄像头")
+  → file_path: "snapshots/客厅摄像头_20260727_143052.jpg"
 
-# Step 2: Get RTSP stream URL for live viewing
-stream = tk.get_audio_video_stream("客厅摄像头")
-# → stream_url: "rtsp://admin:pass@192.168.1.100:554/stream1"
-# → codec: "H.264", resolution: "2560x1440", fps: 25
+Step 2 — Get RTSP stream URL for live viewing:
+  get_audio_video_stream(camera_name="客厅摄像头")
+  → stream_url: "rtsp://admin:pass@192.168.1.100:554/stream1"
+  → codec: "H.264", resolution: "2560x1440", fps: 25
 
-# Step 3: Agent delivers results to user
-# (a) Show the screenshot image using markdown:
-#     ![客厅摄像头截图](snapshots/客厅摄像头_20260727_143052.jpg)
-# (b) Tell user the RTSP URL:
-#     "RTSP live stream: rtsp://admin:***@192.168.1.100:554/stream1
-#      You can open this URL in VLC, ffplay, or PotPlayer for live viewing."
+Step 3 — Agent delivers BOTH results to the user:
+  (a) Show the screenshot image using markdown:
+      ![客厅摄像头截图](snapshots/客厅摄像头_20260727_143052.jpg)
+  (b) Tell user the RTSP URL:
+      "RTSP live stream: rtsp://admin:***@192.168.1.100:554/stream1
+       You can open this URL in VLC, ffplay, or PotPlayer for live viewing."
 ```
 
 ---
 
-## Phase 4 — PTZ Control: Detailed Code
+## Phase 4 — PTZ Control: Detailed Tool Calls
 
 PTZ uses a **dual-protocol strategy**: ONVIF is tried first, automatically falling back to the Skyworth private protocol when unavailable. All return results include a `protocol` field indicating which protocol was actually used.
 
 ### Directional movement (8 directions + Chinese aliases)
 
-```python
+```text
 # Basic 4 directions (auto-stop after duration_seconds, default 1.0s)
-tk.control_ptz("客厅摄像头", tk.PTZDirection.UP, speed=0.5)
-tk.control_ptz("客厅摄像头", tk.PTZDirection.LEFT, speed=0.5, duration_seconds=2.0)
+control_ptz(camera_name="客厅摄像头", direction="up", speed=0.5)
+control_ptz(camera_name="客厅摄像头", direction="left", speed=0.5, duration_seconds=2.0)
 
 # Diagonal directions
-tk.control_ptz("客厅摄像头", tk.PTZDirection.UPLEFT, speed=0.5)
-tk.control_ptz("客厅摄像头", tk.PTZDirection.DOWNRIGHT, speed=0.5)
+control_ptz(camera_name="客厅摄像头", direction="upleft", speed=0.5)
+control_ptz(camera_name="客厅摄像头", direction="downright", speed=0.5)
 
 # Chinese direction aliases are supported
-tk.control_ptz("客厅摄像头", "上", speed=0.5)
-tk.control_ptz("客厅摄像头", "左上", speed=0.5)
+control_ptz(camera_name="客厅摄像头", direction="上", speed=0.5)
+control_ptz(camera_name="客厅摄像头", direction="左上", speed=0.5)
 ```
 
-### Zoom control
+### Physical limit guard (degraded results)
 
-```python
-# Zoom in (auto-stop after 1.5s)
-tk.control_lens_zoom("客厅摄像头", tk.ZoomAction.IN, speed=0.5)
+`control_ptz` guards against commands that exceed the PTZ's physical travel range. When the requested duration cannot be fulfilled, the tool executes the feasible portion and marks the result as degraded:
 
-# Zoom out
-tk.control_lens_zoom("客厅摄像头", tk.ZoomAction.OUT, speed=0.5)
+```text
+# User asks: "右转 5 秒" — but only ~3s of travel remains
+control_ptz(camera_name="客厅摄像头", direction="right", duration_seconds=5.0)
+→ success=true, degraded=true, limit_reached=true
+→ requested_duration_seconds=5.0, actual_duration_seconds=3.2
+→ degrade_reason="请求朝 right 方向移动 5.0 秒，但云台在 3.2 秒后到达物理极限，已提前自动停止。..."
+
+# Head already at the right limit — command intercepted, nothing sent to the device
+control_ptz(camera_name="客厅摄像头", direction="right", duration_seconds=5.0)
+→ success=true, degraded=true, limit_reached=true, actual_duration_seconds=0.0
+→ degrade_reason="云台在 right 方向已处于物理极限位置（...），移动指令已被拦截..."
 ```
 
-### Preset positions (ONVIF only)
-
-```python
-# Save current position as preset
-tk.save_ptz_preset("客厅摄像头", "大门")
-
-# Go to saved preset
-tk.go_to_preset("客厅摄像头", "大门")
-```
+**Agent MUST relay `degrade_reason` to the user whenever `degraded=true`** — e.g. "你要求右转 5 秒，但云台在 3.2 秒后到达右侧物理极限，已自动提前停止". Never report a degraded move as fully completed.
 
 ### Get current PTZ status
 
-```python
-params = tk.get_ptz_parameters("客厅摄像头")
-print(f"Position: pan={params.pan}, tilt={params.tilt}, zoom={params.zoom}")
-print(f"Range: x_range={params.pan_range}, y_range={params.tilt_range}, z_range={params.zoom_range}")
-print(f"Moving: {params.is_moving}, Protocol: {params.protocol}")
+```text
+get_ptz_parameters(camera_name="客厅摄像头")
+→ pan, tilt, zoom positions
+→ pan_range, tilt_range, zoom_range
+→ is_moving, protocol
 ```
 
 ### Stop PTZ immediately
 
-```python
+```text
 # Stop all PTZ movement (ONVIF first, private fallback)
-tk.stop_ptz("客厅摄像头")
+stop_ptz(camera_name="客厅摄像头")
 ```
 
 ### Physical calibration (private protocol only)
 
-```python
+```text
 # Calibrate PTZ zero point (takes 10-30 seconds, Skyworth cameras only)
-result = tk.calibrate_ptz("客厅摄像头")
-print(f"Calibration: {'OK' if result.success else result.error_message}")
+calibrate_ptz(camera_name="客厅摄像头")
+→ success / error_message
 ```
 
-### Move to absolute coordinate (private protocol only)
-
-```python
-# First query the valid coordinate ranges
-params = tk.get_ptz_parameters("客厅摄像头")
-print(f"Valid range: x=[0,{params.pan_range}], y=[0,{params.tilt_range}], z=[0,{params.zoom_range}]")
-
-# Move to specific absolute position
-tk.move_to_position("客厅摄像头", x=1000, y=500, z=1.0)
-```
-
-### Patrol cruise (ONVIF only)
-
-```python
-# Start patrol through all saved presets (background thread)
-result = tk.start_patrol_cruise("客厅摄像头")
-print(f"Cruise started: {result.preset_count} presets, protocol={result.protocol}")
-```
-
+> Note: moving to an absolute coordinate is handled by the internal function `_move_to_position` (private protocol only). It is NOT registered as an MCP tool and cannot be invoked by the agent.

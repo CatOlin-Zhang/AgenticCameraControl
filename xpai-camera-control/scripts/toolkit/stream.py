@@ -223,7 +223,7 @@ def get_audio_video_stream(
         else:
             return StreamResult(
                 success=False,
-                error_message=f"���法从 {ip}:{rtsp_port} 获取视频流，请检查 RTSP 路径和认证信息",
+                error_message=f"无法从 {ip}:{rtsp_port} 获取视频流，请检查 RTSP 路径和认证信息",
             )
 
     # 获取流参数

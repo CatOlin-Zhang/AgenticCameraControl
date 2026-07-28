@@ -1,16 +1,14 @@
 """
-Toolkit 2: 云台与巡航
+Toolkit 2: 云台控制
 
 工具清单：
   - control_ptz          步进式控制云台方向（ONVIF 优先，私有协议兜底）
-  - control_lens_zoom    控制镜头自动变焦
   - get_ptz_parameters   获取云台位移与角度参数
-  - save_ptz_preset      保存当前角度为预置点
-  - go_to_preset         跳转到指定预置点
   - calibrate_ptz        执行云台物理校准（私有协议）
-  - move_to_position     移动到指定绝对坐标（私有协议）
   - stop_ptz             停止云台移动
-  - start_patrol_cruise  按预设路径巡航
+
+内部函数（不注册为 MCP 工具）：
+  - _move_to_position    移动到指定绝对坐标（私有协议，供内部/二次开发调用）
 
 协议策略:
   优先尝试 ONVIF PTZ Service，失败时自动降级到创维私有协议（SK_SETTING_SET_PTZ）。
@@ -19,10 +17,9 @@ Toolkit 2: 云台与巡航
 前提条件: 摄像头已通过 connect_device() 连接，且存在于 _connected_devices 中。
 """
 import time
-import threading
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from .discovery import send_tcp_command, SK_TCP_PORT
 
@@ -80,11 +77,6 @@ _SK_CMD_MAP: Dict[PTZDirection, str] = {
 }
 
 
-class ZoomAction(str, Enum):
-    IN = "in"
-    OUT = "out"
-
-
 @dataclass
 class PTZMoveResult:
     """云台移动操作返回结果"""
@@ -94,6 +86,12 @@ class PTZMoveResult:
     current_tilt: float = 0.0                    # 当前垂直位置
     current_zoom: float = 0.0                    # 当前变焦倍数
     error_message: str = ""                      # 失败原因
+    # ── 物理极限守护（降级信息，Agent 须在 degraded=True 时显式告知用户）──
+    requested_duration_seconds: float = 0.0      # 用户请求的移动时长
+    actual_duration_seconds: float = 0.0         # 实际移动时长（提前到达极限时小于请求值）
+    limit_reached: bool = False                  # 是否检测到到达物理极限
+    degraded: bool = False                       # 是否发生了降级（指令被截断替换为可行操作）
+    degrade_reason: str = ""                     # 降级原因说明（供 Agent 转述给用户）
 
 
 @dataclass
@@ -110,29 +108,9 @@ class PTZParameters:
 
 
 @dataclass
-class PTZPresetResult:
-    """预置点操作返回结果"""
-    success: bool                                # 是否成功
-    preset_name: str = ""                        # 预置点名称
-    preset_token: str = ""                       # 预置点 token
-    protocol: str = ""                           # 使用的协议
-    error_message: str = ""                      # 失败原因
-
-
-@dataclass
 class CalibrateResult:
     """云台校准返回结果"""
     success: bool                                # 校准是否完成
-    protocol: str = ""                           # 使用的协议
-    error_message: str = ""                      # 失败原因
-
-
-@dataclass
-class CruiseResult:
-    """巡航操作返回结果"""
-    success: bool                                # 巡航是否启动
-    cruise_name: str = ""                        # 巡航路径名称
-    preset_count: int = 0                        # 巡航经过的预置点数量
     protocol: str = ""                           # 使用的协议
     error_message: str = ""                      # 失败原因
 
@@ -244,37 +222,6 @@ def _onvif_ptz_move(camera_name: str, direction: PTZDirection, speed: float) -> 
         return PTZMoveResult(success=False, protocol="onvif", error_message=str(e))
 
 
-def _onvif_zoom(camera_name: str, action: ZoomAction, speed: float) -> PTZMoveResult:
-    """通过 ONVIF 执行变焦"""
-    conn = _get_conn_info(camera_name)
-    if not conn:
-        return PTZMoveResult(success=False, error_message=f"设备 {camera_name} 未连接")
-
-    onvif_cam = conn.get("onvif_camera")
-    if not onvif_cam:
-        return PTZMoveResult(success=False, error_message="无 ONVIF 连接对象")
-
-    try:
-        ptz = onvif_cam.create_ptz_service()
-        media = onvif_cam.create_media_service()
-        profiles = media.GetProfiles()
-        if not profiles:
-            return PTZMoveResult(success=False, protocol="onvif", error_message="无 Media Profile")
-
-        profile_token = profiles[0].token
-        zoom_val = 1.0 if action == ZoomAction.IN else -1.0
-
-        request = ptz.create_type('ContinuousMove')
-        request.ProfileToken = profile_token
-        request.Velocity = {
-            'Zoom': {'x': zoom_val * speed},
-        }
-        ptz.ContinuousMove(request)
-        return PTZMoveResult(success=True, protocol="onvif")
-    except Exception as e:
-        return PTZMoveResult(success=False, protocol="onvif", error_message=str(e))
-
-
 def _onvif_stop(camera_name: str) -> PTZMoveResult:
     """通过 ONVIF 停止云台"""
     conn = _get_conn_info(camera_name)
@@ -342,102 +289,6 @@ def _onvif_get_status(camera_name: str) -> PTZParameters:
         )
     except Exception:
         return PTZParameters(protocol="onvif")
-
-
-def _onvif_get_presets(camera_name: str) -> List[Dict[str, str]]:
-    """通过 ONVIF 获取预置位列表"""
-    conn = _get_conn_info(camera_name)
-    if not conn:
-        return []
-
-    onvif_cam = conn.get("onvif_camera")
-    if not onvif_cam:
-        return []
-
-    try:
-        ptz = onvif_cam.create_ptz_service()
-        media = onvif_cam.create_media_service()
-        profiles = media.GetProfiles()
-        if not profiles:
-            return []
-        presets = ptz.GetPresets({'ProfileToken': profiles[0].token})
-        result = []
-        for p in presets:
-            result.append({
-                'token': str(getattr(p, 'token', '')),
-                'name': str(getattr(p, 'Name', '')),
-            })
-        return result
-    except Exception:
-        return []
-
-
-def _onvif_goto_preset(camera_name: str, preset_name: str) -> PTZMoveResult:
-    """通过 ONVIF 跳转到预置位"""
-    conn = _get_conn_info(camera_name)
-    if not conn:
-        return PTZMoveResult(success=False, error_message=f"设备 {camera_name} 未连接")
-
-    onvif_cam = conn.get("onvif_camera")
-    if not onvif_cam:
-        return PTZMoveResult(success=False, error_message="无 ONVIF 连接对象")
-
-    try:
-        ptz = onvif_cam.create_ptz_service()
-        media = onvif_cam.create_media_service()
-        profiles = media.GetProfiles()
-        if not profiles:
-            return PTZMoveResult(success=False, protocol="onvif", error_message="无 Media Profile")
-
-        profile_token = profiles[0].token
-        presets = ptz.GetPresets({'ProfileToken': profile_token})
-        target = None
-        for p in presets:
-            if str(getattr(p, 'Name', '')) == preset_name or str(getattr(p, 'token', '')) == preset_name:
-                target = p
-                break
-        if not target:
-            available = [str(getattr(p, 'Name', getattr(p, 'token', '?'))) for p in presets]
-            return PTZMoveResult(
-                success=False, protocol="onvif",
-                error_message=f"预置位 '{preset_name}' 不存在，可用: {available}",
-            )
-
-        request = ptz.create_type('GotoPreset')
-        request.ProfileToken = profile_token
-        request.PresetToken = target.token
-        ptz.GotoPreset(request)
-        return PTZMoveResult(success=True, protocol="onvif")
-    except Exception as e:
-        return PTZMoveResult(success=False, protocol="onvif", error_message=str(e))
-
-
-def _onvif_save_preset(camera_name: str, preset_name: str) -> PTZPresetResult:
-    """通过 ONVIF 保存当前位为预置点"""
-    conn = _get_conn_info(camera_name)
-    if not conn:
-        return PTZPresetResult(success=False, error_message=f"设备 {camera_name} 未连接")
-
-    onvif_cam = conn.get("onvif_camera")
-    if not onvif_cam:
-        return PTZPresetResult(success=False, error_message="无 ONVIF 连接对象")
-
-    try:
-        ptz = onvif_cam.create_ptz_service()
-        media = onvif_cam.create_media_service()
-        profiles = media.GetProfiles()
-        if not profiles:
-            return PTZPresetResult(success=False, protocol="onvif", error_message="无 Media Profile")
-
-        profile_token = profiles[0].token
-        request = ptz.create_type('SetPreset')
-        request.ProfileToken = profile_token
-        request.PresetName = preset_name
-        result = ptz.SetPreset(request)
-        token = str(getattr(result, 'PresetToken', ''))
-        return PTZPresetResult(success=True, preset_name=preset_name, preset_token=token, protocol="onvif")
-    except Exception as e:
-        return PTZPresetResult(success=False, protocol="onvif", error_message=str(e))
 
 
 # ──────────────────────────────────────────────
@@ -585,25 +436,140 @@ def _sk_get_ptz_info(camera_name: str, channel: int = 2) -> Optional[PTZInfo]:
     return None
 
 
-def _sk_zoom(camera_name: str, action: ZoomAction, channel: int = 2) -> PTZMoveResult:
-    """通过创维私有协议执行变焦"""
-    cmd = "zoom+" if action == ZoomAction.IN else "zoom-"
+# ──────────────────────────────────────────────
+#  物理极限守护（Limit Guard）
+# ──────────────────────────────────────────────
+
+# 方向 → (pan 位移符号, tilt 位移符号)；+1 表示朝范围最大值方向，-1 表示朝最小值方向
+_DIRECTION_SIGN: Dict[PTZDirection, tuple] = {
+    PTZDirection.UP:        (0, +1),
+    PTZDirection.DOWN:      (0, -1),
+    PTZDirection.LEFT:      (-1, 0),
+    PTZDirection.RIGHT:     (+1, 0),
+    PTZDirection.UPLEFT:    (-1, +1),
+    PTZDirection.UPRIGHT:   (+1, +1),
+    PTZDirection.DOWNLEFT:  (-1, -1),
+    PTZDirection.DOWNRIGHT: (+1, -1),
+}
+
+# 位置轮询间隔（秒）与判定阈值
+_GUARD_POLL_INTERVAL = 0.4     # 移动期间位置轮询间隔
+_GUARD_STALL_POLLS = 2         # 连续 N 次位置无变化即判定到达极限
+_GUARD_EDGE_MARGIN = 1.0       # 距离范围边界小于该值视为已贴边（私有协议坐标为整数刻度）
+_GUARD_MOVE_EPS = 1e-3         # 位移检测阈值
+
+
+def _query_ptz_position(camera_name: str, channel: int = 2) -> Optional[PTZParameters]:
+    """
+    查询当前云台位置与范围（私有协议 SK_SETTING_GET_PTZ）。
+
+    与 _sk_get_ptz_params 不同：查询失败时返回 None（而非全零参数），
+    以便守护逻辑区分“查询不可用”与“位置为 0”，查询不可用时安全退化为普通移动。
+    """
     command = {
         "service_type": "setting",
         "msg_id": _build_sk_msg_id(),
-        "cmd_name": "SK_SETTING_SET_PTZ",
+        "cmd_name": "SK_SETTING_GET_PTZ",
         "ver": "1.0",
         "channel": channel,
         "sequence": 0,
-        "cmd": cmd,
     }
-
     resp = _send_sk_ptz_command(camera_name, command)
     if resp and resp.get("code") == "C0000":
-        return PTZMoveResult(success=True, protocol="sky_private")
-    else:
-        msg = resp.get("msg", "未知错误") if resp else "TCP 通道无响应"
-        return PTZMoveResult(success=False, protocol="sky_private", error_message=msg)
+        return PTZParameters(
+            pan=float(resp.get("x", 0)),
+            tilt=float(resp.get("y", 0)),
+            zoom=float(resp.get("z", 0)),
+            pan_range=float(resp.get("x_range", 0)),
+            tilt_range=float(resp.get("y_range", 0)),
+            zoom_range=float(resp.get("z_range", 0)),
+            protocol="sky_private",
+        )
+    return None
+
+
+def _axis_at_limit(pos: float, rng: float, sign: int) -> bool:
+    """判断单轴位置是否已贴住运动方向上的物理边界（范围未知时无法判定）"""
+    if sign == 0 or rng <= 0:
+        return False
+    if sign > 0:
+        return pos >= rng - _GUARD_EDGE_MARGIN
+    return pos <= _GUARD_EDGE_MARGIN
+
+
+def _at_direction_limit(params: PTZParameters, direction: PTZDirection) -> bool:
+    """判断当前位置在指定方向上是否已无剩余行程。
+
+    对角方向只要两轴均贴边才算到达极限（任一轴仍可动则继续移动）。
+    """
+    pan_sign, tilt_sign = _DIRECTION_SIGN.get(direction, (0, 0))
+    pan_limited = _axis_at_limit(params.pan, params.pan_range, pan_sign) if pan_sign else True
+    tilt_limited = _axis_at_limit(params.tilt, params.tilt_range, tilt_sign) if tilt_sign else True
+    return pan_limited and tilt_limited
+
+
+def _guarded_wait(
+    camera_name: str,
+    direction: PTZDirection,
+    duration_seconds: float,
+) -> tuple:
+    """
+    移动期间的守护等待：周期性轮询云台位置，检测到到达物理极限时提前停止等待。
+
+    判定依据（满足其一即视为到达极限）：
+      1. 当前位置已贴住运动方向上的范围边界（x_range / y_range）
+      2. 连续 _GUARD_STALL_POLLS 次轮询位置无变化（云台被物理挡住，不再位移）
+
+    位置查询不可用时（如非创维设备无私有协议通道），安全退化为普通 sleep，
+    不影响原有移动功能。
+
+    Returns:
+        (actual_duration, limit_reached, final_params)
+        - actual_duration: 实际等待时长（秒）
+        - limit_reached:   是否检测到到达物理极限
+        - final_params:    最后一次查询到的位置参数（可能为 None）
+    """
+    start = time.monotonic()
+    last = _query_ptz_position(camera_name)
+    if last is None:
+        # 无法感知位置 → 退化为原有的定时移动
+        time.sleep(duration_seconds)
+        return duration_seconds, False, None
+
+    pan_sign, tilt_sign = _DIRECTION_SIGN.get(direction, (0, 0))
+    stall_count = 0
+    final_params = last
+    limit_reached = False
+
+    while True:
+        remaining = duration_seconds - (time.monotonic() - start)
+        if remaining <= 0:
+            break
+        time.sleep(min(_GUARD_POLL_INTERVAL, remaining))
+
+        cur = _query_ptz_position(camera_name)
+        if cur is None:
+            continue  # 单次查询失败不影响移动，继续等待
+        final_params = cur
+
+        # 到达范围边界 → 立即判定
+        if _at_direction_limit(cur, direction):
+            limit_reached = True
+            break
+
+        # 沿运动方向的位移停滞检测
+        moved = False
+        if pan_sign and abs(cur.pan - last.pan) > _GUARD_MOVE_EPS:
+            moved = True
+        if tilt_sign and abs(cur.tilt - last.tilt) > _GUARD_MOVE_EPS:
+            moved = True
+        stall_count = 0 if moved else stall_count + 1
+        if stall_count >= _GUARD_STALL_POLLS:
+            limit_reached = True
+            break
+        last = cur
+
+    return time.monotonic() - start, limit_reached, final_params
 
 
 # ──────────────────────────────────────────────
@@ -617,10 +583,19 @@ def control_ptz(
     duration_seconds: float = 1.0,
 ) -> PTZMoveResult:
     """
-    步进式控制云台方向移动。
+    步进式控制云台方向移动（带物理极限守护）。
 
     优先通过 ONVIF PTZ Service 执行 ContinuousMove，
     若 ONVIF 不可用则降级到创维私有协议（SK_SETTING_SET_PTZ）。
+
+    物理极限守护（Limit Guard）：
+      - 移动前预检：若云台在目标方向上已无剩余行程，直接拦截指令，
+        不向设备发送移动命令，返回 degraded=True 及原因说明。
+      - 移动中守护：移动期间周期性轮询云台位置（SK_SETTING_GET_PTZ），
+        检测到到达范围边界或位移停滞时立即停止，实际时长可能小于请求时长。
+      - 发生降级时结果中 degraded=True，Agent 必须将 degrade_reason
+        显式转述给用户（例如"请求右转 5 秒，但 3.2 秒后已到达右侧极限"）。
+      - 位置查询不可用的设备自动退化为原有的定时移动，功能不受影响。
 
     移动 duration_seconds 秒后自动停止。
     方向支持英文 (up/down/left/right/upleft/upright/downleft/downright)
@@ -639,6 +614,10 @@ def control_ptz(
             - success: 是否成功
             - protocol: 实际使用的协议
             - current_pan / current_tilt / current_zoom: 移动后位置
+            - requested_duration_seconds / actual_duration_seconds: 请求/实际时长
+            - limit_reached: 是否到达物理极限
+            - degraded: 指令是否被截断或拦截（True 时 Agent 须告知用户）
+            - degrade_reason: 降级原因说明
             - error_message: 失败原因
     """
     direction = _resolve_direction(direction)
@@ -648,82 +627,73 @@ def control_ptz(
     speed = max(0.1, min(1.0, speed))
     duration_seconds = max(0.1, min(10.0, duration_seconds))
 
-    # ── 尝试 1: ONVIF ──
-    result = _onvif_ptz_move(camera_name, direction, speed)
-    if result.success:
-        # 移动指定时间后自动停止
-        time.sleep(duration_seconds)
-        stop_result = _onvif_stop(camera_name)
+    # ── 移动前预检：目标方向已无剩余行程 → 拦截指令，不发送移动命令 ──
+    pre_params = _query_ptz_position(camera_name)
+    if pre_params is not None and _at_direction_limit(pre_params, direction):
+        return PTZMoveResult(
+            success=True,
+            protocol="sky_private",
+            current_pan=pre_params.pan,
+            current_tilt=pre_params.tilt,
+            current_zoom=pre_params.zoom,
+            requested_duration_seconds=duration_seconds,
+            actual_duration_seconds=0.0,
+            limit_reached=True,
+            degraded=True,
+            degrade_reason=(
+                f"云台在 {direction.value} 方向已处于物理极限位置"
+                f"（pan={pre_params.pan:.0f}/{pre_params.pan_range:.0f}, "
+                f"tilt={pre_params.tilt:.0f}/{pre_params.tilt_range:.0f}），"
+                f"移动指令已被拦截，未向设备发送。请告知用户无法继续朝该方向转动。"
+            ),
+        )
+
+    def _finalize(result: PTZMoveResult) -> PTZMoveResult:
+        """移动指令下发成功后：守护等待 → 停止 → 回填降级信息"""
+        actual, limit_hit, final_params = _guarded_wait(camera_name, direction, duration_seconds)
+
+        if result.protocol == "onvif":
+            stop_result = _onvif_stop(camera_name)
+        else:
+            stop_result = _sk_ptz_stop(camera_name, action=_SK_CMD_MAP.get(direction, ""))
         if not stop_result.success:
-            print(f"[PTZ] ONVIF 自动停止失败: {stop_result.error_message}")
+            print(f"[PTZ] 自动停止失败: {stop_result.error_message}")
+
+        result.requested_duration_seconds = duration_seconds
+        result.actual_duration_seconds = round(actual, 2)
+        result.limit_reached = limit_hit
+        if final_params is not None:
+            result.current_pan = final_params.pan
+            result.current_tilt = final_params.tilt
+            result.current_zoom = final_params.zoom
+        if limit_hit and actual < duration_seconds - _GUARD_POLL_INTERVAL:
+            result.degraded = True
+            result.degrade_reason = (
+                f"请求朝 {direction.value} 方向移动 {duration_seconds:.1f} 秒，"
+                f"但云台在 {actual:.1f} 秒后到达物理极限，已提前自动停止。"
+                f"请将该情况告知用户。"
+            )
+        elif limit_hit:
+            result.limit_reached = True
+            result.degrade_reason = f"移动结束时云台已到达 {direction.value} 方向的物理极限。"
         return result
 
+    # ── 尝试 1: ONVIF ──
+    onvif_result = _onvif_ptz_move(camera_name, direction, speed)
+    if onvif_result.success:
+        return _finalize(onvif_result)
+
     # ── 尝试 2: 私有协议 ──
-    result = _sk_ptz_move(camera_name, direction)
-    if result.success:
-        time.sleep(duration_seconds)
-        sk_cmd = _SK_CMD_MAP.get(direction, "")
-        stop_result = _sk_ptz_stop(camera_name, action=sk_cmd)
-        if not stop_result.success:
-            print(f"[PTZ] 私有协议自动停止失败: {stop_result.error_message}")
-        return result
+    sk_result = _sk_ptz_move(camera_name, direction)
+    if sk_result.success:
+        return _finalize(sk_result)
 
     return PTZMoveResult(
         success=False,
-        error_message=f"ONVIF 和私有协议均失败。ONVIF: {result.error_message}",
-    )
-
-
-def control_lens_zoom(
-    camera_name: str,
-    zoom_action: ZoomAction,
-    speed: float = 0.5,
-) -> PTZMoveResult:
-    """
-    控制镜头自动变焦。
-
-    zoom_action=IN 放大，OUT 缩小。变焦 1.5 秒后自动停止。
-    优先 ONVIF，失败则降级到私有协议 (zoom+/zoom-)。
-
-    安全约束: 无特殊约束
-
-    Args:
-        camera_name: 摄像头名称（自动填充）
-        zoom_action: ZoomAction.IN 放大 / ZoomAction.OUT 缩小
-        speed:       变焦速度 0.1-1.0（默认 0.5）
-
-    Returns:
-        PTZMoveResult:
-            - success: 是否成功
-            - protocol: 实际使用的协议
-            - current_zoom: 变焦后的位置值
-            - error_message: 失败原因
-    """
-    if isinstance(zoom_action, str):
-        try:
-            zoom_action = ZoomAction(zoom_action)
-        except ValueError:
-            return PTZMoveResult(success=False, error_message=f"无效变焦动作: {zoom_action}")
-
-    speed = max(0.1, min(1.0, speed))
-
-    # ── 尝试 1: ONVIF ──
-    result = _onvif_zoom(camera_name, zoom_action, speed)
-    if result.success:
-        time.sleep(1.5)
-        _onvif_stop(camera_name)
-        return result
-
-    # ── 尝试 2: 私有协议 ──
-    result = _sk_zoom(camera_name, zoom_action)
-    if result.success:
-        time.sleep(1.5)
-        _sk_ptz_stop(camera_name)
-        return result
-
-    return PTZMoveResult(
-        success=False,
-        error_message=f"ONVIF 和私有协议均失败。ONVIF: {result.error_message}",
+        error_message=(
+            f"ONVIF 和私有协议均失败。ONVIF: {onvif_result.error_message}；"
+            f"私有协议: {sk_result.error_message}"
+        ),
     )
 
 
@@ -757,61 +727,6 @@ def get_ptz_parameters(
     return _sk_get_ptz_params(camera_name)
 
 
-def save_ptz_preset(
-    camera_name: str,
-    preset_name: str,
-) -> PTZPresetResult:
-    """
-    将当前云台位置保存为收藏预置点。
-
-    通过 ONVIF PTZ Service SetPreset 保存当前位置到指定名称的预置点。
-    如果同名预置点已存在，则覆盖。
-
-    安全约束: 无特殊约束
-
-    Args:
-        camera_name: 摄像头名称（自动填充）
-        preset_name: 预置点名称（如 "大门"、"客厅"）
-
-    Returns:
-        PTZPresetResult:
-            - success: 是否成功
-            - preset_name: 保存的预置点名称
-            - preset_token: 预置点 token（用于后续 GotoPreset）
-            - protocol: 使用的协议
-            - error_message: 失败原因
-    """
-    # ONVIF only（私有协议未定义 SetPreset 命令）
-    return _onvif_save_preset(camera_name, preset_name)
-
-
-def go_to_preset(
-    camera_name: str,
-    preset_name: str,
-    speed: float = 1.0,
-) -> PTZMoveResult:
-    """
-    云台移动到指定预置点。
-
-    通过 ONVIF PTZ Service GotoPreset 将云台移动到之前保存的预置点位置。
-
-    安全约束: 显式提示
-
-    Args:
-        camera_name: 摄像头名称（自动填充）
-        preset_name: 预置点名称（如 "大门"、"客厅"）
-        speed:       移动速度 0.1-1.0（默认 1.0）
-
-    Returns:
-        PTZMoveResult:
-            - success: 是否移动成功
-            - protocol: 使用的协议
-            - error_message: 失败原因
-    """
-    # ONVIF only（私有协议未定义 GotoPreset 命令）
-    return _onvif_goto_preset(camera_name, preset_name)
-
-
 def calibrate_ptz(
     camera_name: str,
 ) -> CalibrateResult:
@@ -842,7 +757,7 @@ def calibrate_ptz(
     return result
 
 
-def move_to_position(
+def _move_to_position(
     camera_name: str,
     x: int,
     y: int,
@@ -851,6 +766,7 @@ def move_to_position(
     """
     移动云台到指定绝对坐标（创维私有协议）。
 
+    内部函数，不注册为 MCP 工具，供模块内部或二次开发直接调用。
     通过 SK_SETTING_SET_PTZ 的 move 命令，将云台移动到指定的 (x, y, z) 位置。
     x/y/z 的范围可通过 get_ptz_parameters() 查询。
 
@@ -898,56 +814,3 @@ def stop_ptz(
 
     # ── 尝试 2: 私有协议 ──
     return _sk_ptz_stop(camera_name)
-
-
-def start_patrol_cruise(
-    camera_name: str,
-    cruise_name: Optional[str] = None,
-) -> CruiseResult:
-    """
-    按预设路径开启云台巡航。
-
-    启动云台按预置点路径自动巡航。如果未指定 cruise_name，
-    则使用默认巡航路径（所有已保存的预置点按顺序循环）。
-    可通过循环 GotoPreset + 延时实现。
-
-    安全约束: 显式提示
-
-    Args:
-        camera_name: 摄像头名称（自动填充）
-        cruise_name: 巡航路径名称（可选，默认使用预置点顺序）
-
-    Returns:
-        CruiseResult:
-            - success: 巡航是否启动
-            - cruise_name: 巡航路径名称
-            - preset_count: 经过的预置点数量
-            - protocol: 使用的协议
-            - error_message: 失败原因
-    """
-    # 通过 ONVIF 获取预置位列表，然后按顺序循环 GotoPreset
-    presets = _onvif_get_presets(camera_name)
-    if not presets:
-        return CruiseResult(
-            success=False, protocol="onvif",
-            error_message="无法获取预置位列表，或设备不支持预置位",
-        )
-
-    # 后台线程执行巡航
-    def _patrol_thread():
-        for preset in presets:
-            try:
-                _onvif_goto_preset(camera_name, preset['token'])
-                time.sleep(5.0)  # 每个预置位停留 5 秒
-            except Exception:
-                break
-
-    t = threading.Thread(target=_patrol_thread, name=f"PTZ-Cruise-{camera_name}", daemon=True)
-    t.start()
-
-    return CruiseResult(
-        success=True,
-        cruise_name=cruise_name or "default",
-        preset_count=len(presets),
-        protocol="onvif",
-    )

@@ -10,11 +10,7 @@ scripts/
 │   ├── discovery.py      # Skyworth private protocol discovery & TCP channel
 │   ├── stream.py         # Audio/video streaming & storage
 │   ├── ptz.py            # PTZ control (ONVIF + private protocol dual-channel)
-│   ├── tracking.py       # AI tracking algorithms
-│   ├── image_audio.py    # Picture & audio settings
-│   ├── device_mgmt.py    # Device discovery, connection, config, management, cloud auth
-│   ├── alarm.py          # Alarm settings
-│   └── encoding_osd.py   # Video encoding & OSD
+│   └── device_mgmt.py    # Device discovery, connection, config, management, cloud auth
 └── auth/
     ├── token_manager.py  # Token lifecycle (generate → validate → destroy)
     ├── cloud_client.py   # Smart Cloud API client
@@ -29,6 +25,10 @@ local_auth_server/         # Standalone local auth server (OUTSIDE skill package
 ## Connection & Authorization Flow
 
 The connection process involves two actors: the **Agent** (AI) and the **Tool** (device_mgmt.py + discovery.py). The tool handles protocol details internally; the Agent manages user interaction when password is needed.
+
+### ONVIF Port Verification (inside `connect_device`)
+
+Before ONVIF authentication, `connect_device` verifies the real ONVIF port via `_probe_onvif_port()`: candidate ports (config/argument hint → 2000/80/8000/8899) are probed with an unauthenticated `GetSystemDateAndTime` request, and a port is only accepted if it returns a SOAP Envelope (not an HTML page). Verified ports are written back to config.yaml automatically; unverified ports stay `0` (= unknown). Skyworth cameras: ONVIF is on **2000** — port 80 is the web UI.
 
 ### Flow for Cached Cameras (config.yaml has credentials)
 
@@ -48,7 +48,8 @@ The connection process involves two actors: the **Agent** (AI) and the **Tool** 
    └─ Tool checks config.yaml → no cached password
    └─ Tool detects device_class == "password_required"
    └─ Tool calls request_cloud_auth() → POST to local auth server
-   └─ Tool returns ConnectResult(status="pending_auth", needs_password=True, claw_id=...)
+   └─ Tool returns ConnectResult(status="pending_auth", needs_password=True)
+      (claw_id 包含在 error_message 提示中，并已持久化到 config.yaml)
 
 2. Agent → calls poll_auth_status() repeatedly (every ~5s, max 120s)
    └─ Tool GETs /api/auth/status from local auth server
@@ -128,6 +129,7 @@ A **Claw ID** uniquely identifies the local machine for authorization requests. 
 | Tool receive port | `9028` |
 | NVR receive port | `9018` |
 | TCP command port | `9010` (HTTP + Basic Auth) |
+| ONVIF port | `2000` (field-verified on ZCY121/ZCR461 — **not** 80; port 80 serves the web UI and returns 404 for `/onvif/device_service`) |
 | Broadcast address | `255.255.255.255` |
 | Protocol | JSON over UDP (SK_DISCOVERY_SEARCH / SK_DISCOVERY_SEARCH_R) |
 | TCP path | `POST /xiaopaitech/device_service HTTP/1.1` |
@@ -140,7 +142,7 @@ A **Claw ID** uniquely identifies the local machine for authorization requests. 
 |-------|--------|---------|
 | SN (Serial Number) | ONVIF GetDeviceInformation | Unique device identifier |
 | Model | WS-Discovery Scopes / ONVIF | Device model identification |
-| ONVIF Port | WS-Discovery XAddrs parsing | **Parse from XAddrs — not always 80** |
+| ONVIF Port | WS-Discovery XAddrs parsing | **Parse from XAddrs — not always 80**. `sky_discovery` returns `onvif_port=0` (private protocol only reports the web port); the real port is probed & persisted by `connect_device`. |
 | IP Address | WS-Discovery source address | LAN communication address |
 
 ### Fallback Discovery
@@ -183,14 +185,10 @@ PTZ control in `scripts/toolkit/ptz.py` implements a **dual-protocol strategy** 
 | Function | ONVIF | Private Protocol |
 |----------|:-----:|:----------------:|
 | `control_ptz` (direction) | `ContinuousMove` + `Stop` | `SK_SETTING_SET_PTZ` cmd |
-| `control_lens_zoom` | `ContinuousMove` (zoom axis) | `SK_SETTING_SET_PTZ` zoom+/zoom- |
 | `get_ptz_parameters` | `GetStatus` | `SK_SETTING_GET_PTZ` |
 | `stop_ptz` | `Stop` | `SK_SETTING_SET_PTZ` stop |
-| `save_ptz_preset` | `SetPreset` | — |
-| `go_to_preset` | `GotoPreset` | — |
 | `calibrate_ptz` | — | `SK_SETTING_SET_PTZ` calibrate |
-| `move_to_position` | — | `SK_SETTING_SET_PTZ` move (x/y/z) |
-| `start_patrol_cruise` | Loop `GotoPreset` | — |
+| `_move_to_position` (internal, not an MCP tool) | — | `SK_SETTING_SET_PTZ` move (x/y/z) |
 
 ## Session Rules
 
@@ -212,18 +210,13 @@ If `save_path` is provided, ensure it is writable. The default `snapshots/` and 
 
 ### Same-process connection requirement
 
-The toolkit stores connection state in an in-memory dict (`_connected_devices`). This means `connect_device()` and subsequent operations (`capture_video_screenshot()`, `get_audio_video_stream()`, etc.) must run in the **same Python process**. If using the toolkit via shell commands, combine connect + capture in a single script invocation:
+The toolkit stores connection state in an in-memory dict (`_connected_devices`) inside the **MCP server process**. This means `connect_device` and subsequent operations (`capture_video_screenshot`, `get_audio_video_stream`, etc.) must be served by the same long-running `scripts/mcp_server.py` process — which is exactly what happens when all operations go through MCP tool calls.
 
-```python
-import scripts.toolkit as tk
-tk.connect_device("172.28.234.22")
-result = tk.capture_video_screenshot("172.28.234.22")
-print(result.file_path)
-```
+This is also why bypassing the MCP layer breaks the system: a standalone script or a separate Python process has its own empty `_connected_devices`, so any operation after `connect_device` fails or silently reconnects. **Never import `scripts.toolkit` directly — interact only via the MCP tools.**
 
 ### Skyworth camera RTSP paths
 
-Skyworth IP cameras (discovered via `sky_discovery`) use non-standard RTSP paths. The toolkit automatically tries these paths in order:
+Skyworth IP cameras (discovered via `sky_discovery`) use non-standard RTSP paths. When the configured path fails, the toolkit tries fallback paths in order — standard ONVIF paths first (`/Streaming/Channels/101`, `/h264/ch1/main/av_stream`, `/live`), then the Skyworth paths below:
 
 | Path | Stream | Typical Resolution |
 |------|--------|-------------------|
@@ -231,8 +224,6 @@ Skyworth IP cameras (discovered via `sky_discovery`) use non-standard RTSP paths
 | `/stream1` | Main stream (alt) | 2560x1440 |
 | `/md0_0` | Main stream (alt) | 2560x1440 |
 | `/md0_1` | Sub stream | 1280x720 |
-
-Standard ONVIF paths (`/Streaming/Channels/101`, `/h264/ch1/main/av_stream`, `/live`) are also tried as fallbacks.
 
 ## Dependencies
 
