@@ -50,7 +50,7 @@ Before ONVIF authentication, `connect_device` verifies the real ONVIF port via `
    └─ Tool detects device_class == "password_required"
    └─ Tool calls request_cloud_auth() → POST to local auth server
    └─ Tool returns ConnectResult(status="pending_auth", needs_password=True)
-      (claw_id 包含在 error_message 提示中，并已持久化到 config.yaml)
+      (claw_id is included in error_message and persisted to config.yaml)
 
 2. Agent → calls poll_auth_status() repeatedly (every ~5s, max 120s)
    └─ Tool GETs /api/auth/status from local auth server

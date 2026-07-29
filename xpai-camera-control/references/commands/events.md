@@ -23,10 +23,10 @@ Alarm/event subscription, snapshot linkage, and on-disk event store — `scripts
 
 | `alm` | Topic | Meaning | | `alm` | Topic | Meaning |
 |-------|-------|---------|-|-------|-------|---------|
-| `MD` | `motion` | 移动侦测 | | `VS` | `tamper` | 遮挡侦测 |
-| `HD` | `human` | 人形侦测 | | `VD` | `vehicle` | 车辆侦测 |
-| `VGR` | `region_intrusion` | 区域侦测 | | `HTD` | `high_temp` | 高温侦测 |
-| `VGL` | `line_crossing` | 越界侦测 | | `LTD` | `low_temp` | 低温侦测 |
+| `MD` | `motion` | Motion detection | | `VS` | `tamper` | Tamper detection |
+| `HD` | `human` | Human detection | | `VD` | `vehicle` | Vehicle detection |
+| `VGR` | `region_intrusion` | Region intrusion | | `HTD` | `high_temp` | High temperature |
+| `VGL` | `line_crossing` | Line crossing | | `LTD` | `low_temp` | Low temperature |
 
 **Deduplication:** events with the same `(camera, normalized topic)` within the debounce window (default 5 s) are merged into one record — this also collapses cross-protocol duplicates (ONVIF and private protocol reporting the same motion burst). Snapshot capture is rate-limited per camera to one per window.
 

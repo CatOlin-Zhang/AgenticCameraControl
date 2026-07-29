@@ -20,7 +20,7 @@ Directional movement of the PTZ head. Auto-stops after `duration_seconds`.
 - **In-flight guard:** during movement the tool polls the head position (`SK_SETTING_GET_PTZ`, every ~0.4s); when the range boundary is reached or displacement stalls, it stops early. E.g. a "turn right 5s" request with only ~3s of travel left stops at ~3s with `degraded=True`.
 - **Graceful fallback:** on devices where position polling is unavailable (no Skyworth private channel), the guard silently degrades to plain timed movement — behavior is unchanged from before.
 
-**Agent behavior (MANDATORY):** whenever the result has `degraded=True`, the agent MUST explicitly relay `degrade_reason` to the user (e.g. "你要求右转 5 秒，但云台在 3.2 秒后到达右侧物理极限，已自动提前停止"). Never silently swallow a degraded result.
+**Agent behavior (MANDATORY):** whenever the result has `degraded=True`, the agent MUST explicitly relay `degrade_reason` to the user (e.g. "You requested a 5-second right turn, but the PTZ head reached its physical limit after 3.2 seconds and stopped early"). Never silently swallow a degraded result.
 
 | Aspect | Detail |
 |--------|--------|

@@ -233,7 +233,7 @@ control_ptz(camera_name="客厅摄像头", direction="right", duration_seconds=5
 → degrade_reason="云台在 right 方向已处于物理极限位置（...），移动指令已被拦截..."
 ```
 
-**Agent MUST relay `degrade_reason` to the user whenever `degraded=true`** — e.g. "你要求右转 5 秒，但云台在 3.2 秒后到达右侧物理极限，已自动提前停止". Never report a degraded move as fully completed.
+**Agent MUST relay `degrade_reason` to the user whenever `degraded=true`** — e.g. "You requested a 5-second right turn, but the PTZ head reached its physical limit after 3.2 seconds and stopped early". Never report a degraded move as fully completed.
 
 ### Get current PTZ status
 
@@ -279,7 +279,7 @@ manage_camera_events(action="stop", camera_name="前门")
 → success=true, running=false
 ```
 
-### T1 — On-demand backlog check ("看看刚才发生了什么")
+### T1 — On-demand backlog check ("what happened earlier")
 
 ```text
 manage_camera_events(action="poll")            # omit camera_name to consume all cameras
@@ -291,7 +291,7 @@ For each returned event:
   2. Report to the user using the event's title / message plus your image analysis
 ```
 
-### T2 — In-session guard loop ("帮我看着家里")
+### T2 — In-session guard loop ("keep an eye on my home")
 
 ```text
 Loop until the user stops:
