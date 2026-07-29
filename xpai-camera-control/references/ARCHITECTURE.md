@@ -10,6 +10,7 @@ scripts/
 │   ├── discovery.py      # Skyworth private protocol discovery & TCP channel
 │   ├── stream.py         # Audio/video streaming & storage
 │   ├── ptz.py            # PTZ control (ONVIF + private protocol dual-channel)
+│   ├── events.py         # Event/alarm receiving (ONVIF PullPoint + private RTSP-channel push), schema 1.0 store
 │   └── device_mgmt.py    # Device discovery, connection, config, management, cloud auth
 └── auth/
     ├── token_manager.py  # Token lifecycle (generate → validate → destroy)
@@ -189,6 +190,40 @@ PTZ control in `scripts/toolkit/ptz.py` implements a **dual-protocol strategy** 
 | `stop_ptz` | `Stop` | `SK_SETTING_SET_PTZ` stop |
 | `calibrate_ptz` | — | `SK_SETTING_SET_PTZ` calibrate |
 | `_move_to_position` (internal, not an MCP tool) | — | `SK_SETTING_SET_PTZ` move (x/y/z) |
+
+## Event Monitoring Architecture (Guardian Mode Foundation)
+
+Event receiving in `scripts/toolkit/events.py` follows the same **dual-protocol strategy** as PTZ, exposed as the single MCP tool `manage_camera_events(action=start|stop|poll|wait)`:
+
+```
+1. manage_camera_events(action="start") — after explicit user confirmation
+   └─ Spawns one background listener thread per camera (the ONLY background threads in this skill)
+   └─ Persists the monitoring intent to events/monitor_state.json (cleared only by action="stop")
+   └─ Channel 1: ONVIF Event Service — CreatePullPointSubscription + PullMessages long-poll (auto-renew)
+   └─ Channel 2: Skyworth private protocol — alarm JSON pushed over a persistent RTSP session (vendor doc §5.24)
+
+2. On event arrival (either channel):
+   └─ Normalize topic to the shared namespace (motion / human / tamper / …)
+   └─ Dedup by (camera, topic) within the debounce window (default 5 s, collapses cross-protocol duplicates)
+   └─ Capture snapshot in-process (rate-limited to one per camera per window)
+   └─ A processing layer converts the raw protocol message into schema 1.0 (raw fields are never persisted)
+   └─ Append one JSON line to events/camera_events.txt (single source of truth)
+
+3. manage_camera_events(action="poll" / "wait") — always reads the disk store, advances the
+   per-camera cursor in events/events_cursor.json → backlog survives MCP server restarts
+
+4. Auto-resume (resume_persisted_monitors) — the host may recycle the MCP server process at any
+   time, killing the listener threads. On server startup (async daemon thread, never blocks the
+   stdio handshake) and at every poll/wait entry, persisted intents in events/monitor_state.json
+   are re-armed for cameras whose listener is not running. Guards: non-blocking mutex (no double
+   resume), 60 s retry cooldown per failed camera (offline devices are not probed on every poll),
+   and an intent re-read before each start (a concurrent stop cancels the resume). This adds no
+   authorization surface: only listeners the user enabled and never stopped are restored.
+```
+
+**State ownership:** listener threads and the in-memory hot cache live inside the MCP server process; the on-disk store under `events/` is the only cross-session state — event lines, per-camera cursors, and the monitoring intent (`monitor_state.json`) all survive process recycling. Writes are limited to the `snapshots/` and `events/` whitelist paths.
+
+For the schema 1.0 field reference, alarm code mapping, and per-action tool details, see [commands/events.md](commands/events.md).
 
 ## Session Rules
 

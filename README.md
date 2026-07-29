@@ -8,7 +8,7 @@
 
 局域网 IP 摄像头的智能控制系统。支持 ONVIF 协议摄像头和 USB 摄像头的自动发现、连接、视频流拉取、云台控制、设备管理等功能。
 
-核心模块 `xpai-camera-control` 可作为 MCP (Model Context Protocol) Server 运行，将 21 个摄像头控制工具暴露给 AI Agent 使用。
+核心模块 `xpai-camera-control` 可作为 MCP (Model Context Protocol) Server 运行，将 17 个摄像头控制工具暴露给 AI Agent 使用。
 
 ### 功能概览
 
@@ -17,7 +17,8 @@
 | **设备发现** | 局域网自动搜索摄像头，支持 WS-Discovery、USB 扫描 |
 | **设备连接** | 自动探测认证方式，凭据缓存与自动重连 |
 | **视频流** | RTSP 流地址获取、截图、录像、存储管理 |
-| **云台控制** | 8 方向移动、变焦、预置点、校准、绝对坐标定位、巡航 |
+| **云台控制** | 8 方向移动、物理极限保护、云台校准 |
+| **事件监听** | 报警事件订阅（移动/人形/遮挡等）、事件联动抓拍、本地事件存储 |
 
 ### 快速开始
 
@@ -56,7 +57,8 @@ AgenticCameraControl/
 │   │   │   ├── discovery.py      # 设备发现
 │   │   │   ├── device_mgmt.py    # 设备管理与连接
 │   │   │   ├── stream.py         # 音视频流与存储
-│   │   │   └── ptz.py            # 云台控制
+│   │   │   ├── ptz.py            # 云台控制
+│   │   │   └── events.py         # 报警事件接收与本地存储
 │   │   └── auth/                 # 认证模块
 │   ├── references/               # 技术参考文档
 │   │   └── commands/             # 各模块工具签名与参数说明
@@ -70,14 +72,15 @@ AgenticCameraControl/
 
 ### 工具模块
 
-4 个模块，共 21 个 MCP 工具：
+5 个模块，共 17 个 MCP 工具：
 
 | 模块 | 说明 | 参考文档 |
 |------|------|----------|
 | `device_mgmt.py` | 设备注册、搜索、连接、断开 | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md) |
 | `discovery.py` | 局域网设备发现 | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md) |
 | `stream.py` | 视频流、截图、录像、存储 | [commands/stream.md](xpai-camera-control/references/commands/stream.md) |
-| `ptz.py` | 云台方向/变焦/预置点/校准/巡航 | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md) |
+| `ptz.py` | 云台方向控制/校准/停止 | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md) |
+| `events.py` | 报警事件订阅、联动抓拍、事件存储与消费 | [commands/events.md](xpai-camera-control/references/commands/events.md) |
 
 ### 安全边界
 
@@ -85,9 +88,9 @@ AgenticCameraControl/
 
 | 承诺 | 说明 |
 |------|------|
-| 请求-响应模式 | 所有工具为同步请求-响应，不启动后台线程或守护进程 |
+| 请求-响应模式 | 工具默认为同步请求-响应；唯一例外是事件监听后台线程，仅在用户显式开启后运行，且行为限于报警订阅与白名单路径写入，可随时关闭 |
 | 仅局域网通信 | 所有网络流量限于局域网内，无外网通信 |
-| 文件写入受限 | 仅写入 `config.yaml`、`snapshots/`、`recordings/` |
+| 文件写入受限 | 仅写入 `config.yaml`、`snapshots/`、`recordings/`、`events/` |
 | 无系统修改 | 不修改注册表、环境变量、系统服务 |
 | 无进程派生 | 不启动子进程或外部程序 |
 
@@ -107,7 +110,7 @@ AgenticCameraControl/
 
 An intelligent control system for IP cameras on local networks. Supports auto-discovery, connection, video streaming, PTZ control, and device management for ONVIF-compliant cameras and USB webcams.
 
-The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Server, exposing 21 camera control tools to AI Agents.
+The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Server, exposing 17 camera control tools to AI Agents.
 
 ### Features
 
@@ -116,7 +119,8 @@ The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Se
 | **Discovery** | Auto-search cameras on LAN, supports WS-Discovery and USB scanning |
 | **Connection** | Auto-detect auth method, credential caching and auto-reconnect |
 | **Streaming** | RTSP stream URL retrieval, screenshots, recording, storage management |
-| **PTZ Control** | 8-directional movement, zoom, presets, calibration, absolute positioning, patrol cruise |
+| **PTZ Control** | 8-directional movement, physical limit guard, calibration |
+| **Event Monitoring** | Alarm event subscription (motion/human/tamper, etc.), snapshot linkage on event, local event store |
 
 ### Quick Start
 
@@ -155,7 +159,8 @@ AgenticCameraControl/
 │   │   │   ├── discovery.py      # Device discovery
 │   │   │   ├── device_mgmt.py    # Device management & connection
 │   │   │   ├── stream.py         # Audio/video streaming & storage
-│   │   │   └── ptz.py            # PTZ control
+│   │   │   ├── ptz.py            # PTZ control
+│   │   │   └── events.py         # Alarm event receiving & local store
 │   │   └── auth/                 # Authentication module
 │   ├── references/               # Technical reference docs
 │   │   └── commands/             # Per-module tool signatures & parameters
@@ -169,14 +174,15 @@ AgenticCameraControl/
 
 ### Toolkit Modules
 
-4 modules, 21 MCP tools in total:
+5 modules, 17 MCP tools in total:
 
 | Module | Description | Reference |
 |--------|-------------|-----------|
 | `device_mgmt.py` | Device registration, search, connection, disconnection | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md) |
 | `discovery.py` | LAN device discovery | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md) |
 | `stream.py` | Video streaming, screenshots, recording, storage | [commands/stream.md](xpai-camera-control/references/commands/stream.md) |
-| `ptz.py` | PTZ direction/zoom/presets/calibration/cruise | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md) |
+| `ptz.py` | PTZ directional control / calibration / stop | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md) |
+| `events.py` | Alarm event subscription, snapshot linkage, event store & consumption | [commands/events.md](xpai-camera-control/references/commands/events.md) |
 
 ### Security Boundary
 
@@ -184,9 +190,9 @@ This skill package operates within strict security constraints to ensure no unex
 
 | Guarantee | Description |
 |-----------|-------------|
-| Request-response only | All tools are synchronous request-response. No background threads or daemons. |
+| Request-response by default | Tools are synchronous request-response. The only exception is the event listener background thread, which runs only after explicit user enablement, is limited to alarm subscription plus whitelist-path writes, and can be stopped at any time. |
 | LAN-only communication | All network traffic stays within the local network. No internet communication. |
-| Restricted file writes | Only writes to `config.yaml`, `snapshots/`, and `recordings/` |
+| Restricted file writes | Only writes to `config.yaml`, `snapshots/`, `recordings/`, and `events/` |
 | No system modifications | No registry changes, environment variable modifications, or system service installations. |
 | No process spawning | No subprocesses or external programs are launched. |
 

@@ -1,11 +1,12 @@
 """
 XPAI Camera Control — Toolkit 工具集
 
-提供摄像头控制的全部工具函数，按功能分为 4 大类：
+提供摄像头控制的全部工具函数，按功能分为 5 大类：
   1. stream       — 音视频流与存储
   2. ptz          — 云台与巡航
   3. device_mgmt  — 设备管理与维护
   4. discovery    — 创维私有协议发现
+  5. events       — IPC 事件接收（双协议告警监听 + 落盘）
 """
 
 # ── stream ──
@@ -79,6 +80,24 @@ from .discovery import (
     SUBTYPE_NAMES,
 )
 
+# ── events (IPC 事件接收) ──
+# 注意: manage_camera_events 为唯一注册的 MCP 工具（action 切换模式）；
+# start/stop/get_pending/wait 为内部实现，保留导出供二次开发直接调用。
+from .events import (
+    manage_camera_events,
+    EventAction,
+    start_event_monitor,
+    stop_event_monitor,
+    get_pending_events,
+    wait_for_events,
+    set_event_raw_debug,
+    CameraEvent,
+    EventMonitorResult,
+    PendingEventsResult,
+    EVENT_STORE_PATH,
+    EVENTS_DIR,
+)
+
 
 __all__ = [
     # stream
@@ -136,4 +155,17 @@ __all__ = [
     "SK_TOOL_RECV_PORT",
     "SK_TCP_PORT",
     "SUBTYPE_NAMES",
+    # events (IPC 事件接收)
+    "manage_camera_events",
+    "EventAction",
+    "start_event_monitor",
+    "stop_event_monitor",
+    "get_pending_events",
+    "wait_for_events",
+    "set_event_raw_debug",
+    "CameraEvent",
+    "EventMonitorResult",
+    "PendingEventsResult",
+    "EVENT_STORE_PATH",
+    "EVENTS_DIR",
 ]

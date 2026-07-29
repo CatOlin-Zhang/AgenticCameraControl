@@ -260,3 +260,44 @@ calibrate_ptz(camera_name="客厅摄像头")
 ```
 
 > Note: moving to an absolute coordinate is handled by the internal function `_move_to_position` (private protocol only). It is NOT registered as an MCP tool and cannot be invoked by the agent.
+
+---
+
+## Phase 5 — Event Monitoring (Guardian Mode): Detailed Tool Calls
+
+All event operations go through the **single** tool `manage_camera_events` — the `action` parameter switches the working mode. See [commands/events.md](commands/events.md) for the full parameter/return reference and the schema 1.0 on-disk format.
+
+### Start / stop the listener (requires user confirmation first)
+
+```text
+# ALWAYS ask the user for confirmation before starting — this spawns a background thread
+manage_camera_events(action="start", camera_name="前门")
+→ success=true, running=true, active_channels=["onvif", "private"]
+  (partial channels, e.g. only ["private"], is normal — report which are active)
+
+manage_camera_events(action="stop", camera_name="前门")
+→ success=true, running=false
+```
+
+### T1 — On-demand backlog check ("看看刚才发生了什么")
+
+```text
+manage_camera_events(action="poll")            # omit camera_name to consume all cameras
+→ events[]: schema 1.0 records (event_type, title, message, snapshot_path, …)
+→ remaining: 0 means backlog fully consumed; >0 means truncated by limit — call again
+
+For each returned event:
+  1. Read the image at snapshot_path and analyze it
+  2. Report to the user using the event's title / message plus your image analysis
+```
+
+### T2 — In-session guard loop ("帮我看着家里")
+
+```text
+Loop until the user stops:
+  manage_camera_events(action="wait", timeout_seconds=60)   # single block capped at 60 s
+  → events non-empty : read snapshots → analyze → report immediately → continue loop
+  → events empty     : timeout with success=true → continue loop silently
+```
+
+> Backlog survives MCP server restarts: `poll` / `wait` read the on-disk store (`events/camera_events.txt`), so a fresh session can consume events recorded earlier. Raw protocol messages are never persisted — every record is already in schema 1.0.

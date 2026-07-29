@@ -2,15 +2,12 @@
 XPAI Camera Control — MCP Server
 
 Model Context Protocol server that exposes all camera control toolkit functions
-as MCP tools. Supports stdio transport for seamless integration with MCP clients
-(Claude Desktop, WorkBuddy, etc.).
+as MCP tools. Supports stdio transport for seamless integration with any
+MCP-compatible client.
 
 Usage:
     python scripts/mcp_server.py                        # stdio transport (default)
     python scripts/mcp_server.py --transport stdio      # explicit stdio
-
-Environment:
-    XPAI_CONFIG_PATH — override config.yaml location
 """
 
 import sys
@@ -295,6 +292,54 @@ TOOLS = [
     ),
     # 注意: send_tcp_command 为内部函数，不作为 MCP 工具暴露。
     # 私有协议通信由 connect_device / control_ptz 等高层工具内部调用。
+
+    # ── Events (IPC 事件接收) ──
+    Tool(
+        name="manage_camera_events",
+        description="摄像头告警事件统一入口，action 切换模式：start=启动监听（后台线程，需用户确认；双协议+去重+自动快照+落盘）；stop=停止监听；poll=读取未消费事件并推进游标（跨会话可用）；wait=长轮询阻塞等待新事件（单次上限 60 秒，持续守护时循环调用）；debug=原始协议包转储开关（排查协议通道/事件类型问题，转储到 events/raw_packets_debug.txt，用完应关闭）。",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["start", "stop", "poll", "wait", "debug"],
+                    "description": "工作模式",
+                },
+                "camera_name": {
+                    "type": "string",
+                    "description": "摄像头名称（start/stop 必填；poll/wait 省略则面向全部相机）",
+                },
+                "protocols": {
+                    "type": "string",
+                    "enum": ["both", "onvif", "private"],
+                    "description": "监听协议通道（仅 start）",
+                    "default": "both",
+                },
+                "debounce_seconds": {
+                    "type": "number",
+                    "description": "去重与快照限流窗口（秒，仅 start）",
+                    "default": 5.0,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "单次最多返回的事件数（仅 poll）",
+                    "default": 100,
+                },
+                "timeout_seconds": {
+                    "type": "number",
+                    "description": "阻塞超时（秒，上限 60，仅 wait）",
+                    "default": 60,
+                },
+                "debug_mode": {
+                    "type": "string",
+                    "enum": ["on", "off", "status"],
+                    "description": "原始包转储开关（仅 debug）：on 开启 / off 关闭 / status 查询",
+                    "default": "status",
+                },
+            },
+            "required": ["action"],
+        },
+    ),
 ]
 
 
@@ -325,6 +370,7 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     from scripts.toolkit.device_mgmt import DiscoveryMethod
     from scripts.toolkit.stream import RecordingAction, StorageAction
     from scripts.toolkit.ptz import PTZDirection
+    from scripts.toolkit.events import EventAction
 
     # ── Device Management ──
     if name == "get_registered_cameras":
@@ -378,6 +424,12 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     elif name == "discover_sky_devices":
         return _serialize(tk.discover_sky_devices(**args))
 
+    # ── Events ──
+    elif name == "manage_camera_events":
+        args = dict(args)
+        args["action"] = EventAction(args["action"])
+        return _serialize(tk.manage_camera_events(**args))
+
     else:
         raise ValueError(f"Unknown tool: {name}")
 
@@ -386,7 +438,7 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
 #  Server Setup
 # ═══════════════════════════════════════════════
 
-server = Server("xpai-camera-control", version="0.2.0")
+server = Server("xpai-camera-control", version="0.4.5")
 
 
 @server.list_tools()
@@ -415,12 +467,31 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any] | None) -> list[
         )]
 
 
+def _resume_event_monitors_async() -> None:
+    """Server startup hook: re-arm event listeners the user enabled but never
+    stopped (persisted in events/monitor_state.json), lost when the host
+    recycled the previous MCP process. Runs in a daemon thread so a slow or
+    offline camera never blocks the stdio handshake."""
+    import threading
+
+    def _worker():
+        try:
+            from scripts.toolkit.events import resume_persisted_monitors
+            resume_persisted_monitors()
+        except Exception:
+            pass  # resume failure must never take the server down
+
+    threading.Thread(target=_worker, name="EventMonitorResume", daemon=True).start()
+
+
 async def main():
     """Run the MCP server with stdio transport."""
     parser = argparse.ArgumentParser(description="XPAI Camera Control MCP Server")
     parser.add_argument("--transport", default="stdio", choices=["stdio"],
                         help="Transport to use (default: stdio)")
     args = parser.parse_args()
+
+    _resume_event_monitors_async()
 
     async with stdio_server() as (read_stream, write_stream):
         init_options = server.create_initialization_options()
