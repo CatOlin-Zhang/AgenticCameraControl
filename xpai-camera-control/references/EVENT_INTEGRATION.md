@@ -2,7 +2,7 @@
 
 > **Audience:** Skill authors building upper-layer scenarios on top of this skill, external forwarders / agent-side module authors
 > **Consumption method:** Pure disk reads (no MCP dependency, no IPC) — any language / framework can integrate
-> **Skill package version:** 0.4.2 (schema 1.0)
+> **Skill package version:** 0.4.5 (schema 1.0)
 
 This skill writes alarm events as structured records to a local text file for consumption by other skills or external modules. This is the **only public contract** for external collaboration — internal protocols, RTSP addresses, credentials, and connection state are never exposed.
 
@@ -27,7 +27,6 @@ This skill is only responsible for **producing and persisting** events. The spec
 | Snapshots | `snapshots/` | The `snapshot_path` field in each event line provides the **absolute path** — read directly |
 | Agent consumption cursor | `events/events_cursor.json` | Internal to this skill's MCP `poll`/`wait` consumption progress — **external consumers MUST NOT read or write** |
 | Monitoring intent | `events/monitor_state.json` | Internal skill state (written on start / cleared on stop, used for auto-resume after process restart) — **external consumers MUST NOT read or write** |
-| Debug dumps | `events/raw_debug.flag` / `events/raw_packets_debug.txt` | Internal debug artifacts (raw protocol packet dumps, enabled only for troubleshooting) — **not part of the contract, external consumers MUST NOT rely on these** |
 
 Skill package root = the directory containing `SKILL.md`. If the skill is installed by an agent platform via "copy skill directory", the root is typically `~/.{platform}/skills/xpai-camera-control/` (exact path depends on the platform).
 

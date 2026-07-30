@@ -7,7 +7,6 @@ Toolkit 6: IPC 事件接收 (Guardian Mode Foundation)
       stop  — 停止事件监听
       poll  — 读取未消费事件（磁盘存储 + 消费游标）
       wait  — 长轮询阻塞等待新事件（默认/上限 60s）
-      debug — 原始协议包转储开关（排查协议通道 / topic 归一化问题）
   注: start_event_monitor / stop_event_monitor / get_pending_events /
       wait_for_events 为各模式的内部实现，保留导出供二次开发直接调用，
       但不作为 MCP 工具单独暴露（降低 MCP schema 负载）
@@ -15,11 +14,14 @@ Toolkit 6: IPC 事件接收 (Guardian Mode Foundation)
 双协议事件源：
   1. ONVIF Event Service — CreatePullPointSubscription + PullMessages 循环
      （创维 ONVIF 端口实测 2000）
-  2. 创维私有协议 — 报警消息通过 RTSP 通道上报（vendor 文档 5.24）：
-     建立 RTSP 会话后，设备在同一 TCP 连接上推送报警 JSON：
-       {"serv": "alarm", "alm": "MD", "date": "...", "dir": 0,
-        "fn": "<mac>_MOTIONDETECT_<unix>.jpg", "fmt": "JPEG", ...}
-     alm 取值: MD移动/HD人形/VGR区域/VGL越界/VS遮挡/VD车辆/HTD高温/LTD低温
+  2. 创维私有协议 — 报警消息通过 RTSP interleaved 通道 0x65 上报（alarm.py 实测）：
+     建立 RTSP 会话后（User-Agent 须为 "skyworth"），对 SDP 每个视频轨道
+     逐一 SETUP（interleaved=0-1, 2-3...），设备识别 UA 后在同一 TCP 连接的
+     channel 0x65 上推送报警 JSON（~94 字节，可能是纯 JSON 或 RTP 包裹）：
+       {"ser":"alarm","alm":"MP","dat":"01:16 5:01:2026 -07-30 1",
+        "dir":0,"fn":"","fmt":"JPEG"}
+     兼容 serv/ser、date/dat 两套字段名（不同固件版本）。
+     alm 取值: MD/MP移动/HD人形/VGR区域/VGL越界/VS遮挡/VD车辆/HTD高温/LTD低温
 
 落盘存储（单一真相源，见 TODOlist.md Guardian Mode）：
   - 原始协议消息（ONVIF NotificationMessage / 私有协议报警 JSON）不落盘、
@@ -29,9 +31,6 @@ Toolkit 6: IPC 事件接收 (Guardian Mode Foundation)
   - events/monitor_state.json  — 监听意图（start 记录 / stop 清除）：MCP 进程
     可能被宿主随时回收，监听线程随之消亡；意图落盘后，server 启动时与
     poll/wait 入口会自动恢复用户尚未撤销的监听（resume_persisted_monitors）
-  - events/raw_packets_debug.txt — 原始协议包转储（仅 debug 开启时写入，
-    开关标记文件 events/raw_debug.flag，跨进程存活；是“原始消息不落盘”
-    原则的唯一例外，专供调试，用完应关闭）
   - MCP server 进程不跨 session 存活，因此内存队列仅作热缓存，
     poll / wait 一律读磁盘存储
 
@@ -56,6 +55,7 @@ schema 1.0 落盘格式（camera_name / severity / tags 为可选字段）：
 import json
 import re
 import socket
+import struct
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -81,8 +81,6 @@ EVENTS_DIR = _SKILL_ROOT / "events"                      # 事件落盘目录（
 EVENT_STORE_PATH = EVENTS_DIR / "camera_events.txt"      # 事件存储（追加写，单一真相源）
 EVENT_CURSOR_PATH = EVENTS_DIR / "events_cursor.json"    # 消费游标（按相机）
 MONITOR_STATE_PATH = EVENTS_DIR / "monitor_state.json"   # 监听意图（start 记录 / stop 清除，跨进程存活）
-RAW_DEBUG_FLAG_PATH = EVENTS_DIR / "raw_debug.flag"          # 原始包转储开关（存在即开启，跨进程存活）
-RAW_DEBUG_DUMP_PATH = EVENTS_DIR / "raw_packets_debug.txt"   # 原始协议包转储（仅调试开启时写入）
 
 EVENT_SCHEMA_VERSION = "1.0"      # 落盘消息的 schema 版本
 
@@ -90,11 +88,16 @@ DEFAULT_DEBOUNCE_SECONDS = 5.0    # 去重/快照限流窗口
 WAIT_TIMEOUT_CAP = 60.0           # wait_for_events 阻塞上限（对齐 MCP 客户端 stdio 超时）
 _STORE_MAX_READ = 10000           # 单次最多读取的存储行数（防止超大文件拖垮）
 _RESUME_RETRY_SECONDS = 60.0      # 自动恢复失败后的重试冷却（防止离线相机被频繁探测）
-_RAW_DEBUG_MAX_BYTES = 5 * 1024 * 1024   # 转储文件上限，超限轮转为 .old.txt（防长时间调试刷爆磁盘）
+
+# 创维私有报警通道号（RTSP interleaved channel），设备通过此通道推送报警 JSON
+SK_ALARM_CHANNEL = 0x65           # 101（创维），杰高用 0x63=99
+# RTSP User-Agent：设备端检查此值，仅 "skyworth" / "Jabsco" 推送报警
+SK_RTSP_USER_AGENT = "skyworth"
 
 # 私有协议 alm 代码 → 归一化 topic（与 ONVIF 侧共用同一命名空间，跨协议去重的前提）
 SK_ALM_TOPIC_MAP = {
     "MD": "motion",           # 移动侦测
+    "MP": "motion",           # 移动侦测（部分固件用 MP）
     "HD": "human",            # 人形侦测
     "VGR": "region_intrusion",  # 区域侦测
     "VGL": "line_crossing",   # 越界侦测
@@ -160,6 +163,68 @@ _SUBTYPE_LABEL_MAP = {
 
 
 # ──────────────────────────────────────────────
+#  RTSP Interleaved 帧解析器（移植自 alarm.py _FrameParser）
+# ──────────────────────────────────────────────
+
+class _InterleavedFrameParser:
+    """RTSP over TCP interleaved 帧解析器（RFC 2326 §10.12）。
+
+    协议格式: '$' <channel_id: uint8> <length: uint16 big-endian> <payload: bytes>
+    解析器同时兼容跳过 RTSP 文本响应（以 "RTSP/" 开头的行）和空白字节。
+    """
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+
+    def feed(self, data: bytes) -> List[Tuple[int, bytes]]:
+        """追加原始 TCP 数据，返回已解析的 (channel_id, payload) 列表。"""
+        self._buf.extend(data)
+        frames: List[Tuple[int, bytes]] = []
+
+        while len(self._buf) >= 4:
+            # ── 跳过 RTSP 文本响应行（OPTIONS 等响应残留） ──
+            if self._buf[0:5] == b"RTSP/" or (
+                self._buf[0:1] != b"$" and self._buf[0:1] in b" \t\r\n"
+            ):
+                nl = self._buf.find(b"\n")
+                if nl == -1:
+                    break  # 等待更多数据
+                del self._buf[: nl + 1]
+                continue
+
+            # ── 必须是 $ 开头 ──
+            if self._buf[0:1] != b"$":
+                # 未知字节，跳过直到下一个 $
+                idx = self._buf.find(b"$", 1)
+                if idx == -1:
+                    self._buf.clear()
+                    break
+                del self._buf[:idx]
+                continue
+
+            # 解析 $ <ch:1> <len:2>
+            if len(self._buf) < 4:
+                break
+            ch = self._buf[1]
+            length = struct.unpack("!H", self._buf[2:4])[0]
+
+            # 合理性检查（单帧 ≤ 64 KB）
+            if length > 65536 or length == 0:
+                del self._buf[:1]
+                continue
+
+            # 等完整 payload
+            if len(self._buf) < 4 + length:
+                break
+
+            payload = bytes(self._buf[4: 4 + length])
+            del self._buf[: 4 + length]
+            frames.append((ch, payload))
+
+        return frames
+
+
+# ──────────────────────────────────────────────
 #  数据结构
 # ──────────────────────────────────────────────
 
@@ -169,7 +234,6 @@ class EventAction(Enum):
     STOP = "stop"     # 停止监听
     POLL = "poll"     # 读取未消费事件并推进游标
     WAIT = "wait"     # 长轮询阻塞等待新事件
-    DEBUG = "debug"   # 原始协议包转储开关（调试）
 
 
 @dataclass
@@ -436,36 +500,6 @@ def _normalize_onvif_topic(raw_topic: str) -> str:
 def _normalize_private_topic(alm: str) -> str:
     """把私有协议 alm 代码归一化"""
     return SK_ALM_TOPIC_MAP.get((alm or "").strip().upper(), (alm or "unknown").lower())
-
-
-# ──────────────────────────────────────────────
-#  原始包转储（调试用，默认关闭，经 action="debug" 开启）
-# ──────────────────────────────────────────────
-
-_raw_debug_lock = threading.Lock()
-
-
-def _dump_raw_packet(camera_name: str, channel: str, kind: str, payload: str) -> None:
-    """调试开启时把原始协议包追加写入转储文件（失败静默，不影响事件链路）。
-
-    转储内容是设备上报的原文（ONVIF NotificationMessage / 私有协议 JSON），
-    不含凭据；写入仍限于 events/ 白名单路径。
-    """
-    if not RAW_DEBUG_FLAG_PATH.exists():
-        return
-    try:
-        with _raw_debug_lock:
-            _ensure_events_dir()
-            # 超限轮转：旧转储移到 .old.txt（只保留一份）
-            if (RAW_DEBUG_DUMP_PATH.exists()
-                    and RAW_DEBUG_DUMP_PATH.stat().st_size > _RAW_DEBUG_MAX_BYTES):
-                RAW_DEBUG_DUMP_PATH.replace(RAW_DEBUG_DUMP_PATH.with_suffix(".old.txt"))
-            ts = datetime.now().astimezone().isoformat(timespec="seconds")
-            with open(RAW_DEBUG_DUMP_PATH, "a", encoding="utf-8") as f:
-                f.write(f"===== {ts} | camera={camera_name} | channel={channel} | {kind} =====\n")
-                f.write(payload.rstrip() + "\n\n")
-    except Exception:
-        pass
 
 
 # ──────────────────────────────────────────────
@@ -743,10 +777,6 @@ class _CameraEventMonitor:
 
     def _handle_pull_response(self, body: str) -> None:
         """解析 PullMessagesResponse 中的 NotificationMessage 并逐条上报"""
-        # 调试转储：含事件的响应原文（空响应不转储，避免 10s 一条刷屏）
-        if "NotificationMessage" in body:
-            _dump_raw_packet(self.camera_name, "onvif", "pull-response", body)
-
         try:
             root = ET.fromstring(body)
         except ET.ParseError:
@@ -782,18 +812,6 @@ class _CameraEventMonitor:
             skipped = init_snapshot or cleared
             topic = _normalize_onvif_topic(raw_topic)
 
-            # 调试转储：单条消息的解析结论（原始 topic → 归一化结果、是否被滤）
-            skip_reason = (
-                "（Initialized 状态快照，已忽略）" if init_snapshot
-                else "（清除沿，已忽略）" if cleared else ""
-            )
-            _dump_raw_packet(
-                self.camera_name, "onvif", "message-parsed",
-                f"raw_topic={raw_topic!r}\nitems={items!r}\n"
-                f"PropertyOperation={prop_op!r}\n"
-                f"normalized_topic={topic!r}\n"
-                f"emitted={not skipped}" + skip_reason,
-            )
             if skipped:
                 continue
 
@@ -826,11 +844,10 @@ class _CameraEventMonitor:
     # ══════════════════════════════════════════
 
     def _private_rtsp_alarm_loop(self) -> None:
-        """维持 RTSP 会话并监听报警 JSON 推送，断线自动重连（指数退避封顶 30s）。
+        """维持 RTSP 会话并监听 interleaved 通道 0x65 的报警 JSON 推送，断线自动重连（指数退避封顶 30s）。
 
-        vendor 文档 5.24: 报警消息通过 RTSP 通道上报。建立会话（DESCRIBE →
-        SETUP → PLAY，使用低码率子流以减小带宽）后，在同一 TCP 连接的数据流中
-        扫描 {"serv":"alarm", ...} JSON 报文。
+        设备在同一 TCP 连接的 channel 0x65 上推送报警 JSON（~94 字节），
+        User-Agent 须为 "skyworth"，SETUP interleaved=0-101。
         """
         backoff = 2.0
         while not self._stop_event.is_set():
@@ -839,16 +856,10 @@ class _CameraEventMonitor:
             try:
                 sock = self._open_rtsp_alarm_session()
                 self._channels["private"] = True
-                # 调试转储：会话建立标记（用于判断私有通道是否在工作）
-                _dump_raw_packet(
-                    self.camera_name, "private", "session-established",
-                    f"RTSP 报警会话已建立，session_id="
-                    f"{getattr(self, '_rtsp_session_id', '') or '(无，降级为裸连接监听)'}",
-                )
                 session_start = time.time()
                 self._read_alarm_stream(sock)
             except Exception as e:
-                _dump_raw_packet(self.camera_name, "private", "session-error", repr(e))
+                pass
             finally:
                 if sock is not None:
                     try:
@@ -863,10 +874,6 @@ class _CameraEventMonitor:
             # 立即断开（如设备拒绝会话）时持续指数退避，避免 2s 重连轰炸设备
             if session_start and time.time() - session_start > 30.0:
                 backoff = 2.0
-            _dump_raw_packet(
-                self.camera_name, "private", "session-lost",
-                f"RTSP 连接断开，{backoff:.0f}s 后重连",
-            )
             if self._stop_event.wait(backoff):
                 return
             backoff = min(backoff * 2, 30.0)
@@ -874,8 +881,11 @@ class _CameraEventMonitor:
     def _open_rtsp_alarm_session(self) -> socket.socket:
         """建立 RTSP 会话（TCP interleaved）供设备推送报警。
 
-        支持 Basic 与 Digest 鉴权（首请求不带凭据，收到 401 挑战后同连接重试）；
-        SETUP/PLAY 失败时降级为仅保持 DESCRIBE 连接（部分固件在裸连接上也推送）。
+        对齐 alarm.py 已验证方案：
+        - User-Agent 须为 "skyworth"（设备端检查，DESCRIBE 前即设好）
+        - 解析 SDP 中所有 a=control: 轨道，逐一 SETUP（每轨道 interleaved=0-1,2-3...）
+        - 设备识别 User-Agent 后在同一会话的私有通道 0x65 推送报警 JSON
+        - 支持 Basic 与 Digest 鉴权；DESCRIBE/SETUP/PLAY 失败时降级
         """
         import base64
         import hashlib
@@ -896,8 +906,6 @@ class _CameraEventMonitor:
             if not self.username:
                 return ""
             if digest_nonce:
-                # RFC 2069 基础 Digest（设备挑战不含 qop）：
-                # response = MD5(MD5(user:realm:pass):nonce:MD5(method:uri))
                 ha1 = hashlib.md5(
                     f"{self.username}:{digest_realm}:{self.password}".encode()
                 ).hexdigest()
@@ -913,7 +921,7 @@ class _CameraEventMonitor:
                     f"{self.username}:{self.password}".encode()
                 ).decode()
                 return f"Authorization: Basic {token}\r\n"
-            return ""  # 尚未收到挑战：不携带凭据
+            return ""
 
         cseq_counter = [0]
 
@@ -922,7 +930,7 @@ class _CameraEventMonitor:
             req = (
                 f"{method} {url} RTSP/1.0\r\n"
                 f"CSeq: {cseq_counter[0]}\r\n"
-                f"User-Agent: xpai-camera-control\r\n"
+                f"User-Agent: {SK_RTSP_USER_AGENT}\r\n"
                 f"{build_auth(method, url)}{extra}\r\n"
             )
             sock.sendall(req.encode("utf-8"))
@@ -952,43 +960,76 @@ class _CameraEventMonitor:
                 use_basic = True
             retried = True
             describe = send_req("DESCRIBE", base_url, "Accept: application/sdp\r\n")
-        # 调试转储：DESCRIBE 最终响应原文（判断设备是否接受会话；响应不含凭据）
-        _dump_raw_packet(
-            self.camera_name, "private", "rtsp-describe",
-            (f"({'Digest' if digest_nonce else 'Basic'} 挑战后重试) " if retried else "")
-            + (describe or "(无响应)"),
-        )
         describe_ok = bool(describe) and "200" in describe.splitlines()[0]
         if not describe_ok:
-            # DESCRIBE 未成功也保持连接监听（设备可能仍推送）
             self._rtsp_session_id = ""
             return sock
 
-        # SETUP 第一条 track（TCP interleaved，尽力而为）。
-        # 注意跳过会话级 a=control:*（RTSP 规范中表示"请求 URL 本身"），
-        # 必须选中 track 级 control（如 trackID=0），否则拼出非法 URL 导致
-        # SETUP 失败、设备立即断开裸连接（ZLMediaKit 固件实测行为）
-        session_id = ""
-        controls = [c.strip() for c in re.findall(r"a=control:(\S+)", describe)]
-        control = next((c for c in controls if c != "*"), "")
-        if control or controls:
-            if control.lower().startswith("rtsp://"):
-                track_url = control
-            elif control:
-                track_url = base_url.rstrip("/") + "/" + control.lstrip("/")
+        # ── 解析 SDP 所有轨道（对齐 alarm.py _parse_sdp_tracks） ──
+        track_urls: List[str] = []
+        sdp_base_url = base_url
+        current_control = ""
+        for line in describe.split("\r\n"):
+            if line.startswith("a=control:"):
+                ctrl = line.split(":", 1)[1].strip()
+                if ctrl and ctrl != "*":
+                    current_control = ctrl
+            if line.startswith("m=") and current_control:
+                if current_control.lower().startswith("rtsp://"):
+                    track_urls.append(current_control)
+                else:
+                    track_urls.append(
+                        f"{sdp_base_url.rstrip('/')}/{current_control}"
+                    )
+                current_control = ""
+        if not track_urls:
+            # 回退：取第一个非 * 的 a=control:
+            controls = [c.strip() for c in re.findall(r"a=control:(\S+)", describe)]
+            control = next((c for c in controls if c != "*"), "")
+            if control:
+                if control.lower().startswith("rtsp://"):
+                    track_urls.append(control)
+                else:
+                    track_urls.append(base_url.rstrip("/") + "/" + control.lstrip("/"))
             else:
-                track_url = base_url  # 仅有 control:* → SETUP 目标即呈现 URL
-            setup = send_req(
-                "SETUP", track_url,
-                "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n",
-            )
-            sm = re.search(r"Session:\s*([^;\r\n]+)", setup)
-            if sm and "200" in (setup.splitlines()[0] if setup else ""):
-                session_id = sm.group(1).strip()
+                track_urls.append(base_url)
 
-        # PLAY
+        # ── 多轨道 SETUP（每轨道 interleaved=0-1, 2-3, ...） ──
+        session_id = ""
+        interleaved_base = 0
+        for track_url in track_urls:
+            transport = (
+                f"Transport: RTP/AVP/TCP;interleaved={interleaved_base}"
+                f"-{interleaved_base + 1}\r\n"
+            )
+            setup = send_req("SETUP", track_url, transport)
+            setup_status = setup.splitlines()[0] if setup else ""
+
+            # 401 → 认证后重试一次
+            if "401" in setup_status:
+                rm = re.search(r'realm="([^"]+)"', setup)
+                nm = re.search(r'nonce="([^"]+)"', setup)
+                if "Digest" in setup and rm and nm:
+                    digest_realm, digest_nonce = rm.group(1), nm.group(1)
+                else:
+                    use_basic = True
+                setup = send_req("SETUP", track_url, transport)
+                setup_status = setup.splitlines()[0] if setup else ""
+
+            sm = re.search(r"Session:\s*([^;\r\n]+)", setup)
+            if sm and "200" in setup_status:
+                sid = sm.group(1).strip()
+                if not session_id:
+                    session_id = sid
+                interleaved_base += 2  # 下一个轨道用下两个 interleaved 通道
+
+        # ── PLAY（使用第一个轨道 URL，附带 Session + Range） ──
         if session_id:
-            send_req("PLAY", base_url, f"Session: {session_id}\r\n")
+            play_target = track_urls[0] if track_urls else base_url
+            send_req(
+                "PLAY", play_target,
+                f"Session: {session_id}\r\nRange: npt=0.000-\r\n",
+            )
             self._rtsp_session_id = session_id
         else:
             self._rtsp_session_id = ""
@@ -996,8 +1037,12 @@ class _CameraEventMonitor:
         return sock
 
     def _read_alarm_stream(self, sock: socket.socket) -> None:
-        """持续读取 RTSP 连接数据，提取报警 JSON；定期发送 OPTIONS 保活"""
-        buffer = b""
+        """持续读取 RTSP 连接数据，通过 _InterleavedFrameParser 解析帧，
+        提取报警通道（0x65）的 JSON。
+
+        视频/音频通道的帧静默跳过。OPTIONS keepalive 保活（25s 间隔）。
+        """
+        parser = _InterleavedFrameParser()
         last_keepalive = time.time()
         cseq = 10
         base_url = f"rtsp://{self.ip}:{self.rtsp_port}{self.rtsp_path}"
@@ -1013,7 +1058,7 @@ class _CameraEventMonitor:
                 try:
                     sock.sendall(
                         f"OPTIONS {base_url} RTSP/1.0\r\nCSeq: {cseq}\r\n"
-                        f"User-Agent: xpai-camera-control\r\n{session_hdr}\r\n".encode()
+                        f"User-Agent: {SK_RTSP_USER_AGENT}\r\n{session_hdr}\r\n".encode()
                     )
                 except OSError:
                     return  # 连接失效，外层重连
@@ -1027,69 +1072,77 @@ class _CameraEventMonitor:
             if not chunk:
                 return  # 对端关闭
 
-            buffer += chunk
-            buffer = self._extract_alarms(buffer)
-            # 防止 RTP 数据无限膨胀：只保留尾部（报警 JSON 远小于 64KB）
-            if len(buffer) > 65536:
-                buffer = buffer[-65536:]
+            # 用帧解析器解析（自动跳过 RTSP 文本响应和空白字节）
+            for channel, payload in parser.feed(chunk):
+                if channel == SK_ALARM_CHANNEL:
+                    self._process_alarm_channel_payload(payload)
+                # 其他通道（视频/音频）静默跳过
 
-    def _extract_alarms(self, buffer: bytes) -> bytes:
-        """从字节流中提取所有 {"serv":"alarm",...} JSON 报文，返回剩余缓冲"""
-        search_from = 0
-        while True:
-            marker = buffer.find(b'"serv"', search_from)
-            if marker < 0:
-                break
-            # 回溯最近的 '{'
-            start = buffer.rfind(b"{", 0, marker)
-            if start < 0:
-                search_from = marker + 6
-                continue
-            # 花括号配对（报警 JSON 无嵌套字符串花括号，简单计数即可）
-            depth = 0
-            end = -1
-            for i in range(start, min(len(buffer), start + 8192)):
-                b = buffer[i:i + 1]
-                if b == b"{":
-                    depth += 1
-                elif b == b"}":
-                    depth -= 1
-                    if depth == 0:
-                        end = i
-                        break
-            if end < 0:
-                # JSON 不完整，等待更多数据（保留 start 之后的内容）
-                return buffer[start:]
+    @staticmethod
+    def _extract_rtp_payload(rtp_data: bytes) -> str:
+        """从 RTP 数据包中提取 Payload 并解码为 UTF-8 字符串。
 
-            candidate = buffer[start:end + 1]
+        RTP 固定头 12 字节 + CC*4 CSRC + 可选 Extension + Payload。
+        当报警通道 payload 不是纯 JSON 时调用（兼容 RTP 包裹的情况）。
+        """
+        if len(rtp_data) < 12:
+            return ""
+        cc = rtp_data[0] & 0x0F
+        ext_flag = (rtp_data[0] >> 4) & 0x1
+        offset = 12 + cc * 4
+        if offset > len(rtp_data):
+            return ""
+        if ext_flag and offset + 4 <= len(rtp_data):
+            ext_len = struct.unpack("!H", rtp_data[offset + 2: offset + 4])[0]
+            offset += 4 + ext_len * 4
+        if offset >= len(rtp_data):
+            return ""
+        return rtp_data[offset:].decode("utf-8", errors="replace").strip()
+
+    def _process_alarm_channel_payload(self, payload: bytes) -> None:
+        """从报警通道（0x65）payload 中提取 JSON 并处理报警事件。
+
+        优先尝试直接解析 JSON（实测为纯 JSON ~94 字节）；
+        失败时尝试剥离 RTP 头后再解析（兼容 RTP 包裹的情况）。
+        兼容 serv/ser、date/dat 两套字段名。
+        """
+        text = payload.decode("utf-8", errors="ignore").strip()
+        alarm_json = text
+
+        # 优先直接解析 JSON
+        try:
+            obj = json.loads(alarm_json)
+        except (json.JSONDecodeError, ValueError):
+            # 直接解析失败 → 尝试剥离 RTP 头
+            alarm_json = self._extract_rtp_payload(payload)
+            if not alarm_json:
+                return
             try:
-                obj = json.loads(candidate.decode("utf-8", errors="ignore"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                search_from = marker + 6
-                continue
+                obj = json.loads(alarm_json)
+            except (json.JSONDecodeError, ValueError):
+                return
 
-            if isinstance(obj, dict) and obj.get("serv") == "alarm":
-                # 调试转储：私有协议报警 JSON 原文
-                _dump_raw_packet(self.camera_name, "private", "alarm-json",
-                                 candidate.decode("utf-8", errors="ignore"))
-                self._handle_private_alarm(obj)
-                buffer = buffer[end + 1:]
-                search_from = 0
-            else:
-                # 调试转储：非 alarm 的 serv 报文也记录（确认设备在该通道上推了什么）
-                if isinstance(obj, dict) and "serv" in obj:
-                    _dump_raw_packet(self.camera_name, "private", "serv-json(非alarm)",
-                                     candidate.decode("utf-8", errors="ignore"))
-                search_from = marker + 6
+        if not isinstance(obj, dict):
+            return
 
-        return buffer
+        # 兼容 serv/ser 两套字段名
+        serv_val = obj.get("serv", obj.get("ser", ""))
+        if serv_val == "alarm":
+            self._handle_private_alarm(obj)
 
     def _handle_private_alarm(self, obj: Dict[str, Any]) -> None:
-        """处理一条私有协议报警 JSON（vendor 5.24.1 消息上报格式）"""
+        """处理一条私有协议报警 JSON。
+
+        兼容两套字段名: serv/ser、date/dat（alarm.py 实测两种固件都有）。
+        """
         alm = str(obj.get("alm", ""))
         detail = {
             k: obj[k] for k in ("fn", "fmt", "num", "data", "dir") if k in obj
         }
+        # 补充 date/dat 到 detail（方便下游追溯报警时间）
+        date_val = obj.get("date", obj.get("dat", ""))
+        if date_val:
+            detail["date"] = date_val
         self._emit(
             topic=_normalize_private_topic(alm),
             source="private",
@@ -1352,55 +1405,6 @@ def stop_event_monitor(
     return EventMonitorResult(success=True, camera_name=camera_name, running=False)
 
 
-def set_event_raw_debug(mode: str = "status") -> Dict[str, Any]:
-    """
-    原始协议包转储开关（调试接口，经 manage_camera_events(action="debug") 调用）。
-
-    排查场景：事件全部落为兜底类型（如 digitalinput）时，无法从
-    schema 1.0 消息判断是 topic 归一化缺规则、还是某条协议通道根本没在工作。
-    开启后两条通道的原始上报追加写入 events/raw_packets_debug.txt：
-      - onvif:   含事件的 PullMessages 响应原文 + 逐条解析结论（原始 topic →
-                 归一化结果、是否被清除沿过滤）
-      - private: RTSP 会话生命周期（DESCRIBE 响应/建立/断开）+ 报警 JSON 原文
-
-    开关是标记文件 events/raw_debug.flag，跨进程存活（宿主回收 MCP 进程后，
-    自动恢复的监听同样受开关控制），无需重启监听即时生效。
-
-    安全约束: 转储是"原始消息不落盘"原则的唯一例外，仅限调试、用完应关闭；
-              内容为设备上报原文（不含凭据），写入仍限于 events/ 白名单路径
-
-    Args:
-        mode: "on" 开启 / "off" 关闭 / "status"(默认) 查询当前状态
-
-    Returns:
-        {success, enabled, dump_path, dump_exists, dump_size_bytes}
-    """
-    mode = (mode or "status").strip().lower()
-    try:
-        if mode == "on":
-            _ensure_events_dir()
-            RAW_DEBUG_FLAG_PATH.write_text(
-                datetime.now().astimezone().isoformat(timespec="seconds"),
-                encoding="utf-8",
-            )
-        elif mode == "off":
-            RAW_DEBUG_FLAG_PATH.unlink(missing_ok=True)
-        elif mode != "status":
-            return {"success": False,
-                    "error_message": f"无效的 debug_mode: {mode}（可选 on/off/status）"}
-    except OSError as e:
-        return {"success": False, "error_message": f"切换调试开关失败: {e}"}
-
-    dump_exists = RAW_DEBUG_DUMP_PATH.exists()
-    return {
-        "success": True,
-        "enabled": RAW_DEBUG_FLAG_PATH.exists(),
-        "dump_path": str(RAW_DEBUG_DUMP_PATH),
-        "dump_exists": dump_exists,
-        "dump_size_bytes": RAW_DEBUG_DUMP_PATH.stat().st_size if dump_exists else 0,
-    }
-
-
 def get_pending_events(
     camera_name: Optional[str] = None,
     limit: int = 100,
@@ -1507,7 +1511,6 @@ def manage_camera_events(
     debounce_seconds: float = DEFAULT_DEBOUNCE_SECONDS,
     limit: int = 100,
     timeout_seconds: float = 60.0,
-    debug_mode: str = "status",
 ):
     """
     统一事件入口（唯一注册的 MCP 工具），通过 action 切换工作模式：
@@ -1516,13 +1519,11 @@ def manage_camera_events(
       - STOP:  停止监听（需 camera_name）
       - POLL:  读取未消费事件并推进游标（camera_name 可选；参数 limit）
       - WAIT:  长轮询阻塞等待新事件（camera_name 可选；参数 timeout_seconds）
-      - DEBUG: 原始协议包转储开关（参数 debug_mode: on/off/status）
 
     安全约束: START 模式启动后台监听线程，须用户确认后调用；其余模式无特殊约束
 
     Returns:
-        START/STOP → EventMonitorResult；POLL/WAIT → PendingEventsResult；
-        DEBUG → dict（含 enabled / dump_path）
+        START/STOP → EventMonitorResult；POLL/WAIT → PendingEventsResult
     """
     if action in (EventAction.START, EventAction.STOP):
         if not camera_name:
@@ -1540,10 +1541,7 @@ def manage_camera_events(
     if action == EventAction.WAIT:
         return wait_for_events(camera_name, timeout_seconds)
 
-    if action == EventAction.DEBUG:
-        return set_event_raw_debug(debug_mode)
-
     return PendingEventsResult(
         success=False,
-        error_message=f"未知的 action: {action}（可选 start/stop/poll/wait/debug）",
+        error_message=f"未知的 action: {action}（可选 start/stop/poll/wait）",
     )

@@ -11,7 +11,7 @@ metadata:
 
 ## When to Use
 
-Trigger this skill when the user:
+Trigger this skill when the user:+
 - Wants to see a camera feed, capture a snapshot, or record video
 - Asks to find or discover cameras on the network
 - Requests pan, tilt, camera movement, or PTZ calibration

@@ -296,13 +296,13 @@ TOOLS = [
     # ── Events (IPC 事件接收) ──
     Tool(
         name="manage_camera_events",
-        description="摄像头告警事件统一入口，action 切换模式：start=启动监听（后台线程，需用户确认；双协议+去重+自动快照+落盘）；stop=停止监听；poll=读取未消费事件并推进游标（跨会话可用）；wait=长轮询阻塞等待新事件（单次上限 60 秒，持续守护时循环调用）；debug=原始协议包转储开关（排查协议通道/事件类型问题，转储到 events/raw_packets_debug.txt，用完应关闭）。",
+        description="摄像头告警事件统一入口，action 切换模式：start=启动监听（后台线程，需用户确认；双协议+去重+自动快照+落盘）；stop=停止监听；poll=读取未消费事件并推进游标（跨会话可用）；wait=长轮询阻塞等待新事件（单次上限 60 秒，持续守护时循环调用）。",
         inputSchema={
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["start", "stop", "poll", "wait", "debug"],
+                    "enum": ["start", "stop", "poll", "wait"],
                     "description": "工作模式",
                 },
                 "camera_name": {
@@ -329,12 +329,6 @@ TOOLS = [
                     "type": "number",
                     "description": "阻塞超时（秒，上限 60，仅 wait）",
                     "default": 60,
-                },
-                "debug_mode": {
-                    "type": "string",
-                    "enum": ["on", "off", "status"],
-                    "description": "原始包转储开关（仅 debug）：on 开启 / off 关闭 / status 查询",
-                    "default": "status",
                 },
             },
             "required": ["action"],

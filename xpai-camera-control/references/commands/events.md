@@ -36,7 +36,7 @@ Alarm/event subscription, snapshot linkage, and on-disk event store — `scripts
 
 ---
 
-## `manage_camera_events(action, camera_name=None, protocols="both", debounce_seconds=5.0, limit=100, timeout_seconds=60, debug_mode="status")`
+## `manage_camera_events(action, camera_name=None, protocols="both", debounce_seconds=5.0, limit=100, timeout_seconds=60)`
 
 **The single MCP entry point for all event operations** — the `action` parameter switches the working mode (keeps the MCP schema footprint at one tool instead of four). Internally dispatches to `start_event_monitor` / `stop_event_monitor` / `get_pending_events` / `wait_for_events`, which remain exported for secondary development but are **not** registered as MCP tools.
 
@@ -46,7 +46,6 @@ Alarm/event subscription, snapshot linkage, and on-disk event store — `scripts
 | `stop` | Stop the listener | `EventMonitorResult` | `camera_name` (required) |
 | `poll` | Read unconsumed events, advance cursor | `PendingEventsResult` | `camera_name` (optional filter), `limit` |
 | `wait` | Long-poll block for new events | `PendingEventsResult` | `camera_name` (optional filter), `timeout_seconds` |
-| `debug` | Toggle raw protocol packet dump | `dict` (enabled, dump_path, dump_size_bytes) | `debug_mode`: `"on"` / `"off"` / `"status"` (default) |
 
 ### `action="start"`
 
@@ -91,16 +90,4 @@ Long-poll blocking wait: returns immediately when an event arrives (and consumes
 | **Returns** | `PendingEventsResult` (events empty on timeout) |
 | **Parameters** | `camera_name`: optional filter. `timeout_seconds`: default 60, **capped at 60** to stay under typical MCP client stdio tool timeouts. |
 | **Agent behavior** | For continuous in-session guarding, loop this call — never expect a single long block. On each non-empty return: read snapshots, analyze, report, then continue the loop until the user stops. |
-
-### `action="debug"`
-
-Toggle the **raw protocol packet dump** — a diagnostic aid for when the schema 1.0 output is not enough to tell whether a suspicious `event_type` (e.g. everything arriving as the fallback `digitalinput`) is a topic-normalization gap or a protocol channel that is not working at all.
-
-| Aspect | Detail |
-|--------|--------|
-| **Safety** | The dump is the **only** exception to the "raw protocol messages are never persisted" rule — debug only, turn it **off** when done. Content is the device's own reports (no credentials); writes stay inside the `events/` whitelist path. |
-| **Returns** | `dict`: `success`, `enabled`, `dump_path`, `dump_exists`, `dump_size_bytes` |
-| **Parameters** | `debug_mode`: `"on"` enable / `"off"` disable / `"status"` (default) query. |
-| **Implementation** | The switch is a marker file `events/raw_debug.flag` (survives process recycling; auto-resumed listeners obey it too) — takes effect immediately, no listener restart needed. While enabled, both channels append to `events/raw_packets_debug.txt` (rotated to `.old.txt` past 5 MB): **onvif** — full PullMessages response containing events + a per-message parse verdict (`raw_topic` → `normalized_topic`, whether filtered as a clear edge); **private** — RTSP session lifecycle (DESCRIBE response / established / lost) + raw alarm JSON. |
-| **Agent behavior** | Enable, reproduce the event, then read the dump file directly to diagnose. A dump with only `channel=onvif` entries and no `session-established` marker means the private channel never came up; a `raw_topic` that maps to an unexpected `normalized_topic` means a normalization rule is missing. Always run `debug_mode="off"` afterwards. |
 
