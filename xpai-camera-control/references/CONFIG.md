@@ -103,7 +103,7 @@ Unique string identifier for the camera.
 
 ### RTSP URL Construction
 
-The system builds RTSP URLs via `_build_rtsp_url()`, which auto-injects credentials:
+The system builds RTSP URLs internally by auto-injecting credentials:
 
 ```
 rtsp://{username}:{password}@{ip}:{rtsp_port}{rtsp_path}

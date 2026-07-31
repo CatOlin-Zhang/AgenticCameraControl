@@ -1,12 +1,14 @@
 """
 XPAI Camera Control — Toolkit 工具集
 
-提供摄像头控制的全部工具函数，按功能分为 5 大类：
+提供摄像头控制的全部工具函数，按功能分为 4 大类：
   1. stream       — 音视频流与存储
   2. ptz          — 云台与巡航
   3. device_mgmt  — 设备管理与维护
-  4. discovery    — 创维私有协议发现
-  5. events       — IPC 事件接收（双协议告警监听 + 落盘）
+  4. events       — IPC 事件接收（双协议告警监听 + 落盘）
+
+注意: discovery.py / auth/ 为内部实现模块，其函数（send_tcp_command、
+discover_sky_devices 等）不在此导出，Agent 通过 MCP 工具间接使用。
 """
 
 # ── stream ──
@@ -24,13 +26,10 @@ from .stream import (
 )
 
 # ── ptz ──
-# 注意: _move_to_position 为内部函数，保留导出供二次开发者直接调用，
-# 但不作为 MCP 工具暴露（未在 mcp_server.py 中注册）。
 from .ptz import (
     control_ptz,
     get_ptz_parameters,
     calibrate_ptz,
-    _move_to_position,
     stop_ptz,
     PTZMoveResult,
     PTZParameters,
@@ -59,42 +58,15 @@ from .device_mgmt import (
     AuthStatusResult,
     AuthStatus,
     CloudAuthRequestResult,
-    generate_claw_id,
-    get_or_create_claw_id,
-    _build_rtsp_url,
-)
-
-# ── discovery (创维私有协议) ──
-# 注意: send_tcp_command 保留导出供二次开发者直接调用，
-# 但不作为 MCP 工具暴露（已在 mcp_server.py 中移除注册）。
-from .discovery import (
-    SkDiscoveredDevice,
-    SkChannelInfo,
-    SkyDiscoveryListener,
-    discover_sky_devices,
-    send_tcp_command,
-    SK_MULTICAST_ADDR,
-    SK_MULTICAST_PORT,
-    SK_TOOL_RECV_PORT,
-    SK_TCP_PORT,
-    SUBTYPE_NAMES,
 )
 
 # ── events (IPC 事件接收) ──
-# 注意: manage_camera_events 为唯一注册的 MCP 工具（action 切换模式）；
-# start/stop/get_pending/wait 为内部实现，保留导出供二次开发直接调用。
 from .events import (
     manage_camera_events,
     EventAction,
-    start_event_monitor,
-    stop_event_monitor,
-    get_pending_events,
-    wait_for_events,
     CameraEvent,
     EventMonitorResult,
     PendingEventsResult,
-    EVENT_STORE_PATH,
-    EVENTS_DIR,
 )
 
 
@@ -114,7 +86,6 @@ __all__ = [
     "control_ptz",
     "get_ptz_parameters",
     "calibrate_ptz",
-    "_move_to_position",
     "stop_ptz",
     "PTZMoveResult",
     "PTZParameters",
@@ -140,30 +111,10 @@ __all__ = [
     "AuthStatusResult",
     "AuthStatus",
     "CloudAuthRequestResult",
-    "generate_claw_id",
-    "get_or_create_claw_id",
-    "_build_rtsp_url",
-    # discovery (创维私有协议)
-    "SkDiscoveredDevice",
-    "SkChannelInfo",
-    "SkyDiscoveryListener",
-    "discover_sky_devices",
-    "send_tcp_command",
-    "SK_MULTICAST_ADDR",
-    "SK_MULTICAST_PORT",
-    "SK_TOOL_RECV_PORT",
-    "SK_TCP_PORT",
-    "SUBTYPE_NAMES",
     # events (IPC 事件接收)
     "manage_camera_events",
     "EventAction",
-    "start_event_monitor",
-    "stop_event_monitor",
-    "get_pending_events",
-    "wait_for_events",
     "CameraEvent",
     "EventMonitorResult",
     "PendingEventsResult",
-    "EVENT_STORE_PATH",
-    "EVENTS_DIR",
 ]

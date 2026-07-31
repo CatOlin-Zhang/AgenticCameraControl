@@ -1,48 +1,95 @@
-## Roadmap: Guardian Mode (Foundation implemented — tiers pending)
+## Roadmap: Guardian Mode
 
-> ✅ **Status: Foundation (skill-side) implemented.** Event receiving is exposed as a **single MCP tool** `manage_camera_events(action=start|stop|poll|wait)` (merged from the original four tools to reduce MCP schema load), with dual-protocol listening, on-disk event store, and dedup. Remaining items below are unchecked. Tiered guardian modes are agent-side runtime behavior (no further skill code needed for T1–T3).
+> **Status:** Foundation (skill-side) 已全部实现。以下为尚未实现的遗留项。
 
-Goal: when the camera detects an alarm/event (motion, tamper, line-crossing…), the system captures a snapshot at the moment of the event and the Agent proactively reports it to the user — a "smart guardian" experience. The achievable level depends on **host (MCP client) capabilities**, so the design is tiered: the skill-side foundation is built once, and higher tiers unlock automatically as the host provides scheduling/trigger mechanisms.
+### Foundation 遗留项（skill-side，需写代码）
 
-**Local-first principle:** all received events and snapshots are persisted **locally on disk**; the on-disk event store is the single source of truth. Any outbound push (e.g. the WeChat alert leg) is an optional, consent-gated extra on top of the local store — never a replacement for it.
+- [ ] **Per-camera protocol recording** — `connect_device` 成功后将实际使用的协议（onvif / sky_private）持久化到 config.yaml，供后续连接直接选择（当前每次连接都要重新探测）
+- [ ] **Snapshot & event retention** — 将 `events/` 和事件快照接入 `manage_storage_status` 策略（max age / max count 清理），防止存储无限膨胀
+- [ ] **Desktop notification fallback** — MCP server 进程在事件到达时弹出 Windows toast 通知（不依赖 Agent 会话存活；用户打开聊天后可获取完整分析）
 
-### Foundation (skill-side, host-independent)
+### Cloud Authorization（本地授权 → 云端授权升级）
 
-- [x] **Verify camera event capability (dual-protocol)** — *implemented as runtime probing in `manage_camera_events(action="start")`*: ONVIF Event Service tried first (`CreatePullPointSubscription`, port auto-probed, Skyworth = 2000); Skyworth private alarm channel as fallback — **corrected by vendor doc §5.24: private alarms are pushed over the RTSP channel (not TCP 9010)**, alarm JSON `{"serv":"alarm","alm":"MD|HD|VGR|VGL|VS|VD|HTD|LTD",...}`; per-camera protocol recording in config.yaml still TODO
-- [x] **`toolkit/events.py`** — dual-protocol event listener (ONVIF PullPoint + private RTSP-channel alarm push) running as a background thread inside the MCP server process; on event arrival it applies debounce, immediately calls the internal snapshot function (same-process, no Agent involvement), then persists the event to the on-disk store
-- [x] **On-disk event store (single source of truth)** — raw protocol messages are converted by a processing layer in the receive path and appended to `events/camera_events.txt` as schema 1.0 JSON lines `{schema_version, event_id, event_type, camera_id, camera_name, timestamp, severity, title, message, label, confidence, snapshot_path, tags}`; per-camera consumer cursor in `events/events_cursor.json`; snapshots go to `snapshots/`. All received messages and images stay local
-- [x] **Snapshot debounce / rate limit** — per-camera dedup by `(camera, normalized topic)` within the debounce window (default 5 s, also collapses cross-protocol duplicates); snapshot capture rate-limited to one per camera per window
-- [x] **New MCP tool (single entry):** `manage_camera_events(action, ...)` — one registered tool, `action` switches the working mode (the per-mode functions remain exported for secondary development but are not registered):
-  - [x] `action="start"` (`camera_name`, `protocols`, `debounce_seconds`) / `action="stop"` (`camera_name`) — user-controlled on/off switch for the background listener
-  - [x] `action="poll"` (`camera_name?`, `limit`) — returns unconsumed events + snapshot paths, advances persisted cursor; reads the on-disk store
-  - [x] `action="wait"` (`camera_name?`, `timeout_seconds=60`) — long-poll blocking mode, default/cap 60 s, Agent loops the call
-- [x] **Monitor intent persistence & auto-resume** — fixes the WorkBuddy-reported bug where the host recycling the MCP process silently killed listener threads (`monitors: {}`): `start` persists the monitoring intent to `events/monitor_state.json`, `stop` clears it; `resume_persisted_monitors()` re-arms persisted-but-dead listeners on server startup (async daemon thread) and at every `poll`/`wait` entry, with a non-blocking mutex, 60 s per-camera retry cooldown, and an intent re-read before each start (concurrent `stop` cancels the resume). No new authorization surface — only listeners the user enabled and never stopped are restored
-- [ ] **Snapshot & event retention** — wire `events/` and event snapshots into `manage_storage_status` policies (max age / max count cleanup) so the store never accumulates unbounded
-- [ ] **Desktop notification fallback** — MCP server process raises a Windows toast on event (works even with no active Agent session; user opens a chat to get the full analysis)
-- [x] **Revise [Security Constraints](#security-constraints)** — SKILL.md now states: *background threads only for per-camera event listeners, only after explicit user enablement via `manage_camera_events(action="start")`, behavior limited to alarm subscription plus writes into the `snapshots/` and `events/` whitelist paths*; off-LAN snapshot push authorization note still applies to the WeChat forwarder
-- [x] **Docs sync** — `references/commands/events.md` done; WORKFLOW.md gained a Phase 5 event-monitoring section (start/stop, T1 poll, T2 wait loop) and ARCHITECTURE.md gained an Event Monitoring Architecture section (dual-protocol listener → schema 1.0 processing layer → on-disk store); README.md security boundary & module tables updated to include events
+> **Status:** 当前 `request_cloud_auth` / `poll_auth_status` 为本地模拟（`local_auth_server`），未来将升级为真实云端授权服务。
 
-### Tiered Guardian Modes (agent-side, selected at runtime)
+- [ ] **云端授权服务器对接** — 提供远程服务器域名与接口后，将 `request_cloud_auth` 的目标地址从 `http://127.0.0.1:18899` 切换为云端域名；请求体保持 `{claw_id, sn, device_ip, device_model}` 不变
+- [ ] **授权流程内部化** — 云端授权作为 `connect_device` 的内部环节（密码认证失败 → 自动发起云端授权 → 轮询状态 → 获取密码），不作为独立 MCP 工具暴露给 Agent；现有 `request_cloud_auth` / `poll_auth_status` 两个 MCP 工具降级为内部函数
+- [ ] **授权状态轮询** — `connect_device` 内部循环调用轮询接口检查授权状态（间隔 5s，上限 120s），授权通过后自动获取密码并完成连接，对 Agent 只返回最终连接结果
+- [ ] **本地授权兼容降级** — 云端不可达时自动降级到本地 `local_auth_server`（如已启动），两者均不可达时返回 `needs_password` 提示用户手动输入
 
-When the user first asks for monitoring ("帮我看着家里" / "watch the camera"), the Agent runs this capability-detection decision tree **once**, then applies the highest tier available:
+### Camera Tracking & Night Vision（摄像头追踪与夜视控制）
 
-| Tier | Host Capability Detected | Agent Behavior |
-|------|--------------------------|----------------|
-| **T1 — On-demand** | None (baseline, always works) | User asks → Agent calls `manage_camera_events(action="poll")` → reads snapshots → reports backlog |
-| **T2 — In-session guard** | None (baseline, always works) | User says "watch" → Agent loops `manage_camera_events(action="wait")` (60 s polls) → on event: read snapshot, analyze, report immediately → continue loop until user stops or session ends |
-| **T3 — Heartbeat guard** | Host exposes a schedule mechanism as an **agent-writable file** (e.g. heartbeat checklist) or a **scheduling tool** (cron / reminder tool in the Agent's tool list) | Agent registers a recurring task: "every N minutes call `manage_camera_events(action=\"poll\")`; if non-empty, analyze snapshots and notify the user; otherwise stay silent" — works across independent sessions because events are read from the on-disk store, not server memory |
-| **T4 — Event-driven wake** | Host exposes a webhook / hook entry that spawns an Agent session | `toolkit/events.py` gains an outbound webhook POST on event → host wakes the Agent with the event payload as prompt → second-level proactive analysis with no session dependency |
+- [ ] **Auto-tracking 目标追踪** — 基于事件告警（motion / human / vehicle）的自动追踪：事件到达后调用 `get_ptz_parameters` 获取当前位姿，结合告警方向信息计算目标偏移量，通过 `control_ptz` 步进跟踪；需定义追踪策略（追踪灵敏度、最大追踪时长、回归初始位逻辑）
+- [ ] **夜视 / 补光灯控制** — 通过 ONVIF Imaging Service 或私有协议（`SK_SETTING_SET_*`）控制红外夜视开关、白光灯补光开关、亮度/对比度调节；暴露为 MCP 工具供 Agent 调用（低光环境下 Agent 可主动开启补光后再截图分析）
 
-**Capability detection order:** scheduling tool present in own tool list → agent-writable heartbeat/checklist file documented by host → host webhook/hook config → none found = T1/T2 only, and the Agent should tell the user what host capability would unlock T3/T4.
+### Tiered Guardian Modes（agent-side，运行时选择）
 
-**Registration rules (hard):**
-- Registering any persistent scheduled task (T3) or webhook (T4) **requires explicit user consent first**, and the Agent must tell the user how to cancel it
-- The event listener thread and desktop notifications are off by default — they start only via `manage_camera_events(action="start")` after user confirmation
-- Tier selection is by capability probing, never by hard-coding host product names
+Agent 首次收到监控请求时，执行一次能力探测决策树，选取可用的最高层级：
 
-### External alert channel (outbound forwarder — outside the skill)
+| Tier | 宿主能力要求 | Agent 行为 |
+|------|-------------|-----------|
+| **T1 — On-demand** | 无（基线） | 用户提问 → Agent 调用 `manage_camera_events(action="poll")` → 读快照 → 报告积压 |
+| **T2 — In-session guard** | 无（基线） | 用户说"看着" → Agent 循环调用 `manage_camera_events(action="wait")` → 事件到达即分析+报告 |
+| **T3 — Heartbeat guard** | 宿主提供调度机制（agent-writable file / cron tool） | Agent 注册定时任务，周期性 poll 事件并通知用户 |
+| **T4 — Event-driven wake** | 宿主暴露 webhook 入口 | `toolkit/events.py` 增加 outbound webhook POST → 宿主唤醒 Agent 并传入事件 payload |
 
-- An agent-hosted forwarder (in a **separate** skill or a separate module on the agent host) consumes `events/camera_events.txt` (schema 1.0 JSON lines) and the snapshot files **directly from disk** — no MCP dependency, no requirement that the MCP server process is alive
-- The skill package itself does not implement, ship, or know about any particular forwarder — it only defines the on-disk event store as the **single public integration contract**. Forwarder integration details live in `xpai-camera-control/references/EVENT_INTEGRATION.md`
-- **Alert, not analysis:** the forwarder leg only sends a short notification (e.g. "前门 09:30 检测到移动 + 附图"); deep analysis happens when the user opens a chat and the Agent reads the local snapshot
-- **Consent-gated:** pushing snapshots outside the LAN means the image leaves the network — off by default, enabled only after explicit user authorization, and the user must be told how to disable it; the local store remains the authoritative copy regardless
+- T1/T2 不需要技能包额外代码，当前已可用
+- T3 纯 Agent 侧行为，技能包无需改动
+- T4 需要技能包增加 webhook POST 能力（依赖宿主先提供 webhook 接口）
+
+### MCP Tool Surface Optimization（MCP 工具面优化 — 16 → 12）
+
+> **Status:** 评估完成，待实施。目标是将 16 个 MCP 工具精简至 12 个，通过参数裁剪、描述精简和子流程内部化降低 Agent 上下文开销。
+
+#### Phase A — Schema 瘦身（零行为变更）
+
+- [ ] **`register_camera` 参数裁剪 10→6** — 保留 `name`、`ip`、`password`、`device_class`、`sn_code`（云端授权依赖）、`rtsp_port`（非标端口需要）；移除 `username`（永远 admin）、`port`（connect_device 自动探测回写）、`rtsp_path`（默认 /stream1 + fallback）、`rtsp_sub_path`（极少用）、`connection_type`（永远 onvif）、`pkdk`（高级字段）
+- [ ] **`connect_device` 参数裁剪 7→4** — 保留 `camera_name`、`password`、`ip`、`rtsp_port`；移除 `username`（永远 admin）、`port`（工具自动探测）、`rtsp_path`（工具自动探测）
+- [ ] **`request_cloud_auth` 参数裁剪 4→1** — 只保留 `camera_name`；移除 `sn`（自动查找）、`device_ip`（自动查找）、`device_model`（自动查找）
+- [ ] **Description 精简** — 移除 5 个工具中的实现细节和行为指引：`control_ptz`（物理极限守护描述）、`manage_camera_events`（四模式实现细节）、`request_cloud_auth`（"模拟智慧云"）、`poll_auth_status`（轮询间隔指引）、`connect_device`（缓存凭据细节）
+
+#### Phase B — 子流程内部化（行为变更）
+
+- [ ] **授权流程内部化** — `request_cloud_auth` + `poll_auth_status` 降级为 `connect_device` 内部环节；`connect_device` 返回 `pending_auth` 时 Agent 只需告知用户打开授权链接并重新调用，内部完成轮询循环（5s×24=120s）；MCP 工具从 16 降至 14
+- [ ] **注册自动化** — `register_camera` 降级为 `connect_device` 的内部副作用（连接成功后自动持久化凭据到 config.yaml）；MCP 工具从 14 降至 13
+- [ ] **设备列表合并** — `get_registered_cameras` 功能合并到 `search_devices`（无参调用时先返回已注册列表，再补充分发现结果）；MCP 工具从 13 降至 12
+
+#### 优化后工具清单（12 个）
+
+| 扇区 | 工具 | 数量 |
+|------|------|------|
+| 设备生命周期 | `search_devices`、`connect_device`、`disconnect_device` | 3 |
+| 流与媒体 | `get_audio_video_stream`、`capture_video_screenshot`、`toggle_recording`、`manage_storage_status` | 4 |
+| PTZ 控制 | `control_ptz`、`get_ptz_parameters`、`calibrate_ptz`、`stop_ptz` | 4 |
+| 事件监控 | `manage_camera_events` | 1 |
+
+#### 远期可选合并（视可靠性评估结果）
+
+- [ ] **PTZ 四合一** `ptz(action=move|get|calibrate|stop)` — 12→9，但需解决 action 选错、参数误传、返回值歧义风险（当前评估为不推荐）
+- [ ] **Stream 二合一** `stream(action=url|screenshot)` — 9→8，收益小（~30 token）
+- [ ] **理论极限** — 7 个工具（设备 / 流URL / 截图 / 录像 / 存储 / PTZ / 事件），但语义清晰度和可靠性会显著下降
+
+### Structured Error Codes（渐进式错误码系统）
+
+> **Status:** 评估完成，暂缓实施。当前 `error_message` 自然语言 + `status` + `degraded` 三位一体已覆盖 90% 场景，大模型 Agent 可直接理解转述。当小模型/多 Agent 协作成为主力场景时再启动。
+
+**现有错误传递机制：**
+- `success: bool` + `error_message: str` — 全部 16 个工具
+- `status: str`（`pending_auth` / `needs_password` / `failed`）— `connect_device`
+- `degraded: bool` + `degrade_reason: str` — `control_ptz`
+
+**触发条件：** 当观察到 Agent 频繁对同类错误做出不一致分支决策时启动实施。
+
+**渐进方案（非全面错误码）：**
+
+- [ ] **定义分支决策错误码** — 仅给 Agent 需要根据错误类型做不同操作的场景添加 `error_code` 字段，预定义约 5-6 个码：`AUTH_EXPIRED`（提示重新输入密码）、`DEVICE_OFFLINE`（跳过该设备）、`NETWORK_TIMEOUT`（重试一次）、`PHYSICAL_LIMIT`（展示 degrade_reason，已有 degraded 字段）、`STORAGE_FULL`（提示清理或切换策略）、`STREAM_UNAVAILABLE`（提示检查连接）
+- [ ] **扩展 ToolResult 基类** — 在现有 `success` + `error_message` 基础上新增可选 `error_code: str = ""` 字段，仅在分支场景填充，与现有机制完全兼容
+- [ ] **关键工具注入错误码** — 在 `connect_device`、`capture_video_screenshot`、`toggle_recording`、`manage_storage_status`、`control_ptz` 的异常处理中添加 `error_code` 赋值（约 30 行改动）
+- [ ] **SKILL.md 错误码映射表** — 在文档中增加 `error_code → Agent 预定义动作` 映射表，Agent 有码按码执行，无码照旧读 `error_message`
+
+### External alert channel（外部转发器 — 不在技能包内）
+
+- 转发器作为独立技能/模块，直接从磁盘消费 `events/camera_events.txt`（schema 1.0 JSON lines）和快照文件
+- 技能包只定义磁盘存储格式作为**唯一公开集成契约**，不实现、不发布、不感知任何具体转发器
+- 集成细节见 `xpai-camera-control/references/EVENT_INTEGRATION.md`
+- **Consent-gated:** 快照跨 LAN 推送默认关闭，需用户显式授权

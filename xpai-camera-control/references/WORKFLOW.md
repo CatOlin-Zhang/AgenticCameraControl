@@ -26,32 +26,20 @@ Notation used below: `tool_name(arg1=value, arg2=value)` describes a single MCP 
 
 ## Phase 1 — Discover Cameras: Detailed Tool Calls
 
-### ONVIF WS-Discovery
-
-> **Preferred for standard ONVIF cameras** (non-Skyworth devices don't answer `sky_discovery` multicast). Sends a Probe to `239.255.255.250:3702` on every local interface; the ONVIF port is parsed from XAddrs (**not always 80** — Skyworth uses 2000), and each device is classified via an anonymous RTSP probe (`direct_connect` / `password_required`).
+`search_devices()` is the unified discovery tool — it automatically selects the best protocol(s) and returns normalized results.
 
 ```text
-search_devices(method="ws_discovery", timeout=5)
-→ result.devices[]: ip, onvif_port, model, manufacturer, device_class per device
+search_devices()
+→ result.devices[]: ip, onvif_port, rtsp_port, device_class, model, manufacturer,
+                    sn_code, discovery_method, sky_subtype, sky_name, sky_channels,
+                    sky_mac, sky_hw_version, sky_sw_version, ...
 ```
 
-For protocol details (multicast addresses, message types, key fields), see [ARCHITECTURE.md — Device Discovery](ARCHITECTURE.md#device-discovery).
+- `discovery_method` tells you which protocol found each device (`"ws_discovery"` / `"sky_discovery"` / `"usb"`)
+- `sky_*` fields are populated for Skyworth devices, empty for others
+- `device_class` is auto-classified via RTSP probe: `"password_required"` or `"direct_connect"`
 
-### Skyworth Private Protocol Discovery
-
-```text
-search_devices(method="sky_discovery", timeout=10)
-→ result.devices[]: ip, sn, sky_subtype, sky_name, rtsp_port, sky_web_port, sky_mac per device
-```
-
-For message format and field definitions, see [ARCHITECTURE.md — Skyworth Private Protocol](ARCHITECTURE.md#skyworth-private-protocol).
-
-### USB Camera Enumeration
-
-```text
-search_devices(method="usb")
-→ list of local USB cameras with device indices
-```
+For protocol-level details (multicast addresses, message formats), see [ARCHITECTURE.md — Device Discovery](ARCHITECTURE.md#device-discovery).
 
 ---
 
@@ -259,7 +247,7 @@ calibrate_ptz(camera_name="客厅摄像头")
 → success / error_message
 ```
 
-> Note: moving to an absolute coordinate is handled by the internal function `_move_to_position` (private protocol only). It is NOT registered as an MCP tool and cannot be invoked by the agent.
+> Note: absolute coordinate movement is handled internally and is NOT available as an MCP tool.
 
 ---
 

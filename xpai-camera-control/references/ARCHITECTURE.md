@@ -1,26 +1,22 @@
 # Architecture Reference
 
-Runtime-relevant architecture details. Connection flows are encapsulated in `scripts/toolkit/device_mgmt.py` and `scripts/toolkit/discovery.py` — the agent receives structured results with clear status codes.
+Runtime-relevant architecture details. Connection flows are encapsulated inside the tool layer — the agent receives structured results with clear status codes and does not need to understand protocol internals.
 
-## Script Map
+## Module Map
 
 ```
-scripts/
-├── toolkit/
-│   ├── discovery.py      # Skyworth private protocol discovery & TCP channel
-│   ├── stream.py         # Audio/video streaming & storage
-│   ├── ptz.py            # PTZ control (ONVIF + private protocol dual-channel)
-│   ├── events.py         # Event/alarm receiving (ONVIF PullPoint + private RTSP-channel push), schema 1.0 store
-│   └── device_mgmt.py    # Device discovery, connection, config, management, cloud auth
-└── auth/
-    ├── token_manager.py  # Token lifecycle (generate → validate → destroy)
-    ├── cloud_client.py   # Smart Cloud API client
-    └── session.py        # Keepalive & session management
+Toolkit modules (exposed via MCP tools):
+  device_mgmt   — Device discovery, connection, config, management, cloud auth
+  stream        — Audio/video streaming, snapshot, recording, storage
+  ptz           — PTZ control (ONVIF + private protocol dual-channel)
+  events        — Event/alarm receiving (ONVIF PullPoint + private RTSP-channel push), schema 1.0 store
 
-local_auth_server/         # Standalone local auth server (OUTSIDE skill package)
-├── server.py             # HTTP server + Web UI (authorization server, currently local)
-├── config.py             # Server configuration constants
-└── __init__.py
+Internal modules (not exposed, accessed only through MCP tools above):
+  discovery     — Skyworth private protocol discovery & TCP command channel
+  auth/         — Token lifecycle, cloud API client, session management
+
+Standalone (outside skill package):
+  local_auth_server/ — HTTP server + Web UI (authorization server, currently local)
 ```
 
 ## Connection & Authorization Flow
@@ -29,7 +25,7 @@ The connection process involves two actors: the **Agent** (AI) and the **Tool** 
 
 ### ONVIF Port Verification (inside `connect_device`)
 
-Before ONVIF authentication, `connect_device` verifies the real ONVIF port via `_probe_onvif_port()`: candidate ports (config/argument hint → 2000/80/8000/8899) are probed with an unauthenticated `GetSystemDateAndTime` request, and a port is only accepted if it returns a SOAP Envelope (not an HTML page). Verified ports are written back to config.yaml automatically; unverified ports stay `0` (= unknown). Skyworth cameras: ONVIF is on **2000** — port 80 is the web UI.
+Before ONVIF authentication, `connect_device` verifies the real ONVIF port internally: candidate ports (config/argument hint → 2000/80/8000/8899) are probed with an unauthenticated `GetSystemDateAndTime` request, and a port is only accepted if it returns a SOAP Envelope (not an HTML page). Verified ports are written back to config.yaml automatically; unverified ports stay `0` (= unknown). Skyworth cameras: ONVIF is on **2000** — port 80 is the web UI.
 
 ### Flow for Cached Cameras (config.yaml has credentials)
 
@@ -99,11 +95,7 @@ When connecting with credentials, the tool uses ONVIF WS-UsernameToken PasswordD
 PasswordDigest = Base64(SHA-1(nonce + created + password))
 ```
 
-This is injected as a SOAP header for ONVIF service calls. RTSP URLs are auto-constructed with embedded credentials:
-
-```
-rtsp://{username}:{password}@{ip}:{rtsp_port}{rtsp_path}
-```
+This is injected as a SOAP header for ONVIF service calls. RTSP URLs are auto-constructed with embedded credentials internally (credentials from connection state are injected, URL encoding applied).
 
 ### Claw ID
 
@@ -177,9 +169,9 @@ PTZ control in `scripts/toolkit/ptz.py` implements a **dual-protocol strategy** 
    └─ If both fail → returns PTZMoveResult(success=False, error_message=...)
 ```
 
-**Connection state** is read from `device_mgmt._connected_devices` via a lazy import (avoids circular dependency at module load time). Each connection entry contains:
-- `onvif_camera`: the ONVIF camera object (for ONVIF PTZ Service calls)
-- `ip`, `username`, `password`, `tcp_port`: credentials for TCP channel (private protocol)
+**Connection state** is held in-memory by the MCP server process (avoids cross-process state issues). Each connection entry contains:
+- ONVIF camera object (for ONVIF PTZ Service calls)
+- IP, username, password, TCP port (credentials for private protocol fallback)
 
 **Protocol capability matrix:**
 
@@ -189,7 +181,6 @@ PTZ control in `scripts/toolkit/ptz.py` implements a **dual-protocol strategy** 
 | `get_ptz_parameters` | `GetStatus` | `SK_SETTING_GET_PTZ` |
 | `stop_ptz` | `Stop` | `SK_SETTING_SET_PTZ` stop |
 | `calibrate_ptz` | — | `SK_SETTING_SET_PTZ` calibrate |
-| `_move_to_position` (internal, not an MCP tool) | — | `SK_SETTING_SET_PTZ` move (x/y/z) |
 
 ## Event Monitoring Architecture (Guardian Mode Foundation)
 
@@ -245,9 +236,9 @@ If `save_path` is provided, ensure it is writable. The default `snapshots/` and 
 
 ### Same-process connection requirement
 
-The toolkit stores connection state in an in-memory dict (`_connected_devices`) inside the **MCP server process**. This means `connect_device` and subsequent operations (`capture_video_screenshot`, `get_audio_video_stream`, etc.) must be served by the same long-running `scripts/mcp_server.py` process — which is exactly what happens when all operations go through MCP tool calls.
+The toolkit stores connection state in-memory inside the **MCP server process**. This means `connect_device` and subsequent operations (`capture_video_screenshot`, `get_audio_video_stream`, etc.) must be served by the same long-running `scripts/mcp_server.py` process — which is exactly what happens when all operations go through MCP tool calls.
 
-This is also why bypassing the MCP layer breaks the system: a standalone script or a separate Python process has its own empty `_connected_devices`, so any operation after `connect_device` fails or silently reconnects. **Never import `scripts.toolkit` directly — interact only via the MCP tools.**
+This is also why bypassing the MCP layer breaks the system: a standalone script or a separate Python process has its own empty connection state, so any operation after `connect_device` fails or silently reconnects. **Never import toolkit modules directly — interact only via the MCP tools.**
 
 ### Skyworth camera RTSP paths
 

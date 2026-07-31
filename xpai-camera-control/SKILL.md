@@ -44,7 +44,7 @@ python scripts/mcp_server.py
 }
 ```
 
-The MCP server exposes **17 tools** covering all 5 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and parameters.
+The MCP server exposes **16 tools** covering 4 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and return fields.
 
 ### MCP-Only Interaction (Hard Rule)
 
@@ -66,11 +66,11 @@ At the beginning of each session, check if there are any registered cameras in c
 
 ### Phase 1 — Discover Cameras
 
-When Phase 0 cache is unavailable, call `search_devices()` to discover cameras on the local network. Try **both** network discovery methods — they cover disjoint device sets:
+When Phase 0 cache is unavailable, call `search_devices()` to discover cameras on the local network. The tool **automatically selects the best discovery protocol** — the Agent does not need to choose:
 
-- `method="ws_discovery"` — standard ONVIF WS-Discovery (`239.255.255.250:3702`). **The only method that finds non-Skyworth ONVIF cameras**; also finds Skyworth IPCs. ONVIF port is parsed from XAddrs (not always 80).
-- `method="sky_discovery"` — Skyworth private multicast (`239.230.236.230:9008`). Only Skyworth devices respond, but returns richer metadata (SN, channels, MAC).
-- `method="usb"` — local USB camera enumeration.
+- The tool tries all available methods internally (ONVIF WS-Discovery, Skyworth private protocol, USB)
+- Results are returned as a unified `DiscoveredDevice` list — Skyworth-specific metadata (SN, channels, MAC, etc.) is included under `sky_*` prefixed fields when available
+- Each result includes a `discovery_method` field indicating which protocol found the device
 
 ### Phase 2 — Connect & Authorize
 
@@ -126,15 +126,16 @@ Event data (schema 1.0 JSON lines) is written to a local on-disk store that **an
 
 ## Toolkit Modules
 
-5 modules in `scripts/toolkit/`:
+4 modules exposed as MCP tools via `scripts/mcp_server.py`:
 
 | Module | Key Functions | Reference |
 |--------|--------------|----------|
-| `device_mgmt.py` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device`, `request_cloud_auth`, `poll_auth_status` | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
-| `discovery.py` | `discover_sky_devices`, `SkyDiscoveryListener` | [commands/discovery.md](references/commands/discovery.md) |
-| `stream.py` | `capture_video_screenshot`, `get_audio_video_stream`, `toggle_recording`, `manage_storage_status` | [commands/stream.md](references/commands/stream.md) |
-| `ptz.py` | `control_ptz`, `get_ptz_parameters`, `calibrate_ptz`, `stop_ptz` | [commands/ptz.md](references/commands/ptz.md) |
-| `events.py` | `manage_camera_events` (action: `start` / `stop` / `poll` / `wait`) | [commands/events.md](references/commands/events.md) |
+| `device_mgmt` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device`, `request_cloud_auth`, `poll_auth_status` | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
+| `stream` | `capture_video_screenshot`, `get_audio_video_stream`, `toggle_recording`, `manage_storage_status` | [commands/stream.md](references/commands/stream.md) |
+| `ptz` | `control_ptz`, `get_ptz_parameters`, `calibrate_ptz`, `stop_ptz` | [commands/ptz.md](references/commands/ptz.md) |
+| `events` | `manage_camera_events` (action: `start` / `stop` / `poll` / `wait`) | [commands/events.md](references/commands/events.md) |
+
+Internal implementation modules (Skyworth private protocol discovery, TCP command channel, auth client) are **not exposed** — all their functionality is accessed through the MCP tools above.
 
 ## Security Constraints
 
@@ -148,7 +149,7 @@ Event data (schema 1.0 JSON lines) is written to a local on-disk store that **an
 ## Gotchas
 
 - **ONVIF port is not always 80.** Discovered cameras must parse the port from WS-Discovery `XAddrs` — do not assume default 80.
-- **`GetStreamUri` returns bare RTSP URLs without credentials.** The toolkit auto-injects auth via `_build_rtsp_url()` — do not use the raw URL directly.
+- **`GetStreamUri` returns bare RTSP URLs without credentials.** The toolkit auto-injects auth credentials into RTSP URLs internally — do not use the raw URL directly.
 - **Chinese characters in Windows paths cause `cv2.imwrite()` to silently fail.** The toolkit uses `cv2.imencode()` + `numpy.tofile()` as a workaround.
 - **Connection state is in-memory only.** `connect_device()` and subsequent operations (`capture_video_screenshot()`, etc.) must run in the **same Python process** — cross-process calls will fail.
 - **Skyworth cameras use non-standard RTSP paths.** When the configured path fails, the toolkit auto-tries fallback paths in order: standard ONVIF paths (`/Streaming/Channels/101` → `/h264/ch1/main/av_stream` → `/live`) → Skyworth paths (`/stream0` → `/md0_0` → `/stream1` → `/md0_1`).
@@ -198,7 +199,7 @@ Camera configurations are saved in the skill's root directory under `config.yaml
 - Cameras and host must be on the same local network
 - RTSP streams require local network connectivity
 - Password-required cameras: authorization server must be running for browser-based auth flow; otherwise falls back to direct password input
-- ONVIF authentication uses WS-UsernameToken (PasswordDigest) — credentials are auto-injected into RTSP URLs via `_build_rtsp_url()`
+- ONVIF authentication uses WS-UsernameToken (PasswordDigest) — credentials are auto-injected into RTSP URLs internally
 - Screenshot/recording requires `opencv-python` (included in requirements.txt)
 - MCP server mode uses stdio transport only
 - `claw_id` is auto-generated and persisted in config.yaml to prevent duplicate auth popups
@@ -207,8 +208,8 @@ Camera configurations are saved in the skill's root directory under `config.yaml
 
 ## References
 
-- [references/commands/](references/commands/) — Per-module tool reference (parameter signatures, safety constraints, implementation details)
-- [references/WORKFLOW.md](references/WORKFLOW.md) — Complete workflow examples and code snippets
+- [references/commands/](references/commands/) — Per-module tool reference (parameter signatures, return fields, safety constraints)
+- [references/WORKFLOW.md](references/WORKFLOW.md) — Complete workflow examples with tool-call sequences
 - [references/ARCHITECTURE.md](references/ARCHITECTURE.md) — System architecture, connection flow, device discovery protocols, session rules, and known issues
 - [references/CONFIG.md](references/CONFIG.md) — config.yaml complete schema and examples
 - [references/EVENT_INTEGRATION.md](references/EVENT_INTEGRATION.md) — On-disk event store schema & external-consumer contract (for other skills / external forwarders that build on top of this skill)

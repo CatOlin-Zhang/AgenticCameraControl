@@ -1,6 +1,6 @@
 # IPC Event Receiving (Guardian Mode Foundation)
 
-Alarm/event subscription, snapshot linkage, and on-disk event store — `scripts/toolkit/events.py`
+Alarm/event subscription, snapshot linkage, and on-disk event store — exposed as the single MCP tool `manage_camera_events` by `scripts/mcp_server.py`
 
 > **MCP-only:** All tools below are invoked exclusively through the MCP server (`scripts/mcp_server.py`). Never import this module directly or write standalone scripts to call these functions.
 
@@ -32,13 +32,13 @@ Alarm/event subscription, snapshot linkage, and on-disk event store — `scripts
 
 **On-disk event store:** after processing (raw protocol fields are dropped; a schema 1.0 JSON line is produced), the event is appended to `events/camera_events.txt`. The in-memory queue is only a hot cache; `poll` / `wait` always read the disk store, so backlog survives MCP server restarts and is readable from fresh sessions. **Schema, paths, write semantics, and the consumer contract** are defined in [references/EVENT_INTEGRATION.md](../EVENT_INTEGRATION.md) — read that file when writing any external consumer (other skills, forwarders, dashboards).
 
-**Monitor intent persistence & auto-resume:** listener threads live inside the MCP server process and die when the host recycles it. To survive that, `start` persists the monitoring intent (protocols, debounce) to `events/monitor_state.json` and `stop` clears it. `resume_persisted_monitors()` re-arms listeners for cameras with a persisted intent but no running thread — called on server startup (async, non-blocking) and at every `poll` / `wait` entry. Failed cameras get a 60 s retry cooldown; a non-blocking mutex prevents concurrent double-resume; the intent is re-read before each start so a concurrent `stop` cancels the resume. No new authorization surface: only listeners the user enabled and never stopped are restored.
+**Monitor intent persistence & auto-resume:** listener threads live inside the MCP server process and die when the host recycles it. To survive that, `start` persists the monitoring intent to `events/monitor_state.json` and `stop` clears it. On server startup and at every `poll` / `wait` entry, persisted intents are re-armed for cameras whose listener is not running. No new authorization surface: only listeners the user enabled and never stopped are restored.
 
 ---
 
 ## `manage_camera_events(action, camera_name=None, protocols="both", debounce_seconds=5.0, limit=100, timeout_seconds=60)`
 
-**The single MCP entry point for all event operations** — the `action` parameter switches the working mode (keeps the MCP schema footprint at one tool instead of four). Internally dispatches to `start_event_monitor` / `stop_event_monitor` / `get_pending_events` / `wait_for_events`, which remain exported for secondary development but are **not** registered as MCP tools.
+**The single MCP entry point for all event operations** — the `action` parameter switches the working mode.
 
 | `action` | Mode | Returns | Relevant parameters |
 |----------|------|---------|--------------------|
@@ -47,6 +47,8 @@ Alarm/event subscription, snapshot linkage, and on-disk event store — `scripts
 | `poll` | Read unconsumed events, advance cursor | `PendingEventsResult` | `camera_name` (optional filter), `limit` |
 | `wait` | Long-poll block for new events | `PendingEventsResult` | `camera_name` (optional filter), `timeout_seconds` |
 
+---
+
 ### `action="start"`
 
 Start the background event listener for a camera. **Requires explicit user confirmation before calling** — this is the only action in the skill that spawns a background thread.
@@ -54,10 +56,21 @@ Start the background event listener for a camera. **Requires explicit user confi
 | Aspect | Detail |
 |--------|--------|
 | **Safety** | Explicit Prompt — background thread starts only after user enablement; behavior limited to alarm subscription + writes into `snapshots/` and `events/` whitelist paths |
-| **Returns** | `EventMonitorResult` (success, running, active_channels, error_message) |
+| **Returns** | `EventMonitorResult` (see field table below) |
 | **Parameters** | `camera_name`: camera identifier (must be registered or connected). `protocols`: `"both"` (default) / `"onvif"` / `"private"`. `debounce_seconds`: dedup & snapshot rate-limit window. |
-| **Implementation** | ONVIF: PullPoint subscription with auto-renew on expiry. Private: persistent RTSP session with OPTIONS keep-alive and exponential-backoff reconnect (cap 30 s). On event arrival the internal snapshot function is called in-process (no Agent involvement). On success the monitoring intent is persisted to `events/monitor_state.json` — if the MCP process is recycled, the listener auto-resumes on server startup or the next `poll` / `wait` call. |
 | **Agent behavior** | `success=True` with partial `active_channels` (e.g. only `["private"]`) is normal — report which channels are active. If both channels fail, relay `error_message`. |
+
+**EventMonitorResult return fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | bool | Whether the operation succeeded |
+| `camera_name` | string | Camera identifier |
+| `running` | bool | Whether the listener is now running |
+| `active_channels` | list[string] | Active protocol channels (e.g. `["onvif", "private"]` or `["private"]`) |
+| `error_message` | string | Failure reason (empty on success) |
+
+---
 
 ### `action="stop"`
 
@@ -69,6 +82,8 @@ Stop the listener, unsubscribe the ONVIF pull point, and close the RTSP alarm se
 | **Returns** | `EventMonitorResult` (`running=False` after stop) |
 | **Parameters** | `camera_name`: camera identifier. |
 
+---
+
 ### `action="poll"`
 
 Return unconsumed events (with snapshot paths) and advance the persisted per-camera cursor.
@@ -76,9 +91,39 @@ Return unconsumed events (with snapshot paths) and advance the persisted per-cam
 | Aspect | Detail |
 |--------|--------|
 | **Safety** | No special constraints (reads store + writes cursor file) |
-| **Returns** | `PendingEventsResult` (events, remaining, monitors) |
-| **Parameters** | `camera_name`: filter to one camera; omitting consumes all cameras' backlog. `limit`: max events per call. |
+| **Returns** | `PendingEventsResult` (see field table below) |
+| **Parameters** | `camera_name`: filter to one camera; omitting consumes all cameras' backlog. `limit`: max events per call (default 100). |
 | **Agent behavior** | Works from a fresh session with a freshly started MCP server (reads the disk store; also auto-resumes any persisted-but-dead listeners). For each event, read the `snapshot_path` image, analyze, and report. `remaining > 0` means the backlog was truncated by `limit` — call again. |
+
+**PendingEventsResult return fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | bool | Whether the operation succeeded |
+| `events` | list | List of `CameraEvent` objects (see field table below) |
+| `remaining` | int | Number of unconsumed events still in the store |
+| `monitors` | dict | Status of each listener (keyed by camera name) |
+| `error_message` | string | Failure reason (empty on success) |
+
+**CameraEvent fields** (each item in `events`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_version` | string | Fixed `"1.0"` |
+| `event_id` | string | `{YYYYMMDD_HHMMSS}_{camera_id}_{event_type}` — idempotent dedup key |
+| `event_type` | string | Normalized type: `motion` / `human` / `vehicle` / `tamper` / `region_intrusion` / `line_crossing` / `high_temp` / `low_temp` |
+| `camera_id` | string | Camera registration name (key in config.yaml) |
+| `camera_name` | string | Display name (defaults to `camera_id` when no separate display name) |
+| `timestamp` | string | ISO 8601 with local timezone (e.g. `"2026-07-29T09:30:00+08:00"`) |
+| `severity` | string | `info` / `warning` / `critical` |
+| `title` | string | Ready-to-use notification title |
+| `message` | string | Ready-to-use notification body |
+| `label` | string or null | Target class (person/car/truck…); `null` when unavailable |
+| `confidence` | float or null | Confidence score 0–1; `null` when protocol doesn't provide it |
+| `snapshot_path` | string | Absolute snapshot path; **may be empty** (rate-limited) |
+| `tags` | list[string] | Currently always `["guardian"]` |
+
+---
 
 ### `action="wait"`
 
@@ -87,7 +132,6 @@ Long-poll blocking wait: returns immediately when an event arrives (and consumes
 | Aspect | Detail |
 |--------|--------|
 | **Safety** | No special constraints |
-| **Returns** | `PendingEventsResult` (events empty on timeout) |
+| **Returns** | `PendingEventsResult` (same structure as `poll`; events empty on timeout) |
 | **Parameters** | `camera_name`: optional filter. `timeout_seconds`: default 60, **capped at 60** to stay under typical MCP client stdio tool timeouts. |
 | **Agent behavior** | For continuous in-session guarding, loop this call — never expect a single long block. On each non-empty return: read snapshots, analyze, report, then continue the loop until the user stops. |
-

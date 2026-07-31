@@ -1,33 +1,21 @@
 # Skyworth Discovery
 
-Skyworth private protocol discovery and TCP channel — `scripts/toolkit/discovery.py`
+Skyworth private protocol discovery — `scripts/toolkit/discovery.py`
 
-> **MCP-only:** All tools below are invoked exclusively through the MCP server (`scripts/mcp_server.py`). Never import this module directly or write standalone scripts to call these functions.
+> **MCP-only:** Device discovery is performed exclusively through the MCP tool `search_devices()` (in `device_mgmt.py`). This module (`discovery.py`) is an internal implementation detail — never import it directly or reference its functions.
 
 ---
 
-### `discover_sky_devices(timeout: float = 5.0, target_sn="", bind_port: int = 9028, use_broadcast: bool = True, use_multicast: bool = True) -> List[SkDiscoveredDevice]`
+## How Discovery Works (Internal)
 
-Discover Skyworth cameras via private UDP protocol (SK_DISCOVERY_SEARCH).
+`search_devices()` internally dispatches to the appropriate discovery protocol based on the `method` parameter (or auto-selects when omitted):
 
-| Aspect | Detail |
-|--------|--------|
-| **Safety** | None |
-| **Returns** | List of `SkDiscoveredDevice` objects (ip, sn, device_type, subtype, manufacturer, model, channels, rtsp_port, web_port, mac, etc.) |
-| **Parameters** | `timeout`: listen duration in seconds. `target_sn`: filter by specific SN (empty = all). `bind_port`: UDP receive port (default 9028 for tool). `use_broadcast`/`use_multicast`: enable broadcast/multicast sending. |
-| **Implementation** | UDP broadcast + multicast to `239.230.236.230:9008` → listen for SK_DISCOVERY_SEARCH_R on port 9028 |
+| Protocol | Multicast | What it finds |
+|----------|-----------|---------------|
+| WS-Discovery (ONVIF) | `239.255.255.250:3702` | All ONVIF cameras (including Skyworth) |
+| Skyworth private | `239.230.236.230:9008` | Skyworth devices only (richer metadata: SN, channels, MAC) |
+| USB enumeration | Local | USB webcams |
 
-### `send_tcp_command(ip, command: dict, ...) -> dict` _(internal, not exposed as MCP tool)_
+Results are normalized into a unified `DiscoveredDevice` structure. Skyworth-specific fields (SN, subtype, channels, MAC, etc.) are populated under `sky_*` prefixed attributes when the Skyworth protocol is used.
 
-Internal function used by `ptz.py` and `device_mgmt.py` for private protocol communication over TCP channel (HTTP + Basic Auth). Not available as an MCP tool — all private protocol operations are encapsulated in higher-level tools (`connect_device`, `control_ptz`, `calibrate_ptz`, etc.). Do not call it directly; use the higher-level MCP tools instead.
-
-### `SkyDiscoveryListener(interval: float = 30.0, timeout: float = 5.0, bind_port: int = 9028, on_found=None)` _(not yet exposed as MCP tool)_
-
-Background discovery listener that periodically searches for Skyworth devices.
-
-| Aspect | Detail |
-|--------|--------|
-| **Safety** | None |
-| **Parameters** | `interval`: seconds between search rounds. `timeout`: per-round listen duration. `bind_port`: UDP receive port. `on_found`: optional callback. |
-| **Methods** | `start()`, `stop()`, `get_devices()` |
-| **Callback** | `on_found` receives a single `SkDiscoveredDevice` argument for each newly discovered device |
+**TCP command channel (port 9010)** and **background discovery listener** are internal implementation details used by higher-level tools (`connect_device`, `control_ptz`, etc.). They are not exposed via MCP and must not be called directly.

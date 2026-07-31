@@ -66,16 +66,10 @@ TOOLS = [
     ),
     Tool(
         name="search_devices",
-        description="搜索局域网可用摄像头，支持 WS-Discovery、SKY_DISCOVERY、USB 三种方式。",
+        description="搜索局域网内的摄像头。自动选择最佳发现协议，返回统一结果。",
         inputSchema={
             "type": "object",
             "properties": {
-                "method": {
-                    "type": "string",
-                    "enum": ["ws_discovery", "sky_discovery", "usb"],
-                    "description": "发现方式",
-                    "default": "sky_discovery",
-                },
                 "timeout": {
                     "type": "number",
                     "description": "超时秒数",
@@ -276,21 +270,9 @@ TOOLS = [
     ),
 
     # ── Discovery (创维私有协议) ──
-    Tool(
-        name="discover_sky_devices",
-        description="搜索局域网内的创维摄像头。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "timeout": {
-                    "type": "number",
-                    "description": "超时秒数",
-                    "default": 15.0,
-                },
-            },
-        },
-    ),
-    # 注意: send_tcp_command 为内部函数，不作为 MCP 工具暴露。
+    # 注意: discover_sky_devices 已从 MCP 工具降为内部函数；
+    # Agent 统一使用 search_devices() 进行设备发现。
+    # send_tcp_command 为内部函数，不作为 MCP 工具暴露。
     # 私有协议通信由 connect_device / control_ptz 等高层工具内部调用。
 
     # ── Events (IPC 事件接收) ──
@@ -361,7 +343,6 @@ def _serialize(obj: Any) -> Any:
 def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     """路由工具调用到对应的 toolkit 函数。返回序列化后的结果。"""
     import scripts.toolkit as tk
-    from scripts.toolkit.device_mgmt import DiscoveryMethod
     from scripts.toolkit.stream import RecordingAction, StorageAction
     from scripts.toolkit.ptz import PTZDirection
     from scripts.toolkit.events import EventAction
@@ -372,9 +353,6 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     elif name == "register_camera":
         return _serialize(tk.register_camera(**args))
     elif name == "search_devices":
-        args = dict(args)
-        if "method" in args:
-            args["method"] = DiscoveryMethod(args["method"])
         return _serialize(tk.search_devices(**args))
     elif name == "connect_device":
         return _serialize(tk.connect_device(**args))
@@ -413,10 +391,6 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
         return _serialize(tk.calibrate_ptz(**args))
     elif name == "stop_ptz":
         return _serialize(tk.stop_ptz(**args))
-
-    # ── Discovery ──
-    elif name == "discover_sky_devices":
-        return _serialize(tk.discover_sky_devices(**args))
 
     # ── Events ──
     elif name == "manage_camera_events":
