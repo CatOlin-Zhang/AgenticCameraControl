@@ -98,6 +98,7 @@ class DiscoveredDevice:
     sky_gateway: str = ""                      # 网关
     sky_mac: str = ""                          # MAC 地址
     discovery_method: str = ""                 # 发现方式: ws_discovery / sky_discovery / usb
+    supported_illumination_modes: List[str] = field(default_factory=list)  # 支持的补光模式列表（连接后探测填充）
 
 
 @dataclass
@@ -147,6 +148,9 @@ class CameraConfig:
     device_index: int = 0                      # OpenCV 设备索引
     device_model: str = ""                     # USB 设备型号
     product_version: str = ""                  # 产品版本
+
+    # 补光能力（连接后探测填充）
+    illumination_modes: List[str] = field(default_factory=list)  # 支持的补光模式列表
 
 
 @dataclass
@@ -416,6 +420,7 @@ def register_camera(
     device_index: int = 0,
     device_model: str = "",
     product_version: str = "",
+    illumination_modes: Optional[List[str]] = None,
 ) -> RegisterResult:
     """
     将摄像头信息写入 config.yaml，持久化凭据供下次自动连接。
@@ -496,6 +501,8 @@ def register_camera(
         new_entry["device_index"] = device_index
         new_entry["device_model"] = device_model
         new_entry["product_version"] = product_version
+    if illumination_modes:
+        new_entry["illumination_modes"] = illumination_modes
 
     # 更新或追加
     found = False
@@ -890,6 +897,12 @@ def connect_device(
                     sn_code=cached.sn_code if cached else "",
                     connection_type=cached.connection_type if cached else "onvif",
                 )
+            # 连接成功后探测补光能力（失败不阻断）
+            _probe_and_save_illumination(
+                camera_name, dev_ip,
+                verified_port or (cached.port if cached else 0),
+                dev_username, dev_pwd, cached,
+            )
             return result
         # 密码认证失败
         return ConnectResult(
@@ -964,6 +977,11 @@ def connect_device(
                 rtsp_port=dev_rtsp_port, rtsp_path=dev_rtsp_path,
                 device_class="direct_connect",
             )
+        # 连接成功后探测补光能力（失败不阻断）
+        _probe_and_save_illumination(
+            camera_name, dev_ip, verified_port or dev_port,
+            dev_username or "", dev_pwd or "", cached,
+        )
         return ConnectResult(
             success=True,
             auth_method="direct",
@@ -992,6 +1010,51 @@ def connect_device(
 # ──────────────────────────────────────────────
 
 _connected_devices: Dict[str, dict] = {}   # camera_name -> 连接信息
+
+
+def _probe_and_save_illumination(
+    camera_name: str,
+    ip: str,
+    port: int,
+    username: str,
+    password: str,
+    cached: Optional[CameraConfig] = None,
+) -> List[str]:
+    """连接成功后探测设备补光能力并持久化到 config.yaml（非阻塞，失败静默）。
+
+    双协议探测：先尝试创维私有协议 (TCP 9010)，失败则回退 ONVIF Imaging Service。
+
+    Returns:
+        支持的补光模式列表（空列表 = 不支持或探测失败）
+    """
+    # 如果 config.yaml 中已有缓存的补光模式，跳过重复探测
+    if cached and cached.illumination_modes:
+        return cached.illumination_modes
+    try:
+        from .illumination import probe_illumination_capability
+        info = probe_illumination_capability(ip, port, username, password)
+        if info.supported and info.supported_modes:
+            # 探测到补光能力 → 持久化到 config.yaml
+            register_camera(
+                name=camera_name, ip=ip, port=port,
+                username=username, password=password,
+                rtsp_port=cached.rtsp_port if cached else 554,
+                rtsp_path=cached.rtsp_path if cached else "/stream1",
+                device_class=cached.device_class if cached else "",
+                sn_code=cached.sn_code if cached else "",
+                connection_type=cached.connection_type if cached else "onvif",
+                illumination_modes=info.supported_modes,
+            )
+            # 如果探测到 TCP 可用，回写 tcp_port 到内存连接状态
+            # 这确保 manage_illumination 后续能直接走私有协议路径
+            if info.protocol == "sky_private":
+                conn = _connected_devices.get(camera_name)
+                if conn and not conn.get("tcp_port"):
+                    conn["tcp_port"] = SK_TCP_PORT
+            return info.supported_modes
+    except Exception:
+        pass  # 探测失败不阻断连接流程
+    return []
 
 
 def _try_connect_with_password(
@@ -1288,6 +1351,7 @@ def _load_config_cameras() -> List[CameraConfig]:
                 device_index=int(entry.get("device_index", 0)),
                 device_model=entry.get("device_model", ""),
                 product_version=entry.get("product_version", ""),
+                illumination_modes=entry.get("illumination_modes", []),
             )
             configs.append(cfg)
         except Exception:

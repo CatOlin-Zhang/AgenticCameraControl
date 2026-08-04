@@ -19,6 +19,7 @@
 | **视频流** | RTSP 流地址获取、截图、录像、存储管理 |
 | **云台控制** | 8 方向移动、物理极限保护、云台校准 |
 | **事件监听** | 报警事件订阅（移动/人形/遮挡等）、事件联动抓拍、本地事件存储 |
+| **补光控制** | 日夜模式切换、补光灯模式/亮度/定时器/灵敏度调节（创维私有协议 + ONVIF 回退） |
 
 ### 快速开始
 
@@ -58,7 +59,8 @@ AgenticCameraControl/
 │   │   │   ├── device_mgmt.py    # 设备管理与连接
 │   │   │   ├── stream.py         # 音视频流与存储
 │   │   │   ├── ptz.py            # 云台控制
-│   │   │   └── events.py         # 报警事件接收与本地存储
+│   │   │   ├── events.py         # 报警事件接收与本地存储
+│   │   │   └── illumination.py   # 补光/夜视模式控制
 │   │   └── auth/                 # 认证模块
 │   ├── references/               # 技术参考文档
 │   │   └── commands/             # 各模块工具签名与参数说明
@@ -81,6 +83,7 @@ AgenticCameraControl/
 | `stream.py` | 视频流、截图、录像、存储 | [commands/stream.md](xpai-camera-control/references/commands/stream.md) |
 | `ptz.py` | 云台方向控制/校准/停止 | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md) |
 | `events.py` | 报警事件订阅、联动抓拍、事件存储与消费 | [commands/events.md](xpai-camera-control/references/commands/events.md) |
+| `illumination.py` | 补光/夜视模式查询与控制（双协议） | [commands/illumination.md](xpai-camera-control/references/commands/illumination.md) |
 
 ### 安全边界
 
@@ -121,6 +124,7 @@ The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Se
 | **Streaming** | RTSP stream URL retrieval, screenshots, recording, storage management |
 | **PTZ Control** | 8-directional movement, physical limit guard, calibration |
 | **Event Monitoring** | Alarm event subscription (motion/human/tamper, etc.), snapshot linkage on event, local event store |
+| **Illumination Control** | Day/night mode switching, fill-light mode/brightness/timer/sensitivity adjustment (Skyworth private protocol + ONVIF fallback) |
 
 ### Quick Start
 
@@ -160,7 +164,8 @@ AgenticCameraControl/
 │   │   │   ├── device_mgmt.py    # Device management & connection
 │   │   │   ├── stream.py         # Audio/video streaming & storage
 │   │   │   ├── ptz.py            # PTZ control
-│   │   │   └── events.py         # Alarm event receiving & local store
+│   │   │   ├── events.py         # Alarm event receiving & local store
+│   │   │   └── illumination.py   # Illumination / night-vision control
 │   │   └── auth/                 # Authentication module
 │   ├── references/               # Technical reference docs
 │   │   └── commands/             # Per-module tool signatures & parameters
@@ -183,6 +188,7 @@ AgenticCameraControl/
 | `stream.py` | Video streaming, screenshots, recording, storage | [commands/stream.md](xpai-camera-control/references/commands/stream.md) |
 | `ptz.py` | PTZ directional control / calibration / stop | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md) |
 | `events.py` | Alarm event subscription, snapshot linkage, event store & consumption | [commands/events.md](xpai-camera-control/references/commands/events.md) |
+| `illumination.py` | Illumination / night-vision mode query & control (dual-protocol) | [commands/illumination.md](xpai-camera-control/references/commands/illumination.md) |
 
 ### Security Boundary
 

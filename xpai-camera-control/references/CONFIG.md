@@ -44,6 +44,9 @@ cameras:
     # Device classification
     device_class: string      # "password_required" | "direct_connect" (auto-detected via RTSP probe)
 
+    # Illumination capability (auto-probed at connect time, cached)
+    illumination_modes: list   # Supported illumination modes (e.g. ["OFF", "AUTO", "ON"]); empty = unsupported or not yet probed
+
 # ── Auth configuration ──
 auth:
   local_auth_url: string      # Local auth server URL (default: "http://127.0.0.1:18899")
@@ -100,6 +103,7 @@ Unique string identifier for the camera.
 | `sn` | `""` | Alias for `sn_code`. Written for compatibility with password auth scheme. |
 | `pkdk` | `""` | Device public key identifier. Exposed by device firmware / private protocol for identity verification. |
 | `device_class` | auto | Auto-detected by RTSP probe: 401 response → `"password_required"` (needs username/password); 200 response → `"direct_connect"` (no password, connects immediately). |
+| `illumination_modes` | `[]` | Auto-probed by `connect_device()` via ONVIF Imaging Service `GetMoveOptions`. Contains supported illumination mode strings (e.g. `["OFF", "AUTO", "ON"]`) or empty list when the device does not support illumination mode switching or has not been probed yet. Written to config.yaml after the first successful connection; subsequent sessions read the cache and skip re-probing. |
 
 ### RTSP URL Construction
 
@@ -158,6 +162,7 @@ cameras:
     sn_code: "SN20240001"
     sn: "SN20240001"
     device_class: password_required
+    illumination_modes: ["OFF", "AUTO", "ON"]
 
 auth:
   local_auth_url: "http://127.0.0.1:18899"

@@ -1,21 +1,22 @@
 ---
 name: xpai-camera-control
-description: Discover, connect, and control Skyworth cameras on the local network. Capabilities include device detection, streaming, snapshot capture, PTZ pan/tilt control, alarm event monitoring, and device management. Runs as an MCP Server. Use when the user wants to discover cameras, view a camera feed, capture snapshots, control PTZ, watch for motion/alarm events, manage camera settings, or mentions ONVIF, RTSP, IP camera, webcam, or Skyworth cameras.
+description: Discover, connect, and control Skyworth cameras on the local network. Capabilities include device detection, streaming, snapshot capture, PTZ pan/tilt control, alarm event monitoring, illumination mode control, and device management. Runs as an MCP Server. Use when the user wants to discover cameras, view a camera feed, capture snapshots, control PTZ, watch for motion/alarm events, adjust illumination mode, manage camera settings, or mentions ONVIF, RTSP, IP camera, webcam, or Skyworth cameras.
 license: MIT
 compatibility: Requires Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. Cameras must be on the same LAN for discovery.
 metadata:
-  version: "0.4.5"
+  version: "0.5.0"
 ---
 
 # Camera Control Skill
 
 ## When to Use
 
-Trigger this skill when the user:+
+Trigger this skill when the user:
 - Wants to see a camera feed, capture a snapshot, or record video
 - Asks to find or discover cameras on the network
 - Requests pan, tilt, camera movement, or PTZ calibration
 - Asks to watch/guard a camera or check for motion, human, tamper, or other alarm events
+- Wants to adjust illumination mode (IR light, white light, night vision, auto-switch)
 - Mentions ONVIF, RTSP, IP camera, webcam, or specific camera brands
 - Wants to set up this skill as an MCP server for use with MCP-compatible clients
 
@@ -44,7 +45,7 @@ python scripts/mcp_server.py
 }
 ```
 
-The MCP server exposes **16 tools** covering 4 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and return fields.
+The MCP server exposes **17 tools** covering 5 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and return fields.
 
 ### MCP-Only Interaction (Hard Rule)
 
@@ -68,13 +69,13 @@ At the beginning of each session, check if there are any registered cameras in c
 
 When Phase 0 cache is unavailable, call `search_devices()` to discover cameras on the local network. The tool **automatically selects the best discovery protocol** — the Agent does not need to choose:
 
-- The tool tries all available methods internally (ONVIF WS-Discovery, Skyworth private protocol, USB)
+- The tool tries all available methods internally
 - Results are returned as a unified `DiscoveredDevice` list — Skyworth-specific metadata (SN, channels, MAC, etc.) is included under `sky_*` prefixed fields when available
 - Each result includes a `discovery_method` field indicating which protocol found the device
 
 ### Phase 2 — Connect & Authorize
 
-For each discovered camera, call `connect_device()` to connect. **The specific connection process is handled internally by the tool** (cached credentials → ONVIF auth → authorization server → stream probe). The Agent's responsibilities are as follows:
+For each discovered camera, call `connect_device()` to connect. **The specific connection process is handled internally by the tool** . The Agent's responsibilities are as follows:
 
 | Scenario | Agent Operation |
 |----------|----------------|
@@ -116,17 +117,22 @@ PTZ control uses a **dual-protocol strategy**: ONVIF is tried first, automatical
 
 **Physical Limit Guard:** `control_ptz` validates the command against the PTZ's actual physical travel range at the tool layer — the agent does not need to pre-validate durations. If the head is already at the limit, the command is intercepted before being sent; if the limit is reached mid-movement (e.g. "turn right 5s" but only 3s of travel remains), the tool stops early and replaces the request with the feasible movement. In both cases the result carries `degraded=True` and a human-readable `degrade_reason`. **The Agent MUST explicitly relay `degrade_reason` to the user whenever `degraded=True`** — never report a degraded move as if it completed as requested.
 
-Detailed tool-call examples and parameter descriptions are available in [references/WORKFLOW.md](references/WORKFLOW.md).
+Detailed tool-call sequences for all 8 directions, degraded-result examples, and calibration: [WORKFLOW.md — Phase 4 PTZ Control](references/WORKFLOW.md#phase-4--ptz-control-detailed-tool-calls).
 
-### Optional — Event Monitoring
+## Extended Capabilities
 
-This skill can also receive alarm events (motion, human, tamper, line-crossing, …) and trigger a linked snapshot automatically — it is a **supplementary** capability, not part of the core workflow. Enabling it requires a successfully connected camera first (Phase 0 / Phase 1 / Phase 2), after which the Agent calls `manage_camera_events(action="start", camera_name=...)` — the only action that spawns a background thread (off by default; requires explicit user confirmation). The tool also supports `stop` / `poll` / `wait` via the same entry point. Once started, the monitoring intent is persisted on disk — if the host recycles the MCP server process, the listener is automatically re-armed on server startup and on the next `poll` / `wait` call, until the user explicitly calls `stop`.
+The following tools extend the skill's functionality beyond the core workflow. They are **not required** for typical camera operation but are available when the user explicitly requests them.
 
-Event data (schema 1.0 JSON lines) is written to a local on-disk store that **any other skill or external agent-side module may consume directly from disk** — no MCP dependency. This makes it possible to build higher-level scenarios on top (e.g. an external forwarder pushes notifications to WeChat/Slack/Telegram, a home-automation skill triggers lights on intrusion, etc.). See [references/EVENT_INTEGRATION.md](references/EVENT_INTEGRATION.md) for the on-disk format, paths, and integration contract.
+| Tool | What it does | Prerequisite | Reference |
+|------|-------------|-------------|----------|
+| `manage_camera_events` | Alarm event receiving (motion, human, vehicle, tamper, …) with linked snapshots. Actions: `start` / `stop` / `poll` / `wait`. | Camera connected via `connect_device()` | [commands/events.md](references/commands/events.md) |
+| `manage_illumination` | Query & adjust camera illumination (15 parameters: daynight/filllight mode, brightness, timer, sensitivity). Dual-protocol: Skyworth private (TCP 9010) + ONVIF fallback. Actions: `get` / `set`. | Camera connected; capability auto-probed at connect time and cached in `config.yaml` (`illumination_modes`) | [commands/illumination.md](references/commands/illumination.md) |
+
+> **Note:** `manage_camera_events(action="start")` spawns a background listener thread — **requires explicit user confirmation** before calling. `manage_illumination(action="set")` modifies a hardware setting — also requires user confirmation. See the linked reference docs for full parameter/return field details.
 
 ## Toolkit Modules
 
-4 modules exposed as MCP tools via `scripts/mcp_server.py`:
+5 modules exposed as MCP tools via `scripts/mcp_server.py`. For per-tool parameter signatures, return fields, and safety constraints: [commands/](references/commands/) — [device_mgmt.md](references/commands/device_mgmt.md) · [stream.md](references/commands/stream.md) · [ptz.md](references/commands/ptz.md) · [events.md](references/commands/events.md) · [illumination.md](references/commands/illumination.md).
 
 | Module | Key Functions | Reference |
 |--------|--------------|----------|
@@ -134,26 +140,79 @@ Event data (schema 1.0 JSON lines) is written to a local on-disk store that **an
 | `stream` | `capture_video_screenshot`, `get_audio_video_stream`, `toggle_recording`, `manage_storage_status` | [commands/stream.md](references/commands/stream.md) |
 | `ptz` | `control_ptz`, `get_ptz_parameters`, `calibrate_ptz`, `stop_ptz` | [commands/ptz.md](references/commands/ptz.md) |
 | `events` | `manage_camera_events` (action: `start` / `stop` / `poll` / `wait`) | [commands/events.md](references/commands/events.md) |
+| `illumination` | `manage_illumination` (action: `get` / `set`) | [commands/illumination.md](references/commands/illumination.md) |
 
-Internal implementation modules (Skyworth private protocol discovery, TCP command channel, auth client) are **not exposed** — all their functionality is accessed through the MCP tools above.
+Internal implementation modules (Skyworth private protocol discovery, TCP command channel, auth client, illumination probe) are **not exposed** — all their functionality is accessed through the MCP tools above.
 
 ## Security Constraints
 
 | Constraint | Rule | Applies To |
 |------------|------|-----------|
-| **Explicit Prompt** | Inform the user of the operation content before execution and wait for confirmation | PTZ, streaming, screenshots, event monitor start |
+| **Explicit Prompt** | Inform the user of the operation content before execution and wait for confirmation | PTZ, streaming, screenshots, event monitor start, illumination mode change |
 | **Code Validation** | Validate parameters, device status, and connection availability | Recording, storage configuration |
 | **Cloud Auth Flow** | Authorization server browser confirmation + password input | Password-required cameras without cached credentials (pending_auth flow) |
 | **Background Thread Boundary** | The only background threads in this skill are the per-camera event listeners; they start **only** after explicit user enablement via `manage_camera_events(action="start")`, and their behavior is limited to alarm subscription plus writes into the `snapshots/` and `events/` whitelist paths. Auto-resume after a process restart re-arms **only** listeners the user enabled and never stopped (persisted intent) — it never starts new listeners on its own | Event monitoring |
 
 ## Gotchas
 
-- **ONVIF port is not always 80.** Discovered cameras must parse the port from WS-Discovery `XAddrs` — do not assume default 80.
-- **`GetStreamUri` returns bare RTSP URLs without credentials.** The toolkit auto-injects auth credentials into RTSP URLs internally — do not use the raw URL directly.
-- **Chinese characters in Windows paths cause `cv2.imwrite()` to silently fail.** The toolkit uses `cv2.imencode()` + `numpy.tofile()` as a workaround.
-- **Connection state is in-memory only.** `connect_device()` and subsequent operations (`capture_video_screenshot()`, etc.) must run in the **same Python process** — cross-process calls will fail.
-- **Skyworth cameras use non-standard RTSP paths.** When the configured path fails, the toolkit auto-tries fallback paths in order: standard ONVIF paths (`/Streaming/Channels/101` → `/h264/ch1/main/av_stream` → `/live`) → Skyworth paths (`/stream0` → `/md0_0` → `/stream1` → `/md0_1`).
-- **Authorization server unreachable → auto-degrades.** If `local_auth_url` is not reachable, `connect_device()` falls back to `needs_password` status (direct password input).
+- **ONVIF port is not always 80.** → **Action:** always use `onvif_port` from `search_devices()` / config.yaml; never hardcode port 80. Skyworth cameras use port 2000 for ONVIF.
+- **`GetStreamUri` returns bare RTSP URLs without credentials.** → **Action:** always use the `stream_url` returned by `get_audio_video_stream()` — the toolkit auto-injects credentials. Never manually construct RTSP URLs.
+- **Chinese characters in Windows paths cause `cv2.imwrite()` to silently fail.** → **Action:** no manual workaround needed — the toolkit handles this internally. If you pass a custom `save_path`, prefer ASCII-only paths.
+- **Connection state is in-memory only — silently lost across sessions.** → **Action:** if any operation returns `success=false` with a connection-related error, call `connect_device()` first to re-establish the connection, then retry the failed operation. All operations must run in the same MCP server process.
+- **Skyworth cameras use non-standard RTSP paths.** → **Action:** no manual path configuration needed — the toolkit auto-tries fallback paths (ONVIF standard → Skyworth private) when the configured path fails.
+- **Authorization server unreachable → auto-degrades.** → **Action:** if `connect_device()` returns `status="needs_password"`, skip the browser step and ask the user for the password directly.
+
+## Quick Reference — Common Operation Sequences
+
+### Connect → Screenshot (user wants to "see" a camera)
+
+```text
+1. connect_device(camera_name="客厅摄像头")        → success=true
+2. capture_video_screenshot(camera_name="客厅摄像头") → file_path
+3. get_audio_video_stream(camera_name="客厅摄像头")   → stream_url
+# Deliver BOTH: show screenshot image + tell user the RTSP URL
+```
+
+### Connect → PTZ Control
+
+```text
+1. connect_device(camera_name="客厅摄像头")                    → success=true
+2. control_ptz(camera_name="客厅摄像头", direction="right", speed=0.5) → check degraded
+3. If degraded=true → MUST relay degrade_reason to user
+4. stop_ptz(camera_name="客厅摄像头")                          → emergency stop
+```
+
+### Extended Tools
+
+```text
+# Event monitoring — requires camera connected; user confirms before start
+1. connect_device(camera_name="前门")                          → success=true
+2. manage_camera_events(action="start", camera_name="前门")    → user confirms first!
+3. Loop: manage_camera_events(action="wait", timeout_seconds=60)
+   → see commands/events.md for full details
+
+# Illumination — requires camera connected; capability auto-probed at connect
+# Dual-protocol: Skyworth private (15 params) or ONVIF fallback (mode only)
+1. connect_device(camera_name="前门")                          → success=true
+2. manage_illumination(action="get", camera_name="前门")       → current_settings + capabilities
+3. If supported → manage_illumination(action="set", daynightmode=2, brightness=80, ...)  → user confirms first!
+   → see commands/illumination.md for full parameter list
+```
+
+## Failure Response Quick Reference
+
+| `error_message` pattern / `status` | Agent Action |
+|------------------------------------|--------------|
+| `not_connected` / `device not found` | Call `connect_device()` first, then retry the failed operation |
+| `needs_password` (status) | Ask user for password → `connect_device(camera_name, password=user_input)` |
+| `pending_auth` (status) | Poll `poll_auth_status()` every ~5s (max 120s) → then prompt password |
+| `degraded=true` (PTZ result) | **MUST** relay `degrade_reason` to user verbatim |
+| `limit_reached=true` | Stop sending PTZ commands in that direction — physical limit reached |
+| `authorization server unreachable` | Skip browser step, ask user for password directly |
+| `stream unavailable` / RTSP failure | Check camera is online, verify network connectivity |
+| `storage full` | Suggest cleanup via `manage_storage_status()` or change storage policy |
+| `not support illumination` | Device doesn't support illumination mode control — inform user |
+| MCP tools not available | Register MCP server in client config — do NOT write workaround scripts |
 
 ## Error Handling Policy
 
@@ -208,10 +267,10 @@ Camera configurations are saved in the skill's root directory under `config.yaml
 
 ## References
 
-- [references/commands/](references/commands/) — Per-module tool reference (parameter signatures, return fields, safety constraints)
-- [references/WORKFLOW.md](references/WORKFLOW.md) — Complete workflow examples with tool-call sequences
-- [references/ARCHITECTURE.md](references/ARCHITECTURE.md) — System architecture, connection flow, device discovery protocols, session rules, and known issues
-- [references/CONFIG.md](references/CONFIG.md) — config.yaml complete schema and examples
-- [references/EVENT_INTEGRATION.md](references/EVENT_INTEGRATION.md) — On-disk event store schema & external-consumer contract (for other skills / external forwarders that build on top of this skill)
+- [references/commands/](references/commands/) — Per-tool parameter signatures, return fields, and safety constraints (split by module: device_mgmt / stream / ptz / events / illumination)
+- [references/WORKFLOW.md](references/WORKFLOW.md) — Complete tool-call sequences for core workflow (Phase 0–4), including [auth flows](references/WORKFLOW.md#phase-2--connect--authorize-detailed-tool-calls) and [PTZ degraded examples](references/WORKFLOW.md#phase-4--ptz-control-detailed-tool-calls)
+- [references/ARCHITECTURE.md](references/ARCHITECTURE.md) — [Connection & auth flow](references/ARCHITECTURE.md#connection--authorization-flow), [device discovery protocols](references/ARCHITECTURE.md#device-discovery), [PTZ dual-protocol architecture](references/ARCHITECTURE.md#ptz-dual-protocol-architecture), [event monitoring architecture](references/ARCHITECTURE.md#event-monitoring-architecture-guardian-mode-foundation), [illumination dual-protocol architecture](references/ARCHITECTURE.md#illumination-mode-control-architecture), [known issues](references/ARCHITECTURE.md#known-issues--implementation-notes)
+- [references/CONFIG.md](references/CONFIG.md) — [config.yaml full schema](references/CONFIG.md#full-schema) and [example configs](references/CONFIG.md#example-configs)
+- [references/EVENT_INTEGRATION.md](references/EVENT_INTEGRATION.md) — [On-disk event store schema 1.0](references/EVENT_INTEGRATION.md#4-schema-10-fields) & [external-consumer contract](references/EVENT_INTEGRATION.md#5-consumer-integration-guidelines) (for other skills / forwarders that build on top of this skill)
 - [requirements.txt](requirements.txt) — Python dependencies for MCP Server mode
 - [local_auth_server/](../local_auth_server/) — Standalone authorization server (outside skill package; currently local, pluggable for cloud)

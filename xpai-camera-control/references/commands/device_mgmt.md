@@ -45,6 +45,7 @@ Read all camera entries from `config.yaml` and return their configurations.
 | `device_index` | int | OpenCV device index (USB only) |
 | `device_model` | string | USB device model name |
 | `product_version` | string | USB product version |
+| `illumination_modes` | list[string] | Supported illumination modes (e.g. `["OFF", "AUTO", "ON"]`); empty = unsupported or not yet probed. Auto-populated by `connect_device()` via ONVIF Imaging Service probe. |
 
 ---
 
@@ -56,7 +57,7 @@ Write a camera entry to `config.yaml`, persisting credentials for future auto-co
 |--------|--------|
 | **Safety** | None (internal config write; does not expose credentials to user) |
 | **Returns** | `RegisterResult` (see field table below) |
-| **Parameters** | `name`: unique camera name. `ip`: camera IP. `port`: ONVIF port — **only pass a verified port; omit when unknown (0 = unknown)**, `connect_device` probes the real port and writes it back automatically. `username`/`password`: credentials (saved to config.yaml, never displayed). `rtsp_port`/`rtsp_path`: stream parameters. `device_class`: `"password_required"` or `"direct_connect"`. Additional kwargs: `sn_code`, `pkdk`, `rtsp_sub_path`, `connection_type`. |
+| **Parameters** | `name`: unique camera name. `ip`: camera IP. `port`: ONVIF port — **only pass a verified port; omit when unknown (0 = unknown)**, `connect_device` probes the real port and writes it back automatically. `username`/`password`: credentials (saved to config.yaml, never displayed). `rtsp_port`/`rtsp_path`: stream parameters. `device_class`: `"password_required"` or `"direct_connect"`. Additional kwargs: `sn_code`, `pkdk`, `rtsp_sub_path`, `connection_type`, `illumination_modes`. |
 | **When to call** | After first successful `connect_device()` |
 
 **RegisterResult return fields:**
@@ -116,6 +117,7 @@ Search for available cameras on the local network. The tool automatically select
 | `sky_mask` | string | Subnet mask (Skyworth only) |
 | `sky_gateway` | string | Gateway address (Skyworth only) |
 | `sky_mac` | string | MAC address (Skyworth only) |
+| `supported_illumination_modes` | list[string] | Supported illumination modes probed during discovery (empty when not probed or unsupported; populated by `connect_device()` post-connect) |
 
 ---
 
@@ -141,6 +143,8 @@ Establish connection to a camera. Uses cached credentials → ONVIF auth → aut
 | `onvif_port` | int | Verified ONVIF port (0 = not verified; Skyworth: 2000) |
 
 **ONVIF port verification:** before ONVIF auth, candidate ports (hint → 2000/80/8000/8899) are probed with unauthenticated `GetSystemDateAndTime`. Only ports returning a SOAP Envelope are accepted. Verified ports are written back to config.yaml automatically.
+
+**Illumination capability probing:** after a successful connection (both password-auth and direct-connect paths), `connect_device()` automatically probes the ONVIF Imaging Service for supported illumination modes via `probe_illumination_capability()`. The result is persisted to `config.yaml` as `illumination_modes`. The probe is non-blocking — failures are silently ignored so they never delay the connection flow. If `illumination_modes` is already cached in config.yaml from a previous session, re-probing is skipped.
 
 **Connection flow:**
 

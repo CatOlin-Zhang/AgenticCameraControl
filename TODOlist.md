@@ -20,7 +20,7 @@
 ### Camera Tracking & Night Vision（摄像头追踪与夜视控制）
 
 - [ ] **Auto-tracking 目标追踪** — 基于事件告警（motion / human / vehicle）的自动追踪：事件到达后调用 `get_ptz_parameters` 获取当前位姿，结合告警方向信息计算目标偏移量，通过 `control_ptz` 步进跟踪；需定义追踪策略（追踪灵敏度、最大追踪时长、回归初始位逻辑）
-- [ ] **夜视 / 补光灯控制** — 通过 ONVIF Imaging Service 或私有协议（`SK_SETTING_SET_*`）控制红外夜视开关、白光灯补光开关、亮度/对比度调节；暴露为 MCP 工具供 Agent 调用（低光环境下 Agent 可主动开启补光后再截图分析）
+- [x] **夜视 / 补光灯控制** — ✅ v0.5.0 已实现。`manage_illumination` MCP 工具，双协议（创维 TCP 9010 优先 → ONVIF Imaging 回退），17 个参数（daynightmode / filllightmode / brightness / timer / sensitivity 等），连接时自动探测能力并缓存到 config.yaml
 
 ### Tiered Guardian Modes（agent-side，运行时选择）
 
@@ -37,9 +37,9 @@ Agent 首次收到监控请求时，执行一次能力探测决策树，选取�
 - T3 纯 Agent 侧行为，技能包无需改动
 - T4 需要技能包增加 webhook POST 能力（依赖宿主先提供 webhook 接口）
 
-### MCP Tool Surface Optimization（MCP 工具面优化 — 16 → 12）
+### MCP Tool Surface Optimization（MCP 工具面优化 — 17 → 13）
 
-> **Status:** 评估完成，待实施。目标是将 16 个 MCP 工具精简至 12 个，通过参数裁剪、描述精简和子流程内部化降低 Agent 上下文开销。
+> **Status:** 评估完成，待实施。目标是将 17 个 MCP 工具精简至 13 个，通过参数裁剪、描述精简和子流程内部化降低 Agent 上下文开销。
 
 #### Phase A — Schema 瘦身（零行为变更）
 
@@ -50,11 +50,11 @@ Agent 首次收到监控请求时，执行一次能力探测决策树，选取�
 
 #### Phase B — 子流程内部化（行为变更）
 
-- [ ] **授权流程内部化** — `request_cloud_auth` + `poll_auth_status` 降级为 `connect_device` 内部环节；`connect_device` 返回 `pending_auth` 时 Agent 只需告知用户打开授权链接并重新调用，内部完成轮询循环（5s×24=120s）；MCP 工具从 16 降至 14
-- [ ] **注册自动化** — `register_camera` 降级为 `connect_device` 的内部副作用（连接成功后自动持久化凭据到 config.yaml）；MCP 工具从 14 降至 13
-- [ ] **设备列表合并** — `get_registered_cameras` 功能合并到 `search_devices`（无参调用时先返回已注册列表，再补充分发现结果）；MCP 工具从 13 降至 12
+- [ ] **授权流程内部化** — `request_cloud_auth` + `poll_auth_status` 降级为 `connect_device` 内部环节；`connect_device` 返回 `pending_auth` 时 Agent 只需告知用户打开授权链接并重新调用，内部完成轮询循环（5s×24=120s）；MCP 工具从 17 降至 15
+- [ ] **注册自动化** — `register_camera` 降级为 `connect_device` 的内部副作用（连接成功后自动持久化凭据到 config.yaml）；MCP 工具从 15 降至 14
+- [ ] **设备列表合并** — `get_registered_cameras` 功能合并到 `search_devices`（无参调用时先返回已注册列表，再补充分发现结果）；MCP 工具从 14 降至 13
 
-#### 优化后工具清单（12 个）
+#### 优化后工具清单（13 个）
 
 | 扇区 | 工具 | 数量 |
 |------|------|------|
@@ -62,19 +62,20 @@ Agent 首次收到监控请求时，执行一次能力探测决策树，选取�
 | 流与媒体 | `get_audio_video_stream`、`capture_video_screenshot`、`toggle_recording`、`manage_storage_status` | 4 |
 | PTZ 控制 | `control_ptz`、`get_ptz_parameters`、`calibrate_ptz`、`stop_ptz` | 4 |
 | 事件监控 | `manage_camera_events` | 1 |
+| 补光控制 | `manage_illumination` | 1 |
 
 #### 远期可选合并（视可靠性评估结果）
 
-- [ ] **PTZ 四合一** `ptz(action=move|get|calibrate|stop)` — 12→9，但需解决 action 选错、参数误传、返回值歧义风险（当前评估为不推荐）
-- [ ] **Stream 二合一** `stream(action=url|screenshot)` — 9→8，收益小（~30 token）
+- [ ] **PTZ 四合一** `ptz(action=move|get|calibrate|stop)` — 13→10，但需解决 action 选错、参数误传、返回值歧义风险（当前评估为不推荐）
+- [ ] **Stream 二合一** `stream(action=url|screenshot)` — 10→9，收益小（~30 token）
 - [ ] **理论极限** — 7 个工具（设备 / 流URL / 截图 / 录像 / 存储 / PTZ / 事件），但语义清晰度和可靠性会显著下降
 
 ### Structured Error Codes（渐进式错误码系统）
 
 > **Status:** 评估完成，暂缓实施。当前 `error_message` 自然语言 + `status` + `degraded` 三位一体已覆盖 90% 场景，大模型 Agent 可直接理解转述。当小模型/多 Agent 协作成为主力场景时再启动。
 
-**现有错误传递机制：**
-- `success: bool` + `error_message: str` — 全部 16 个工具
+- **现有错误传递机制：**
+- `success: bool` + `error_message: str` — 全部 17 个工具
 - `status: str`（`pending_auth` / `needs_password` / `failed`）— `connect_device`
 - `degraded: bool` + `degrade_reason: str` — `control_ptz`
 
@@ -93,3 +94,7 @@ Agent 首次收到监控请求时，执行一次能力探测决策树，选取�
 - 技能包只定义磁盘存储格式作为**唯一公开集成契约**，不实现、不发布、不感知任何具体转发器
 - 集成细节见 `xpai-camera-control/references/EVENT_INTEGRATION.md`
 - **Consent-gated:** 快照跨 LAN 推送默认关闭，需用户显式授权
+
+
+针对 MCP 后端
+7. bootstrap 有风险 → 确认 skill 加载时自动拉起 mcp_server.py，避免"工具缺失→手动注册"卡住。

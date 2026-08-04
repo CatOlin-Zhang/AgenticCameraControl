@@ -10,6 +10,7 @@ Toolkit modules (exposed via MCP tools):
   stream        — Audio/video streaming, snapshot, recording, storage
   ptz           — PTZ control (ONVIF + private protocol dual-channel)
   events        — Event/alarm receiving (ONVIF PullPoint + private RTSP-channel push), schema 1.0 store
+  illumination  — Illumination mode query & control (Skyworth private protocol + ONVIF Imaging fallback)
 
 Internal modules (not exposed, accessed only through MCP tools above):
   discovery     — Skyworth private protocol discovery & TCP command channel
@@ -215,6 +216,63 @@ Event receiving in `scripts/toolkit/events.py` follows the same **dual-protocol 
 **State ownership:** listener threads and the in-memory hot cache live inside the MCP server process; the on-disk store under `events/` is the only cross-session state — event lines, per-camera cursors, and the monitoring intent (`monitor_state.json`) all survive process recycling. Writes are limited to the `snapshots/` and `events/` whitelist paths.
 
 For the schema 1.0 field reference, alarm code mapping, and per-action tool details, see [commands/events.md](commands/events.md).
+
+## Illumination Mode Control Architecture
+
+Illumination control in `scripts/toolkit/illumination.py` follows the same **dual-protocol strategy** as PTZ, exposed as the single MCP tool `manage_illumination(action=get|set)`:
+
+```
+1. connect_device() succeeds (Phase 0 or Phase 2)
+   └─ _probe_and_save_illumination() fires after connection
+   └─ probe_illumination_capability():
+      ├─ Try Skyworth private protocol (SK_SETTING_GET_FILLLIGHT_OPTION via TCP 9010)
+      │  └─ Success → 15 parameter capabilities parsed, protocol="sky_private"
+      └─ Fallback: ONVIF Imaging Service (GetMoveOptions)
+         └─ Success → IlluminationConfiguration modes, protocol="onvif"
+   └─ Results persisted to config.yaml as illumination_modes
+   └─ Probe is non-blocking: failures are silently ignored (never blocks connection)
+
+2. manage_illumination(action="get")
+   └─ Route: always-try-TCP strategy (asymmetric with PTZ):
+      ├─ Has IP → Try Skyworth private protocol first (TCP 9010)
+      │  ├─ SK_SETTING_GET_FILLLIGHT_OPTION → parameter capabilities & ranges
+      │  └─ SK_SETTING_GET_FILLLIGHT → all 15 current parameter values
+      │  └─ TCP success → write back tcp_port to _connected_devices
+      └─ TCP failed or no IP → Fallback to ONVIF Imaging Service
+         ├─ GetMoveOptions → supported illumination modes
+         └─ GetImagingSettings → current IlluminationConfiguration.Mode
+   └─ Returns IlluminationResult(protocol, current_settings, capabilities, ...)
+
+3. manage_illumination(action="set", daynightmode=2, brightness=80, ...)
+   └─ Same always-try-TCP routing as get:
+   └─ Skyworth private protocol path:
+      ├─ GET current settings (SK_SETTING_GET_FILLLIGHT)
+      ├─ Merge user-specified params into current settings (full-set write required by device)
+      ├─ SET merged settings (SK_SETTING_SET_FILLLIGHT)
+      └─ Re-query to confirm → returns previous_settings + current_settings
+   └─ ONVIF fallback path:
+      └─ SetImagingSettings with IlluminationConfiguration.Mode only
+```
+
+**Routing rationale (defense in depth):** The `manage_illumination` router checks for IP availability (not `tcp_port` presence) and always attempts TCP 9010 first. This addresses a three-layer defect: (1) `_try_connect_with_password` only stores `tcp_port` when the TCP path succeeds — ONVIF/RTSP paths omit it; (2) `_probe_and_save_illumination` writes back `tcp_port` to `_connected_devices` when TCP probe succeeds; (3) `_get_device_connection` always includes `tcp_port` in cached-fallback connection info. Together these ensure Skyworth devices always get a TCP attempt regardless of how they were connected.
+
+**Protocol capability matrix:**
+
+| Function | Skyworth Private (TCP 9010) | ONVIF Imaging ver20 |
+|----------|:---------------------------:|:-------------------:|
+| Query capability | `SK_SETTING_GET_FILLLIGHT_OPTION` (15 params) | `GetMoveOptions` (mode list) |
+| Read settings | `SK_SETTING_GET_FILLLIGHT` (15 params) | `GetImagingSettings` (mode only) |
+| Write settings | `SK_SETTING_SET_FILLLIGHT` (full-set merge) | `SetImagingSettings` (mode only) |
+| Granularity | 15 parameters (daynight/filllight/brightness/timer/sensitivity) | 1 parameter (mode string) |
+
+**Key design decisions:**
+- **Non-blocking probe**: capability detection at connect time never delays the connection flow — failures are silently dropped.
+- **Cached capability**: `illumination_modes` in config.yaml avoids re-probing on every session.
+- **Full-set merge on write**: the Skyworth device requires all 15 parameters in every SET command. The tool handles this internally (GET → merge → SET); the Agent only passes the parameters it wants to change.
+- **Imaging path probing** (ONVIF fallback): candidate paths (`/onvif/imaging_service`, `/onvif/Imaging`, `/onvif/device_service`) are tried in order; first SOAP Envelope response wins.
+- **Minimal side-effects**: ONVIF `SetImagingSettings` only touches `IlluminationConfiguration.Mode` — exposure, white balance, and all other imaging parameters are left untouched.
+
+For per-action tool details, parameter tables, and return field reference, see [commands/illumination.md](commands/illumination.md).
 
 ## Session Rules
 

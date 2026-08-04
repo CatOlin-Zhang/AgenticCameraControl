@@ -1,6 +1,6 @@
 # xpai-camera-control 技能包工具清单与调用关系
 
-> 版本: 0.4.5 | 传输协议: MCP stdio | 生成日期: 2026-07-31
+> 版本: 0.5.0 | 传输协议: MCP stdio | 生成日期: 2026-08-03
 
 ---
 
@@ -11,10 +11,12 @@
 | 设备管理 (device_mgmt) | 7 | 8 |
 | 音视频流 (stream) | 4 | 0 |
 | 云台控制 (ptz) | 4 | 1 |
-| 创维私有发现 (discovery) | 1 | 1 |
-| 事件监听 (events) | 1 | 4 |
+| 事件监听 (events) | 1 | 5 |
+| 补光控制 (illumination) | 1 | 6 |
 | 鉴权模块 (auth) | 0 | 全部内部 |
-| **合计** | **17** | **14+** |
+| **合计** | **17** | **20+** |
+
+> 注: `discovery.py` 中的 `send_tcp_command`、`discover_sky_devices` 等为内部函数，由 device_mgmt / ptz / illumination 等模块间接调用，不注册为 MCP 工具。
 
 ---
 
@@ -50,17 +52,17 @@
 | 14 | `calibrate_ptz` | 执行云台物理校准（回初始位标定零位，10–30s） | camera_name(必填) |
 | 15 | `stop_ptz` | 立即停止云台所有移动 | camera_name(必填) |
 
-### 2.4 创维私有发现 — `discovery.py`
+### 2.4 事件监听 — `events.py`
 
 | # | 工具名 | 功能 | 关键参数 |
 |---|--------|------|----------|
-| 16 | `discover_sky_devices` | 搜索局域网内的创维摄像头（私有协议组播） | timeout |
+| 16 | `manage_camera_events` | 统一事件入口（action 切换四种模式） | action(start\|stop\|poll\|wait), camera_name, protocols, debounce_seconds, limit, timeout_seconds |
 
-### 2.5 事件监听 — `events.py`
+### 2.5 补光控制 — `illumination.py`
 
 | # | 工具名 | 功能 | 关键参数 |
 |---|--------|------|----------|
-| 17 | `manage_camera_events` | 统一事件入口（action 切换四种模式） | action(start\|stop\|poll\|wait), camera_name, protocols, debounce_seconds, limit, timeout_seconds |
+| 17 | `manage_illumination` | 统一补光入口（action 切换查询/设置，双协议） | action(get\|set), camera_name, daynightmode, filllightmode, duration, brightnessmode, brightness, begintime, endtime, repeatdays, enable, irmode, irbrightness, whiteonvalue, whiteoffvalue, ironvalue, iroffvalue |
 
 ---
 
@@ -72,11 +74,12 @@
 |--------|------|--------|
 | `_move_to_position` | 移动云台到指定绝对坐标 (x, y, z) | 内部/二次开发；不在 MCP 注册 |
 
-### 3.2 Discovery 模块
+### 3.2 Discovery 模块（全部内部，不注册 MCP 工具）
 
 | 函数名 | 功能 | 调用者 |
 |--------|------|--------|
-| `send_tcp_command` | 通过 TCP 通道（端口 9010）发送 JSON 命令 | `connect_device`、`control_ptz`、`calibrate_ptz`、`get_ptz_parameters` 等高层工具内部调用 |
+| `send_tcp_command` | 通过 TCP 通道（端口 9010）发送 JSON 命令 | `connect_device`、`control_ptz`、`calibrate_ptz`、`get_ptz_parameters`、`manage_illumination` 等高层工具内部调用 |
+| `discover_sky_devices` | 搜索局域网创维摄像头（私有协议组播） | `search_devices` 内部调用 |
 
 ### 3.3 Device Management 模块
 
@@ -86,10 +89,11 @@
 | `generate_claw_id` | 生成 Claw ID（MAC + 时间戳） | `get_or_create_claw_id` |
 | `get_or_create_claw_id` | 从 config.yaml 读取或生成并持久化 Claw ID | `request_cloud_auth`、`poll_auth_status` |
 | `_onvif_digest_auth_header` | 生成 ONVIF WS-UsernameToken SOAP Header | `_onvif_post_with_auth` |
-| `_onvif_post_with_auth` | POST SOAP 到 ONVIF endpoint（自动注入鉴权） | 事件监听 ONVIF 订阅/拉取 |
+| `_onvif_post_with_auth` | POST SOAP 到 ONVIF endpoint（自动注入鉴权） | 事件监听 ONVIF 订阅/拉取、illumination ONVIF 回退 |
 | `_probe_onvif_port` | 探测设备真实 ONVIF 服务端口 | `connect_device`、`start_event_monitor` |
 | `_probe_stream_access` | 探测 RTSP 流是否可访问 | `connect_device`、`search_devices`(WS) |
-| `_find_cached_camera` | 从 config.yaml 查找指定摄像头配置 | `connect_device`、流/录像/事件工具 |
+| `_find_cached_camera` | 从 config.yaml 查找指定摄像头配置 | `connect_device`、流/录像/事件/补光工具 |
+| `_probe_and_save_illumination` | 连接后探测并持久化补光能力 | `connect_device` |
 
 ### 3.4 Events 模块
 
@@ -101,7 +105,18 @@
 | `wait_for_events` | 长轮询阻塞等待新事件 | `manage_camera_events`(action=wait) |
 | `resume_persisted_monitors` | 按落盘意图恢复监听（进程重启后自动） | MCP server 启动时 + poll/wait 入口 |
 
-### 3.5 Auth 模块（全部内部，不注册 MCP 工具）
+### 3.5 Illumination 模块
+
+| 函数名 | 功能 | 调用者 |
+|--------|------|--------|
+| `probe_illumination_capability` | 探测设备补光能力（双协议：TCP 优先 → ONVIF 回退） | `_probe_and_save_illumination`(device_mgmt) |
+| `_sk_get_filllight_option` | 查询补光能力 (SK_SETTING_GET_FILLLIGHT_OPTION) | `probe_illumination_capability`、`manage_illumination`(get) |
+| `_sk_get_filllight` | 查询当前补光设置 (SK_SETTING_GET_FILLLIGHT) | `manage_illumination`(get/set) |
+| `_sk_set_filllight` | 设置补光参数 (SK_SETTING_SET_FILLLIGHT) | `manage_illumination`(set) |
+| `_send_sk_filllight` | 通过 TCP 通道发送补光命令 | `_sk_get/set_filllight*` |
+| `_get_device_connection` | 获取设备连接信息 | `_send_sk_filllight` |
+
+### 3.6 Auth 模块（全部内部，不注册 MCP 工具）
 
 | 子模块 | 函数 | 功能 |
 |--------|------|------|
@@ -144,6 +159,8 @@
 │  │                        │     └─→ get_or_create_claw_id       │   │
 │  │                        │          └─→ generate_claw_id       │   │
 │  │                        ├─→ _probe_stream_access              │   │
+│  │                        ├─→ _probe_and_save_illumination      │   │
+│  │                        │     └─→ probe_illumination_capability│  │
 │  │                        └─→ register_camera (自动缓存)        │   │
 │  │                                                              │   │
 │  │  [MCP] disconnect_device ──→ _connected_devices.pop()        │   │
@@ -181,12 +198,6 @@
 │  │  [内部] _move_to_position ──→ _sk_ptz_move_to                │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                     │
-│  ┌─── discovery ────────────────────────────────────────────────┐   │
-│  │  [MCP] discover_sky_devices ──→ 组播/广播 UDP 搜索           │   │
-│  │  [内部] send_tcp_command ──→ TCP 通道 (端口 9010) JSON 通信  │   │
-│  │  [内部] SkyDiscoveryListener ──→ 后台持续发现监听器           │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                     │
 │  ┌─── events ───────────────────────────────────────────────────┐   │
 │  │  [MCP] manage_camera_events                                  │   │
 │  │    ├─ action=start → start_event_monitor                     │   │
@@ -208,6 +219,24 @@
 │  │  事件联动: _CameraEventMonitor._capture_snapshot             │   │
 │  │    └─→ stream.capture_video_screenshot (同进程内部调用)      │   │
 │  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  ┌─── illumination ────────────────────────────────────────────┐   │
+│  │  [MCP] manage_illumination                                   │   │
+│  │    ├─ 路由: 有 IP → 尝试创维私有协议 (TCP 9010)           │   │
+│  │    │     ├─ _sk_get_filllight_option → capabilities          │   │
+│  │    │     ├─ _sk_get_filllight → current_settings             │   │
+│  │    │     └─ _sk_set_filllight (GET→merge→SET)                │   │
+│  │    │           └─→ send_tcp_command (discovery 模块)         │   │
+│  │    │     TCP 成功 → 回写 tcp_port 到 _connected_devices    │   │
+│  │    └─ 路由: TCP 失败 → ONVIF Imaging Service 回退         │   │
+│  │          ├─ _imaging_post → _onvif_post_with_auth            │   │
+│  │          ├─ _parse_illumination_modes_from_move_options      │   │
+│  │          └─ _parse_current_mode_from_imaging_settings        │   │
+│  │                                                              │   │
+│  │  [内部] probe_illumination_capability                        │   │
+│  │    ├─ 尝试 TCP: send_tcp_command (SK_SETTING_GET_FILLLIGHT_OPTION)│
+│  │    └─ 回退 ONVIF: _imaging_post (GetMoveOptions)             │   │
+│  └──────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -226,17 +255,20 @@
 
 ```
 device_mgmt ──imports──→ discovery  (send_tcp_command, discover_sky_devices, SK_TCP_PORT)
+device_mgmt ──imports──→ illumination (probe_illumination_capability)
 ptz         ──imports──→ discovery  (send_tcp_command, SK_TCP_PORT)
 stream      ──imports──→ device_mgmt (_connected_devices, _find_cached_camera, _build_rtsp_url, _probe_stream_access)
 events      ──imports──→ device_mgmt (_connected_devices, _find_cached_camera, _probe_onvif_port, _onvif_post_with_auth)
 events      ──imports──→ stream      (capture_video_screenshot — 联动快照)
+illumination──imports──→ discovery   (send_tcp_command, SK_TCP_PORT)
+illumination──imports──→ device_mgmt (_connected_devices, _find_cached_camera, _onvif_post_with_auth)
 ```
 
 ---
 
 ## 六、双协议策略说明
 
-多个工具遵循 **ONVIF 优先、创维私有协议兜底** 的双协议策略：
+多个工具遵循 **ONVIF 优先、创维私有协议兜底** 的双协议策略（illumination 方向相反：私有协议优先、ONVIF 回退）：
 
 | 工具 | ONVIF 路径 | 私有协议路径 |
 |------|-----------|-------------|
@@ -246,6 +278,7 @@ events      ──imports──→ stream      (capture_video_screenshot — 联
 | `calibrate_ptz` | ❌ 不支持 | `SK_SETTING_SET_PTZ cmd=calibrate` |
 | `_move_to_position` | ❌ 不支持 | `SK_SETTING_SET_PTZ cmd=move` |
 | `manage_camera_events` | `CreatePullPointSubscription` + `PullMessages` | RTSP interleaved channel 0x65 报警 JSON |
+| `manage_illumination` | `GetMoveOptions` / `GetImagingSettings` / `SetImagingSettings` (回退) | `SK_SETTING_GET_FILLLIGHT_OPTION` / `GET_FILLLIGHT` / `SET_FILLLIGHT` (主路径, always-try-TCP) |
 
 ---
 
@@ -258,4 +291,5 @@ events      ──imports──→ stream      (capture_video_screenshot — 联
 | `request_cloud_auth` | MCP 工具 | 不携带密码，仅发送 SN + ClawID 发起授权请求 |
 | `connect_device` | MCP 工具 | 密码认证失败时降级到本地授权或提示用户输入 |
 | `manage_camera_events` (start) | MCP 工具 | 后台线程仅用户显式确认后启动；行为限于报警订阅 + 白名单路径写入 |
+| `manage_illumination` (set) | MCP 工具 | 硬件参数修改，需用户确认；set 操作自动 GET→merge→SET，不覆盖未指定参数 |
 | Auth 模块全部函数 | **内部函数** | 智慧云 Token/会话管理不暴露给 Agent |

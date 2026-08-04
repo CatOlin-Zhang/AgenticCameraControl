@@ -443,6 +443,7 @@ def send_tcp_command(
     password: str = "",
     timeout: float = 10.0,
     port: int = SK_TCP_PORT,
+    auth_token: Optional[str] = None,
 ) -> Optional[dict]:
     """
     通过 TCP 通道（端口 9010）向设备发送 JSON 命令并接收响应。
@@ -454,17 +455,25 @@ def send_tcp_command(
         Content-Type: application/json; charset=utf-8
         Content-Length: <len>
         Connection: close
-        Authorization: Basic <base64>
+        Authorization: Basic <token>
 
         <json body>
 
+    认证机制 (两步):
+        1. 首次连接: Authorization: Basic <base64(user:pass)>
+           调用 SK_SETTING_GET_MAGIC 获取 stamp
+        2. 后续请求: Authorization: Basic <stamp>
+           传入 auth_token=stamp 替代 base64(user:pass)
+
     Args:
-        ip:       设备 IP
-        command:  要发送的 JSON 命令字典
-        username: 登录用户名（默认 admin）
-        password: 登录密码
-        timeout:  响应超时（秒）
-        port:     TCP 端口（默认 9010）
+        ip:         设备 IP
+        command:    要发送的 JSON 命令字典
+        username:   登录用户名（默认 admin）
+        password:   登录密码
+        timeout:    响应超时（秒）
+        port:       TCP 端口（默认 9010）
+        auth_token: 认证令牌（从 SK_SETTING_GET_MAGIC 获取的 stamp）。
+                    若提供则直接使用，否则回退到 base64(user:pass)。
 
     Returns:
         解析后的响应字典，失败返回 None
@@ -472,7 +481,11 @@ def send_tcp_command(
     import base64
 
     body = json.dumps(command, ensure_ascii=False).encode("utf-8")
-    auth_str = base64.b64encode(f"{username}:{password}".encode()).decode()
+    # 优先使用 auth_token (stamp)，否则回退到 base64(user:pass)
+    if auth_token:
+        auth_str = auth_token
+    else:
+        auth_str = base64.b64encode(f"{username}:{password}".encode()).decode()
 
     header = (
         f"POST {SK_TCP_PATH} HTTP/1.1\r\n"
@@ -484,6 +497,46 @@ def send_tcp_command(
         f"Authorization: Basic {auth_str}\r\n"
         f"\r\n"
     )
+
+    # ── 在 try 外部初始化，确保异常处理器可访问已接收的数据 ──
+    _saved_response_data = b""
+    cmd_name = command.get("cmd_name", "unknown")
+
+    def _parse_http_response(raw_data: bytes) -> Optional[dict]:
+        """解析 HTTP 响应原始字节 → JSON dict，失败返回 None"""
+        text = raw_data.decode("utf-8", errors="ignore")
+
+        # 提取 HTTP 状态码
+        http_st = 0
+        eol = text.find("\r\n")
+        if eol < 0:
+            eol = text.find("\n")
+        if eol > 0:
+            parts = text[:eol].split(None, 2)
+            if len(parts) >= 2:
+                try:
+                    http_st = int(parts[1])
+                except ValueError:
+                    pass
+
+        # 定位 header / body 分隔
+        sep = text.find("\r\n\r\n")
+        if sep < 0:
+            sep = text.find("\n\n")
+        if sep < 0:
+            return None
+
+        body_text = text[sep:].strip()
+        if not body_text:
+            return None
+
+        try:
+            result = json.loads(body_text)
+            if isinstance(result, dict) and http_st:
+                result["_http_status"] = http_st
+            return result
+        except (json.JSONDecodeError, ValueError):
+            return None
 
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -499,23 +552,100 @@ def send_tcp_command(
                 if not chunk:
                     break
                 response_data += chunk
+                # 每收到数据立即保存，防止后续 RST 导致数据丢失
+                _saved_response_data = response_data
             except socket.timeout:
                 break
-        sock.close()
 
-        # 解析 HTTP 响应
+        try:
+            sock.close()
+        except Exception:
+            pass  # close 时的 RST 不影响已接收的数据
+
+        # ── 解析 HTTP 响应 ──
+        result = _parse_http_response(response_data)
+        if result is not None:
+            return result
+
+        # body 为空或不可解析 —— 尝试从 HTTP 状态码分类
         response_text = response_data.decode("utf-8", errors="ignore")
-        # 找到空行（header 和 body 的分隔）
-        sep_idx = response_text.find("\r\n\r\n")
-        if sep_idx < 0:
-            sep_idx = response_text.find("\n\n")
-        if sep_idx < 0:
-            return None
+        http_status = 0
+        eol = response_text.find("\r\n")
+        if eol < 0:
+            eol = response_text.find("\n")
+        if eol > 0:
+            parts = response_text[:eol].split(None, 2)
+            if len(parts) >= 2:
+                try:
+                    http_status = int(parts[1])
+                except ValueError:
+                    pass
 
-        body_text = response_text[sep_idx:].strip()
-        return json.loads(body_text)
+        if http_status == 404:
+            return {
+                "code": "HTTP_404",
+                "msg": f"设备不支持命令 {cmd_name} (HTTP 404)",
+                "cmd_name": cmd_name,
+                "_http_status": 404,
+            }
+        elif http_status in (401, 403):
+            return {
+                "code": f"HTTP_{http_status}",
+                "msg": f"认证失败 (HTTP {http_status})",
+                "cmd_name": cmd_name,
+                "_http_status": http_status,
+            }
+        elif http_status >= 400:
+            return {
+                "code": f"HTTP_{http_status}",
+                "msg": f"HTTP 错误 {http_status}",
+                "cmd_name": cmd_name,
+                "_http_status": http_status,
+            }
+        return None
 
+    except ConnectionResetError:
+        # ── 关键修复: 设备可能在发完数据后以 RST 关闭连接 ──
+        # 如果已收到数据，照常解析 HTTP 响应
+        if _saved_response_data:
+            result = _parse_http_response(_saved_response_data)
+            if result is not None:
+                return result
+        # 真正无数据的 RST: 固件不支持私有协议
+        print(f"  [!] TCP 连接被重置 ({ip}:{port}): 设备不支持私有协议 TCP 接口")
+        return {
+            "code": "TCP_CONNECTION_RESET",
+            "msg": f"TCP 连接被重置 ({ip}:{port})，设备固件不支持私有协议 TCP 接口",
+            "cmd_name": cmd_name,
+            "_tcp_error": "connection_reset",
+        }
+    except ConnectionRefusedError:
+        print(f"  [!] TCP 连接被拒绝 ({ip}:{port}): 端口未监听")
+        return {
+            "code": "TCP_CONNECTION_REFUSED",
+            "msg": f"TCP 连接被拒绝 ({ip}:{port})，端口未监听",
+            "cmd_name": cmd_name,
+            "_tcp_error": "connection_refused",
+        }
+    except socket.timeout:
+        # 超时前若已收到部分数据，尝试解析
+        if _saved_response_data:
+            result = _parse_http_response(_saved_response_data)
+            if result is not None:
+                return result
+        print(f"  [!] TCP 连接超时 ({ip}:{port})")
+        return {
+            "code": "TCP_TIMEOUT",
+            "msg": f"TCP 连接超时 ({ip}:{port})",
+            "cmd_name": cmd_name,
+            "_tcp_error": "timeout",
+        }
     except Exception as e:
+        # 通用兜底: 若已收到数据仍尝试解析
+        if _saved_response_data:
+            result = _parse_http_response(_saved_response_data)
+            if result is not None:
+                return result
         print(f"  [!] TCP 通信异常 ({ip}:{port}): {e}")
         return None
 

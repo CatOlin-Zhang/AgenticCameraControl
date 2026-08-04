@@ -4,7 +4,7 @@ Toolkit 2: 云台控制
 工具清单：
   - control_ptz          步进式控制云台方向（ONVIF 优先，私有协议兜底）
   - get_ptz_parameters   获取云台位移与角度参数
-  - calibrate_ptz        执行云台物理校准（私有协议）
+  - calibrate_ptz        执行云台校准（ONVIF GotoHomePosition 优先，私有协议兆底）
   - stop_ptz             停止云台移动
 
 内部函数（不注册为 MCP 工具）：
@@ -105,6 +105,7 @@ class PTZParameters:
     zoom_range: float = 0.0                      # 变倍最大值
     is_moving: bool = False                      # 是否正在移动
     protocol: str = ""                           # 使用的协议
+    error_message: str = ""                      # 查询失败时的错误信息
 
 
 @dataclass
@@ -291,9 +292,89 @@ def _onvif_get_status(camera_name: str) -> PTZParameters:
         return PTZParameters(protocol="onvif")
 
 
+def _onvif_ptz_calibrate(camera_name: str) -> CalibrateResult:
+    """通过 ONVIF GotoHomePosition 实现云台软件校准（回到初始位置）"""
+    conn = _get_conn_info(camera_name)
+    if not conn:
+        return CalibrateResult(
+            success=False, protocol="onvif",
+            error_message=f"设备 {camera_name} 未连接",
+        )
+
+    onvif_cam = conn.get("onvif_camera")
+    if not onvif_cam:
+        return CalibrateResult(
+            success=False, protocol="onvif",
+            error_message="ONVIF 服务未初始化",
+        )
+
+    try:
+        ptz = onvif_cam.create_ptz_service()
+        media = onvif_cam.create_media_service()
+        profiles = media.GetProfiles()
+        if not profiles:
+            return CalibrateResult(
+                success=False, protocol="onvif",
+                error_message="无法获取 ONVIF Profile",
+            )
+
+        profile_token = profiles[0].token
+        ptz.GotoHomePosition({'ProfileToken': profile_token, 'Speed': {'PanTilt': {'x': 1.0, 'y': 1.0}}})
+        return CalibrateResult(success=True, protocol="onvif")
+    except Exception as e:
+        return CalibrateResult(
+            success=False, protocol="onvif",
+            error_message=f"ONVIF GotoHomePosition 失败: {e}",
+        )
+
+
 # ──────────────────────────────────────────────
 #  私有协议 PTZ 内部实现 (SK_SETTING_SET_PTZ)
 # ──────────────────────────────────────────────
+
+# ── 私有协议 TCP 不可用统一诊断消息 ──
+_SK_TCP_404_MSG = (
+    "创维私有协议 (TCP 9010) 不可用：设备返回 HTTP 404，"
+    "该型号固件不支持 TCP 私有协议接口"
+)
+
+_SK_TCP_UNAVAILABLE_MSGS = {
+    "connection_reset": (
+        "创维私有协议 (TCP 9010) 不可用：连接被重置 (RST)，"
+        "该型号固件不支持 TCP 私有协议接口"
+    ),
+    "connection_refused": (
+        "创维私有协议 (TCP 9010) 不可用：连接被拒绝，"
+        "端口未监听"
+    ),
+    "timeout": (
+        "创维私有协议 (TCP 9010) 不可用：连接超时"
+    ),
+}
+
+
+def _is_sk_tcp_unavailable(resp: Optional[dict]) -> bool:
+    """检测 send_tcp_command 返回值是否为 TCP 私有协议不可用 (HTTP 404 或 TCP 连接失败)"""
+    if not resp or not isinstance(resp, dict):
+        return False
+    if resp.get("_http_status") == 404:
+        return True
+    if resp.get("_tcp_error") in _SK_TCP_UNAVAILABLE_MSGS:
+        return True
+    return False
+
+
+def _sk_tcp_error_message(resp: Optional[dict]) -> str:
+    """根据 send_tcp_command 返回值生成友好的 TCP 不可用错误消息"""
+    if not resp or not isinstance(resp, dict):
+        return "TCP 通道无响应"
+    tcp_err = resp.get("_tcp_error", "")
+    if tcp_err in _SK_TCP_UNAVAILABLE_MSGS:
+        return _SK_TCP_UNAVAILABLE_MSGS[tcp_err]
+    if resp.get("_http_status") == 404:
+        return _SK_TCP_404_MSG
+    return resp.get("msg", "TCP 通道未知错误")
+
 
 def _sk_ptz_move(camera_name: str, direction: PTZDirection, channel: int = 2) -> PTZMoveResult:
     """通过创维私有协议发送方向控制命令"""
@@ -314,9 +395,10 @@ def _sk_ptz_move(camera_name: str, direction: PTZDirection, channel: int = 2) ->
     resp = _send_sk_ptz_command(camera_name, command)
     if resp and resp.get("code") == "C0000":
         return PTZMoveResult(success=True, protocol="sky_private")
-    else:
-        msg = resp.get("msg", "未知错误") if resp else "TCP 通道无响应"
-        return PTZMoveResult(success=False, protocol="sky_private", error_message=msg)
+    if _is_sk_tcp_unavailable(resp):
+        return PTZMoveResult(success=False, protocol="sky_private", error_message=_sk_tcp_error_message(resp))
+    msg = resp.get("msg", "未知错误") if resp else "TCP 通道无响应"
+    return PTZMoveResult(success=False, protocol="sky_private", error_message=msg)
 
 
 def _sk_ptz_stop(camera_name: str, action: str = "", channel: int = 2) -> PTZMoveResult:
@@ -336,9 +418,10 @@ def _sk_ptz_stop(camera_name: str, action: str = "", channel: int = 2) -> PTZMov
     resp = _send_sk_ptz_command(camera_name, command)
     if resp and resp.get("code") == "C0000":
         return PTZMoveResult(success=True, protocol="sky_private")
-    else:
-        msg = resp.get("msg", "未知错误") if resp else "TCP 通道无响应"
-        return PTZMoveResult(success=False, protocol="sky_private", error_message=msg)
+    if _is_sk_tcp_unavailable(resp):
+        return PTZMoveResult(success=False, protocol="sky_private", error_message=_sk_tcp_error_message(resp))
+    msg = resp.get("msg", "未知错误") if resp else "TCP 通道无响应"
+    return PTZMoveResult(success=False, protocol="sky_private", error_message=msg)
 
 
 def _sk_ptz_calibrate(camera_name: str, channel: int = 2) -> CalibrateResult:
@@ -356,9 +439,10 @@ def _sk_ptz_calibrate(camera_name: str, channel: int = 2) -> CalibrateResult:
     resp = _send_sk_ptz_command(camera_name, command)
     if resp and resp.get("code") == "C0000":
         return CalibrateResult(success=True, protocol="sky_private")
-    else:
-        msg = resp.get("msg", "未知错误") if resp else "TCP 通道无响应"
-        return CalibrateResult(success=False, protocol="sky_private", error_message=msg)
+    if _is_sk_tcp_unavailable(resp):
+        return CalibrateResult(success=False, protocol="sky_private", error_message=_sk_tcp_error_message(resp))
+    msg = resp.get("msg", "未知错误") if resp else "TCP 通道无响应"
+    return CalibrateResult(success=False, protocol="sky_private", error_message=msg)
 
 
 def _sk_ptz_move_to(camera_name: str, x: int, y: int, z: float, channel: int = 2) -> PTZMoveResult:
@@ -379,9 +463,10 @@ def _sk_ptz_move_to(camera_name: str, x: int, y: int, z: float, channel: int = 2
     resp = _send_sk_ptz_command(camera_name, command)
     if resp and resp.get("code") == "C0000":
         return PTZMoveResult(success=True, protocol="sky_private", current_pan=float(x), current_tilt=float(y), current_zoom=z)
-    else:
-        msg = resp.get("msg", "未知错误") if resp else "TCP 通道无响应"
-        return PTZMoveResult(success=False, protocol="sky_private", error_message=msg)
+    if _is_sk_tcp_unavailable(resp):
+        return PTZMoveResult(success=False, protocol="sky_private", error_message=_sk_tcp_error_message(resp))
+    msg = resp.get("msg", "未知错误") if resp else "TCP 通道无响应"
+    return PTZMoveResult(success=False, protocol="sky_private", error_message=msg)
 
 
 def _sk_get_ptz_params(camera_name: str, channel: int = 2) -> PTZParameters:
@@ -407,7 +492,13 @@ def _sk_get_ptz_params(camera_name: str, channel: int = 2) -> PTZParameters:
             is_moving=False,
             protocol="sky_private",
         )
-    return PTZParameters(protocol="sky_private")
+    # 诊断: HTTP 404 → 设备不支持 TCP 私有协议
+    if _is_sk_tcp_unavailable(resp):
+        return PTZParameters(protocol="sky_private", error_message=_sk_tcp_error_message(resp))
+    return PTZParameters(
+        protocol="sky_private",
+        error_message=resp.get("msg", "TCP 通道无响应") if resp else "TCP 通道无响应",
+    )
 
 
 def _sk_get_ptz_info(camera_name: str, channel: int = 2) -> Optional[PTZInfo]:
@@ -724,18 +815,30 @@ def get_ptz_parameters(
         return result
 
     # ── 尝试 2: 私有协议 ──
-    return _sk_get_ptz_params(camera_name)
+    result = _sk_get_ptz_params(camera_name)
+    if result.error_message:
+        # 私有协议也失败，返回带错误信息的 PTZParameters
+        return PTZParameters(
+            protocol="fallback",
+            error_message=(
+                f"ONVIF 和私有协议均无法获取云台参数。"
+                f"私有协议: {result.error_message}"
+            ),
+        )
+    return result
 
 
 def calibrate_ptz(
     camera_name: str,
 ) -> CalibrateResult:
     """
-    执行云台物理校准。
+    执行云台校准（ONVIF GotoHomePosition 优先，私有协议兆底）。
 
-    通过创维私有协议发送 calibrate 命令，云台回到初始位置并重新标定零位。
+    双协议策略:
+      1. 优先 ONVIF GotoHomePosition（回到初始位置）
+      2. 失败则回退创维私有协议 calibrate 命令
+
     校准过程中云台会进行物理运动，耗时约 10-30 秒。
-    此功能仅创维私有协议支持。
 
     安全约束: 显式提示
 
@@ -748,13 +851,24 @@ def calibrate_ptz(
             - protocol: 使用的协议
             - error_message: 失败原因
     """
-    result = _sk_ptz_calibrate(camera_name)
-    if not result.success and not result.error_message:
-        return CalibrateResult(
-            success=False, protocol="sky_private",
-            error_message="云台校准仅支持创维私有协议，请确认设备已通过 TCP 通道连接",
-        )
-    return result
+    # ── 尝试 1: ONVIF GotoHomePosition ──
+    result = _onvif_ptz_calibrate(camera_name)
+    if result.success:
+        return result
+
+    # ── 尝试 2: 创维私有协议 calibrate ──
+    result2 = _sk_ptz_calibrate(camera_name)
+    if result2.success:
+        return result2
+
+    # 两者都失败，返回更详细的错误
+    return CalibrateResult(
+        success=False, protocol="onvif",
+        error_message=(
+            f"ONVIF 校准失败: {result.error_message}; "
+            f"私有协议校准失败: {result2.error_message}"
+        ),
+    )
 
 
 def _move_to_position(

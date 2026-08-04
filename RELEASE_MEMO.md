@@ -1,9 +1,40 @@
-# xpai-camera-control 发布备忘录（UVX 方案）
+# xpai-camera-control 发布备忘录
 
-> **⚠️ 状态：部分内容已过时。** `pyproject.toml` 和 `scripts/toolkit/paths.py` 已从仓库移除，uvx 三形态改造产物不再存在。以下记录仅作历史参考，实际发布需重新构建打包配置。
+> **当前版本：0.5.0** | 传输协议: MCP stdio | MCP 工具数: 17
+
+---
+
+## v0.5.0 变更记录（2026-08-03）
+
+### 新增：补光/夜视模式控制模块 (`illumination.py`)
+
+| 变更 | 说明 |
+|---|---|
+| 新 MCP 工具 `manage_illumination` | 统一补光入口，action 切换 get/set，17 个参数（daynightmode、filllightmode、brightness、timer、sensitivity 等） |
+| 双协议策略 | 创维私有协议 (TCP 9010) 优先 → ONVIF Imaging Service 回退。与 PTZ 方向相反 |
+| 能力探测与缓存 | `connect_device` 成功后自动探测补光能力 (`probe_illumination_capability`)，结果持久化到 config.yaml 的 `illumination_modes` 字段 |
+| 纵深防御路由修复 | 三处修复确保创维设备始终尝试 TCP 9010：(1) 路由层 always-try-TCP (2) 探测层回写 tcp_port (3) 缓存层补充 tcp_port |
+
+### 文档更新
+
+| 文件 | 变更 |
+|---|---|
+| `SKILL.md` | 新增 illumination Extended Capability 行、Quick Reference 示例、References 链接 |
+| `SKILL_TECHNICAL_REFERENCE.md` | 新增 §2.5 manage_illumination、§3.5 Illumination 内部函数、调用关系图、双协议策略表 |
+| `ARCHITECTURE.md` | 新增 Illumination Mode Control Architecture 章节，含路由决策图 + always-try-TCP rationale |
+| `WORKFLOW.md` | 新增 Illumination Mode Control Extended Tools 章节 |
+| `references/commands/illumination.md` | 新增完整的工具签名、参数表、返回字段参考 |
+| `README.md` | 功能概览、项目结构、工具模块表补全 illumination 条目 |
+| `TODOlist.md` | “夜视 / 补光灯控制”标记为已完成，工具计数更新为 17 |
+
+---
+
+## v0.4.5 及以前（UVX 方案，部分已过时）
+
+> **⚠️ 状态：以下内容仅作历史参考。** `pyproject.toml` 和 `scripts/toolkit/paths.py` 已从仓库移除，uvx 三形态改造产物不再存在。实际发布需重新构建打包配置。
 >
 > 记录时间：2026-07-28
-> 当前版本：0.4.5（备忘录原始版本为 0.3.0）
+> 备忘录原始版本为 0.3.0
 
 ## 一、改造内容回顾
 

@@ -251,41 +251,28 @@ calibrate_ptz(camera_name="客厅摄像头")
 
 ---
 
-## Phase 5 — Event Monitoring (Guardian Mode): Detailed Tool Calls
+## Extended Tools
 
-All event operations go through the **single** tool `manage_camera_events` — the `action` parameter switches the working mode. See [commands/events.md](commands/events.md) for the full parameter/return reference and the schema 1.0 on-disk format.
+The following tools extend the skill beyond the core workflow (Phase 0–4). They are available when the user explicitly requests them but are not part of the typical camera operation flow.
 
-### Start / stop the listener (requires user confirmation first)
+### Event Monitoring (`manage_camera_events`)
 
-```text
-# ALWAYS ask the user for confirmation before starting — this spawns a background thread
-manage_camera_events(action="start", camera_name="前门")
-→ success=true, running=true, active_channels=["onvif", "private"]
-  (partial channels, e.g. only ["private"], is normal — report which are active)
+Receive alarm events (motion, human, vehicle, tamper, line-crossing, …) with linked snapshots. Single tool, `action` switches mode: `start` / `stop` / `poll` / `wait`.
 
-manage_camera_events(action="stop", camera_name="前门")
-→ success=true, running=false
-```
+| Aspect | Detail |
+|--------|--------|
+| **Prerequisite** | Camera connected via `connect_device()` |
+| **Safety** | `action="start"` spawns a background listener — requires explicit user confirmation |
+| **Detailed reference** | [commands/events.md](commands/events.md) — full parameter/return fields, schema 1.0 format, event store contract |
+| **Architecture** | [ARCHITECTURE.md — Event Monitoring Architecture](ARCHITECTURE.md#event-monitoring-architecture-guardian-mode-foundation) |
 
-### T1 — On-demand backlog check ("what happened earlier")
+### Illumination Mode Control (`manage_illumination`)
 
-```text
-manage_camera_events(action="poll")            # omit camera_name to consume all cameras
-→ events[]: schema 1.0 records (event_type, title, message, snapshot_path, …)
-→ remaining: 0 means backlog fully consumed; >0 means truncated by limit — call again
+Query and adjust camera illumination parameters. Dual-protocol: Skyworth private (TCP 9010, 15 parameters) + ONVIF Imaging fallback (mode only). Single tool, `action` switches mode: `get` / `set`.
 
-For each returned event:
-  1. Read the image at snapshot_path and analyze it
-  2. Report to the user using the event's title / message plus your image analysis
-```
-
-### T2 — In-session guard loop ("keep an eye on my home")
-
-```text
-Loop until the user stops:
-  manage_camera_events(action="wait", timeout_seconds=60)   # single block capped at 60 s
-  → events non-empty : read snapshots → analyze → report immediately → continue loop
-  → events empty     : timeout with success=true → continue loop silently
-```
-
-> Backlog survives MCP server restarts: `poll` / `wait` read the on-disk store (`events/camera_events.txt`), so a fresh session can consume events recorded earlier. Raw protocol messages are never persisted — every record is already in schema 1.0.
+| Aspect | Detail |
+|--------|--------|
+| **Prerequisite** | Camera connected via `connect_device()`; capability auto-probed at connect time and cached in `config.yaml` as `illumination_modes` |
+| **Safety** | `action="set"` modifies a hardware setting — requires explicit user confirmation. Always call `get` first to retrieve `capabilities` (parameter ranges), then call `set` with only the parameters to change |
+| **Detailed reference** | [commands/illumination.md](commands/illumination.md) — full parameter table (15 params), return fields, dual-protocol details |
+| **Architecture** | [ARCHITECTURE.md — Illumination Mode Control Architecture](ARCHITECTURE.md#illumination-mode-control-architecture) |

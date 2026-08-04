@@ -1,11 +1,12 @@
 """
 XPAI Camera Control — Toolkit 工具集
 
-提供摄像头控制的全部工具函数，按功能分为 4 大类：
+提供摄像头控制的全部工具函数，按功能分为 5 大类：
   1. stream       — 音视频流与存储
   2. ptz          — 云台与巡航
   3. device_mgmt  — 设备管理与维护
   4. events       — IPC 事件接收（双协议告警监听 + 落盘）
+  5. illumination — 补光模式控制（创维私有协议优先 + ONVIF Imaging Service 回退）
 
 注意: discovery.py / auth/ 为内部实现模块，其函数（send_tcp_command、
 discover_sky_devices 等）不在此导出，Agent 通过 MCP 工具间接使用。
@@ -69,6 +70,18 @@ from .events import (
     PendingEventsResult,
 )
 
+# ── illumination (补光模式控制) ──
+from .illumination import (
+    manage_illumination,
+    probe_illumination_capability,
+    IlluminationAction,
+    IlluminationInfo,
+    IlluminationResult,
+    IlluminationCapability,
+    DAYNIGHT_MODES,
+    FILLLIGHT_MODES,
+)
+
 
 __all__ = [
     # stream
@@ -117,4 +130,13 @@ __all__ = [
     "CameraEvent",
     "EventMonitorResult",
     "PendingEventsResult",
+    # illumination (补光模式控制)
+    "manage_illumination",
+    "probe_illumination_capability",
+    "IlluminationAction",
+    "IlluminationInfo",
+    "IlluminationResult",
+    "IlluminationCapability",
+    "DAYNIGHT_MODES",
+    "FILLLIGHT_MODES",
 ]

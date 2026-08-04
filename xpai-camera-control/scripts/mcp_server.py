@@ -316,6 +316,87 @@ TOOLS = [
             "required": ["action"],
         },
     ),
+
+    # ── Illumination (补光模式控制) ──
+    Tool(
+        name="manage_illumination",
+        description="摄像头补光模式统一入口。get=查询当前设置和参数范围；set=设置补光参数（仅指定需修改的参数，其余保持不变）。创维设备使用私有协议(TCP 9010)，其他设备回退 ONVIF。",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["get", "set"],
+                    "description": "工作模式",
+                },
+                "camera_name": {
+                    "type": "string",
+                    "description": "摄像头名称",
+                },
+                "daynightmode": {
+                    "type": "integer",
+                    "description": "日夜模式: 0=白天 1=夜晚 2=自动 3=定时 4=智能",
+                },
+                "filllightmode": {
+                    "type": "integer",
+                    "description": "补光方式: 0=全彩 1=红外 2=智能夜视",
+                },
+                "duration": {
+                    "type": "integer",
+                    "description": "智能夜视白光灯补光时间 (5-60 秒)",
+                },
+                "brightnessmode": {
+                    "type": "integer",
+                    "description": "白光灯亮度模式: 0=自动 1=手动",
+                },
+                "brightness": {
+                    "type": "integer",
+                    "description": "白光灯手动亮度 (1-100)",
+                },
+                "begintime": {
+                    "type": "integer",
+                    "description": "定时模式开始时间 (0-86399 秒)",
+                },
+                "endtime": {
+                    "type": "integer",
+                    "description": "定时模式结束时间 (0-172799 秒)",
+                },
+                "repeatdays": {
+                    "type": "string",
+                    "description": "定时模式重复日期 (如 sun,mon,tue,wed,thu,fri,sat,)",
+                },
+                "enable": {
+                    "type": "integer",
+                    "description": "定时器使能: 0=关 1=开",
+                },
+                "irmode": {
+                    "type": "integer",
+                    "description": "红外灯亮度模式: 0=自动 1=手动",
+                },
+                "irbrightness": {
+                    "type": "integer",
+                    "description": "红外灯手动亮度 (1-100)",
+                },
+                "whiteonvalue": {
+                    "type": "integer",
+                    "description": "白光灯开灯灵敏度 (0-100)",
+                },
+                "whiteoffvalue": {
+                    "type": "integer",
+                    "description": "白光灯关灯灵敏度 (0-100)",
+                },
+                "ironvalue": {
+                    "type": "integer",
+                    "description": "红外灯开灯灵敏度 (0-100)",
+                },
+                "iroffvalue": {
+                    "type": "integer",
+                    "description": "红外灯关灯灵敏度 (0-100)",
+                },
+            },
+            "required": ["action", "camera_name"],
+        },
+    ),
 ]
 
 
@@ -346,6 +427,7 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     from scripts.toolkit.stream import RecordingAction, StorageAction
     from scripts.toolkit.ptz import PTZDirection
     from scripts.toolkit.events import EventAction
+    from scripts.toolkit.illumination import IlluminationAction
 
     # ── Device Management ──
     if name == "get_registered_cameras":
@@ -397,6 +479,12 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
         args = dict(args)
         args["action"] = EventAction(args["action"])
         return _serialize(tk.manage_camera_events(**args))
+
+    # ── Illumination ──
+    elif name == "manage_illumination":
+        args = dict(args)
+        args["action"] = IlluminationAction(args["action"])
+        return _serialize(tk.manage_illumination(**args))
 
     else:
         raise ValueError(f"Unknown tool: {name}")
