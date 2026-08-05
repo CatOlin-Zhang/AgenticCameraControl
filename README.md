@@ -14,7 +14,7 @@
 
 | 类别 | 能力 |
 |------|------|
-| **设备发现** | 局域网自动搜索摄像头，支持 WS-Discovery、USB 扫描 |
+| **设备发现** | 局域网自动搜索摄像头，支持 WS-Discovery、创维私有协议、USB 扫描 |
 | **设备连接** | 自动探测认证方式，凭据缓存与自动重连 |
 | **视频流** | RTSP 流地址获取、截图、录像、存储管理 |
 | **云台控制** | 8 方向移动、物理极限保护、云台校准 |
@@ -61,29 +61,34 @@ AgenticCameraControl/
 │   │   │   ├── ptz.py            # 云台控制
 │   │   │   ├── events.py         # 报警事件接收与本地存储
 │   │   │   └── illumination.py   # 补光/夜视模式控制
-│   │   └── auth/                 # 认证模块
 │   ├── references/               # 技术参考文档
 │   │   └── commands/             # 各模块工具签名与参数说明
 │   ├── SKILL.md                  # Agent 技能描述文件
 │   ├── config.yaml               # 摄像头配置（运行时自动生成）
 │   └── requirements.txt          # Python 依赖
-├── phase1/                       # 阶段一：动态扫描 + 基础控制
-├── phase2/                       # 阶段二：SN 码认证体系
-└── phase3/                       # 阶段三：ONVIF 心跳包被动发现
+├── Toolkit/                      # 独立运行脚本（调试与诊断）
+│   ├── device/                   # 设备管理脚本
+│   ├── discovery/                # 设备发现脚本
+│   ├── diagnostics/              # 诊断工具脚本
+│   ├── events/                   # 事件监听脚本
+│   ├── illumination/             # 补光控制脚本
+│   ├── ptz/                      # 云台控制脚本
+│   └── stream/                   # 视频流脚本
 ```
 
 ### 工具模块
 
-5 个模块，共 17 个 MCP 工具：
+6 个模块，共 17 个 MCP 工具：
 
 | 模块 | 说明 | 参考文档 |
 |------|------|----------|
 | `device_mgmt.py` | 设备注册、搜索、连接、断开 | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md) |
-| `discovery.py` | 局域网设备发现 | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md) |
+| `discovery.py` | 局域网设备发现（内部模块） | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md) |
 | `stream.py` | 视频流、截图、录像、存储 | [commands/stream.md](xpai-camera-control/references/commands/stream.md) |
 | `ptz.py` | 云台方向控制/校准/停止 | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md) |
 | `events.py` | 报警事件订阅、联动抓拍、事件存储与消费 | [commands/events.md](xpai-camera-control/references/commands/events.md) |
 | `illumination.py` | 补光/夜视模式查询与控制（双协议） | [commands/illumination.md](xpai-camera-control/references/commands/illumination.md) |
+| `device_mgmt.py` (云端授权) | 云端授权状态轮询、一站式授权连接 | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md) |
 
 ### 安全边界
 
@@ -119,7 +124,7 @@ The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Se
 
 | Category | Capabilities |
 |----------|-------------|
-| **Discovery** | Auto-search cameras on LAN, supports WS-Discovery and USB scanning |
+| **Discovery** | Auto-search cameras on LAN, supports WS-Discovery, Skyworth private protocol, and USB scanning |
 | **Connection** | Auto-detect auth method, credential caching and auto-reconnect |
 | **Streaming** | RTSP stream URL retrieval, screenshots, recording, storage management |
 | **PTZ Control** | 8-directional movement, physical limit guard, calibration |
@@ -166,29 +171,34 @@ AgenticCameraControl/
 │   │   │   ├── ptz.py            # PTZ control
 │   │   │   ├── events.py         # Alarm event receiving & local store
 │   │   │   └── illumination.py   # Illumination / night-vision control
-│   │   └── auth/                 # Authentication module
 │   ├── references/               # Technical reference docs
 │   │   └── commands/             # Per-module tool signatures & parameters
 │   ├── SKILL.md                  # Agent skill description file
 │   ├── config.yaml               # Camera config (auto-generated at runtime)
 │   └── requirements.txt          # Python dependencies
-├── phase1/                       # Phase 1: Dynamic scanning + basic control
-├── phase2/                       # Phase 2: SN-based authentication
-└── phase3/                       # Phase 3: ONVIF heartbeat passive discovery
+├── Toolkit/                      # Standalone scripts (debug & diagnostics)
+│   ├── device/                   # Device management scripts
+│   ├── discovery/                # Device discovery scripts
+│   ├── diagnostics/              # Diagnostics scripts
+│   ├── events/                   # Event monitoring scripts
+│   ├── illumination/             # Illumination control scripts
+│   ├── ptz/                      # PTZ control scripts
+│   └── stream/                   # Video stream scripts
 ```
 
 ### Toolkit Modules
 
-5 modules, 17 MCP tools in total:
+6 modules, 17 MCP tools in total:
 
 | Module | Description | Reference |
 |--------|-------------|-----------|
 | `device_mgmt.py` | Device registration, search, connection, disconnection | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md) |
-| `discovery.py` | LAN device discovery | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md) |
+| `discovery.py` | LAN device discovery (internal module) | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md) |
 | `stream.py` | Video streaming, screenshots, recording, storage | [commands/stream.md](xpai-camera-control/references/commands/stream.md) |
 | `ptz.py` | PTZ directional control / calibration / stop | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md) |
 | `events.py` | Alarm event subscription, snapshot linkage, event store & consumption | [commands/events.md](xpai-camera-control/references/commands/events.md) |
 | `illumination.py` | Illumination / night-vision mode query & control (dual-protocol) | [commands/illumination.md](xpai-camera-control/references/commands/illumination.md) |
+| `device_mgmt.py` (Cloud Auth) | Cloud auth status polling, one-call authorization flow | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md) |
 
 ### Security Boundary
 

@@ -17,7 +17,10 @@ Notation used below: `tool_name(arg1=value, arg2=value)` describes a single MCP 
 2. For each registered camera:
    connect_device(camera_name=<cam.name>)
    → success=true  : connected using cached credentials (auth_method reported)
-   → success=false : note error_message, fall through to Phase 1 for this device
+   → success=false, status="failed", needs_password=true, error contains "缓存凭据连接失败":
+      the tool has retried 3x and auto-removed the registration from config.yaml
+      → fall through to Phase 1 to re-discover this device
+   → success=false (other): note error_message, fall through to Phase 1 for this device
 
 3. If config.yaml is empty or all connections failed → Phase 1
 ```
@@ -58,27 +61,28 @@ connect_device(camera_name="书房摄像头")
 ```text
 # Credentials already in config.yaml from a previous session
 connect_device(camera_name="客厅摄像头")
-→ tool reads username/password from config.yaml, verifies via ONVIF WS-UsernameToken
-→ auth_method="password"
+→ tool reads username/password from config.yaml
+→ retries ONVIF WS-UsernameToken auth up to 3 times (1s interval)
+→ success: auth_method="password"
+→ all retries fail: auto-removes registration from config.yaml
+   → status="failed", needs_password=true
+   → error: "缓存凭据连接失败（已重试 3 次）..."
+   → Agent should re-discover via search_devices() and re-connect
 ```
 
-### Password-required camera with Local Auth Server (pending_auth flow)
+### Password-required camera (no cached credentials)
 
 ```text
-Step 1 — Initiate connection (tool detects password_required, sends auth request):
+Step 1 — Connect without password:
   connect_device(camera_name="discovered_192_168_1_100")
-  → status="pending_auth" : auth server received the request, user sees it in browser
+  → success=false, status="needs_password", needs_password=true
+  → error: "设备 discovered_192_168_1_100(192.168.1.100) 需要密码才能访问，"
+           "请提供摄像头的管理密码（默认用户名一般为 admin）。"
 
-Step 2 — Poll auth status (every ~5s, max 120s ≈ 24 polls):
-  poll_auth_status(camera_name="discovered_192_168_1_100")
-  → status="pending"    : keep waiting, poll again after ~5s
-  → status="authorized" : proceed to Step 3
-  → status="rejected"   : stop — inform the user and abort
-
-Step 3 — After authorization, ask the user for the camera password
+Step 2 — Ask the user for the camera password:
   (conversationally — the Agent prompts the user, never reads stdin)
 
-Step 4 — Re-connect with the password:
+Step 3 — Re-connect with the password:
   connect_device(
     camera_name="discovered_192_168_1_100",
     password=<user_input>,
@@ -86,7 +90,7 @@ Step 4 — Re-connect with the password:
     rtsp_port=554            # from DiscoveredDevice.rtsp_port
   )
 
-Step 5 — On success, persist credentials for future sessions:
+Step 4 — On success:
   register_camera(
     name="客厅摄像头",
     ip="192.168.1.100",
@@ -99,45 +103,25 @@ Step 5 — On success, persist credentials for future sessions:
   → future sessions will auto-connect via Phase 0
 ```
 
-### Password-required camera without Local Auth Server (fallback)
+### Cloud-authorized camera (pending_auth)
 
 ```text
-Step 1 — Initiate connection (auth server unreachable, falls back):
+Step 1 — Connect without password:
   connect_device(camera_name="discovered_192_168_1_100")
-  → status="needs_password"
+  → success=false, status="pending_auth"
+  → error: "设备需要云端授权..."
 
-Step 2 — Ask the user for the camera password directly (no browser step)
+Step 2 — One-call authorization (recommended):
+  big_connect(name="discovered_192_168_1_100")
+  → blocks up to 10 minutes while polling cloud server
+  → success=true, status="authorized", device_pwd auto-written to config.yaml
+  → then call connect_device() to complete connection
 
-Step 3 — Re-connect with the password:
-  connect_device(
-    camera_name="discovered_192_168_1_100",
-    password=<user_input>,
-    ip="192.168.1.100",
-    rtsp_port=554
-  )
-
-Step 4 — On success:
-  register_camera(name="客厅摄像头", ip="192.168.1.100",
-                  username="admin", password=<user_input>,
-                  device_class="password_required")
-  # omit `port` — the verified ONVIF port was already persisted by connect_device
-```
-
-### Cloud Auth Tools (direct usage)
-
-```text
-# Manually request authorization (normally called by connect_device internally)
-request_cloud_auth(
-  camera_name="客厅摄像头",
-  sn="SN20240001",
-  device_ip="192.168.1.100",
-  device_model="LC2418"
-)
-→ success, claw_id
-
-# Poll for result
-poll_auth_status(camera_name="客厅摄像头")
-→ status, message
+  Alternative — Manual polling:
+  poll_auth_status(camera_name="discovered_192_168_1_100")
+  → status="PENDING" → wait 5s, call again
+  → status="AUTHORIZED" → call connect_device() to complete connection
+  → status="REJECTED" → inform user
 ```
 
 ---

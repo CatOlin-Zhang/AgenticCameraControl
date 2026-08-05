@@ -5,17 +5,18 @@ Toolkit 5: 设备管理与维护
   - get_registered_cameras  从 config.yaml 加载已注册摄像头配置
   - register_camera         将摄像头信息写入 config.yaml（持久化凭据）
   - search_devices          搜索局域网可用摄像头（支持 WS-Discovery / USB / 创维私有协议）
-  - connect_device          设备连接（自动读取 config.yaml 凭据；无凭据时走本地授权或提示密码）
-  - request_cloud_auth      向本地授权服务器发起授权请求（模拟智慧云）
-  - poll_auth_status        轮询本地授权服务器，检查 Agent 授权状态
+  - connect_device          设备连接（自动读取 config.yaml 凭据；无凭据时提示用户输入密码）
   - disconnect_device       断开摄像头连接并释放资源
 """
 import base64
 import hashlib
+import hmac
+import json
 import os
 import secrets
 import socket
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -114,7 +115,7 @@ class ConnectResult:
     """设备连接返回结果"""
     success: bool                              # 连接是否成功
     auth_method: str = ""                      # 认证方式 ("password" / "direct")
-    status: str = "connected"                  # "connected" | "pending_auth" | "needs_password" | "failed"
+    status: str = "connected"                  # "connected" | "needs_password" | "failed"
     error_message: str = ""                    # 失败原因
     needs_password: bool = False               # True 表示需要密码，Agent 应提示用户输入
     onvif_port: int = 0                        # 实际验证过的 ONVIF 端口（0=未验证成功）
@@ -162,29 +163,149 @@ class RegisterResult:
 
 
 @dataclass
+class AuthOrchestrateResult:
+    """云端授权编排结果"""
+    success: bool                              # 授权是否成功
+    status: str = ""                           # "authorized" | "rejected" | "timeout" | "no_devices" | "needs_selection" | "no_sn" | "cloud_error" | "error"
+    camera_name: str = ""                      # 选中的摄像头名
+    sn: str = ""                               # 选中的设备 SN
+    claw_id: str = ""                          # 本次使用的 clawID / agentSkillId
+    device_pwd: str = ""                       # 授权成功时的设备密码（已自动写入 config.yaml）
+    available_cameras: List[Dict[str, str]] = field(default_factory=list)  # needs_selection 时填
+    error_message: str = ""                    # 失败原因
+
+
+@dataclass
 class AuthStatusResult:
     """轮询远程授权服务器的返回结果"""
     status: AuthStatus                         # 授权状态 (pending / authorized / rejected / error)
     camera_name: str = ""                      # 摄像头名称
-    message: str = ""                          # 状态说明（如 "用户已授权" 或 "超时未确认"）
+    message: str = ""                          # 状态说明
+    auth_status_code: int = -1                 # 云端原始 authStatus（0=未授权 / 1=已授权 / 2=已拒绝）
+    device_pwd: str = ""                       # 云端返回的设备密码（仅 authStatus=1 时有值）
 
 
 @dataclass
 class CloudAuthRequestResult:
-    """向本地授权服务器发起授权请求的结果"""
-    success: bool                              # POST 是否成功送达（HTTP 200）
-    claw_id: str = ""                          # 本次使用的 clawID（已持久化，重发时复用）
+    """向云端发起授权请求的结果"""
+    success: bool                              # 云端是否接受请求（HTTP 200 且 R.data == true）
+    claw_id: str = ""                          # 本次使用的 clawID / agentSkillId（已持久化，重发时复用）
     error_message: str = ""                    # 失败原因
 
 
-# ──────────────────────────────────────────────
-#  本地授权服务器地址 & 配置路径
-# ──────────────────────────────────────────────
-
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 
-# 本地授权服务器 URL（可通过环境变量 LOCAL_AUTH_URL 覆盖）
-_LOCAL_AUTH_URL = os.environ.get("LOCAL_AUTH_URL", "http://127.0.0.1:18899")
+
+# ──────────────────────────────────────────────
+#  云端授权常量
+# ──────────────────────────────────────────────
+
+_CLOUD_AUTH_URL = "https://app.skyworthtest.top/skyworthAiModel/agent/skill/v1/deviceAuthReq"  # 云端设备授权请求接口
+_CLOUD_AUTH_CHECK_URL = "https://app.skyworthtest.top/skyworthAiModel/agent/skill/v1/checkAuth"  # 云端检测授权状态接口
+_CLOUD_AUTH_POLL_URL = ""  # 云端授权状态轮询地址，留空则使用 _CLOUD_AUTH_CHECK_URL
+
+
+# ──────────────────────────────────────────────
+#  本机标识辅助函数（云端授权 claw_id 使用）
+# ──────────────────────────────────────────────
+
+def _get_local_ip() -> str:
+    """通过临时 UDP socket 取本机出口 IP（不发包）。"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "192.168.1.100"
+    finally:
+        s.close()
+    return ip
+
+
+def _get_local_mac() -> str:
+    """跨平台取本机 MAC；失败返回占位 MAC。"""
+    import platform
+    try:
+        if platform.system() == "Windows":
+            import re
+            import subprocess
+            out = subprocess.check_output("getmac", shell=True).decode("gbk", "ignore")
+            m = re.search(r"([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}", out)
+            if m:
+                return m.group(0).replace("-", ":").upper()
+        else:
+            return ":".join(f"{b:02X}" for b in uuid.getnode().to_bytes(6, "big"))
+    except Exception:
+        pass
+    return "00:00:00:00:00:00"
+
+
+def generate_claw_id() -> str:
+    """生成 Claw ID（MAC + 毫秒时间戳）。
+
+    仅在首次创建或显式重新注册时调用。
+    生成后由 get_or_create_claw_id() 持久化到 config.yaml，后续复用。
+
+    格式: claw-<mac12>-<yyyyMMddHHMMSSmmm>
+    示例: claw-000C296F9083-20260724104530123
+    """
+    mac = _get_local_mac().replace(":", "").upper()
+    now = datetime.now()
+    ts = now.strftime("%Y%m%d%H%M%S") + f"{now.microsecond // 1000:03d}"
+    return f"claw-{mac}-{ts}"
+
+
+def _dump_claw_id_first(data: Dict[str, Any], claw_id: str) -> Dict[str, Any]:
+    """构造 claw_id 置顶的 dict（其余键顺序不变），并写回 config.yaml。
+
+    仅调整键顺序，不改动任何值，不影响 cameras 等字段的读取。
+    写失败不抛异常（文件保持原样，不影响本次返回）。
+    """
+    ordered: Dict[str, Any] = {"claw_id": claw_id}
+    ordered.update({k: v for k, v in data.items() if k != "claw_id"})
+    try:
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            _yaml_lib.safe_dump(ordered, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    except OSError:
+        pass
+    return ordered
+
+
+def get_or_create_claw_id() -> str:
+    """从 config.yaml 读取 clawID；不存在则生成并持久化（置顶写入）。
+
+    clawID 是机器级标识，存于 config.yaml 顶层 claw_id 字段，且始终位于
+    文件第一个键（顶部）。首次调用时生成（MAC + 时间戳），后续所有授权
+    请求复用同一 ID，确保 HTTP 重发时云端识别为同一会话、不重复弹窗。
+    旧文件中 claw_id 不在顶部时，读取时会顺带归一化到顶部。
+
+    yaml 不可用或文件读写失败时降级为每次临时生成（本会话内可用，
+    但跨进程不保证一致）。
+    """
+    if _yaml_lib is None:
+        return generate_claw_id()
+
+    try:
+        if CONFIG_PATH.exists():
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = _yaml_lib.safe_load(f) or {}
+        else:
+            data = {}
+    except (OSError, _yaml_lib.YAMLError):
+        return generate_claw_id()
+
+    existing = data.get("claw_id", "")
+    if existing:
+        # 已存在 → 复用；若不在文件顶部则归一化置顶（不改任何值）
+        if next(iter(data), None) != "claw_id":
+            _dump_claw_id_first(data, str(existing))
+        return str(existing)
+
+    # 不存在 → 生成并置顶写入 config.yaml
+    claw_id = generate_claw_id()
+    _dump_claw_id_first(data, claw_id)
+    return claw_id
 
 
 # ──────────────────────────────────────────────
@@ -324,67 +445,6 @@ def _build_rtsp_url(ip: str, port: int, path: str, username: str = "", password:
 
 
 # ──────────────────────────────────────────────
-#  Claw ID 管理
-# ──────────────────────────────────────────────
-
-def _get_local_mac() -> str:
-    """跨平台取本机 MAC；失败返回占位 MAC。"""
-    import platform
-    try:
-        if platform.system() == "Windows":
-            import re
-            import subprocess
-            out = subprocess.check_output("getmac", shell=True).decode("gbk", "ignore")
-            m = re.search(r"([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}", out)
-            if m:
-                return m.group(0).replace("-", ":").upper()
-        else:
-            import uuid as _uuid
-            return ":".join(f"{b:02X}" for b in _uuid.getnode().to_bytes(6, "big"))
-    except Exception:
-        pass
-    return "00:00:00:00:00:00"
-
-
-def generate_claw_id() -> str:
-    """生成 Claw ID（MAC + 毫秒时间戳）。格式: claw-<mac12>-<yyyyMMddHHMMSSmmm>"""
-    mac = _get_local_mac().replace(":", "").upper()
-    now = datetime.now()
-    ts = now.strftime("%Y%m%d%H%M%S") + f"{now.microsecond // 1000:03d}"
-    return f"claw-{mac}-{ts}"
-
-
-def get_or_create_claw_id() -> str:
-    """从 config.yaml 读取 clawID；不存在则生成并持久化。"""
-    if _yaml_lib is None:
-        return generate_claw_id()
-
-    try:
-        if CONFIG_PATH.exists():
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                data = _yaml_lib.safe_load(f) or {}
-        else:
-            data = {}
-    except (OSError, _yaml_lib.YAMLError):
-        return generate_claw_id()
-
-    existing = data.get("claw_id", "")
-    if existing:
-        return existing
-
-    claw_id = generate_claw_id()
-    data["claw_id"] = claw_id
-    try:
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            _yaml_lib.safe_dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-    except OSError:
-        pass
-
-    return claw_id
-
-
-# ──────────────────────────────────────────────
 #  工具函数
 # ──────────────────────────────────────────────
 
@@ -515,15 +575,6 @@ def register_camera(
         cameras.append(new_entry)
 
     data["cameras"] = cameras
-
-    # 确保 auth 节存在
-    if "auth" not in data:
-        data["auth"] = {
-            "cloud_url": "",
-            "token_timeout": 300,
-            "auth_timeout": 30,
-            "auto_request_auth": True,
-        }
 
     try:
         with open(config_path, "w", encoding="utf-8") as f:
@@ -822,11 +873,10 @@ def connect_device(
     """
     设备连接。流程：
 
-    1. 如果 config.yaml 有缓存凭据 → 自动使用缓存密码连接（ONVIF 鉴权验证）
-    2. 如果传入了 password → 使用提供的密码连接（ONVIF 鉴权验证 → 自动缓存）
-    3. 如果无密码且 device_class == "password_required"：
-       a. 尝试本地授权服务器 → 返回 status="pending_auth"
-       b. 授权服务器不可达 → 返回 status="needs_password"，Agent 提示用户输入密码
+    1. 如果 config.yaml 有缓存凭据 → 自动使用缓存密码连接（重试 3 次）
+       多次重试仍失败 → 清除 config.yaml 中的注册信息，返回 needs_password
+    2. 如果传入了 password → 使用提供的密码连接（单次尝试，不清除缓存）
+    3. 如果无密码且 device_class == "password_required" → 返回 needs_password，提示用户输入密码
     4. 如果无密码且非 password_required → 尝试免密拉流探测
     5. Agent 获取到密码后再次调用 connect_device(camera_name, password=xxx)
 
@@ -845,7 +895,7 @@ def connect_device(
         ConnectResult:
             - success: 连接是否成功
             - auth_method: "password" 或 "direct"
-            - status: "connected" / "pending_auth" / "needs_password" / "failed"
+            - status: "connected" / "needs_password" / "failed"
             - needs_password: True 表示需要密码
             - error_message: 失败原因
     """
@@ -877,15 +927,23 @@ def connect_device(
 
     # ── Step 2: 如果有密码（缓存或用户提供），直接尝试 ONVIF 鉴权连接 ──
     if dev_pwd:
-        result = _try_connect_with_password(
-            camera_name, dev_ip, dev_port, dev_rtsp_port, dev_rtsp_path,
-            dev_username, dev_pwd,
-        )
-        if result.success:
+        max_attempts = 3 if (cached and not password) else 1
+        last_result = None
+        for attempt in range(1, max_attempts + 1):
+            last_result = _try_connect_with_password(
+                camera_name, dev_ip, dev_port, dev_rtsp_port, dev_rtsp_path,
+                dev_username, dev_pwd,
+            )
+            if last_result.success:
+                break
+            if attempt < max_attempts:
+                time.sleep(1.0)
+
+        if last_result.success:
             # 连接成功 → 持久化凭据与验证过的 ONVIF 端口。
             # result.onvif_port 为实测验证值（0=未验证成功）；未验证时不把假设端口写盘，
             # 保证 config.yaml 落盘结果只取决于设备事实，不随调用方传参漂移。
-            verified_port = result.onvif_port
+            verified_port = last_result.onvif_port
             port_changed = bool(verified_port) and (not cached or cached.port != verified_port)
             if not cached or cached.password != dev_pwd or port_changed:
                 register_camera(
@@ -903,46 +961,38 @@ def connect_device(
                 verified_port or (cached.port if cached else 0),
                 dev_username, dev_pwd, cached,
             )
-            return result
+            return last_result
+
         # 密码认证失败
+        if cached and not password:
+            # 缓存凭据多次重试仍失败 → 清除过期注册，让后续流程重新发现设备
+            _remove_camera_config(camera_name)
+            return ConnectResult(
+                success=False, status="failed",
+                needs_password=True,
+                error_message=(
+                    f"缓存凭据连接失败（已重试 {max_attempts} 次）: {last_result.error_message}。"
+                    f"已从 config.yaml 清除设备 '{camera_name}' 的注册信息，"
+                    f"请重新搜索并连接该设备。"
+                ),
+            )
         return ConnectResult(
             success=False, status="failed",
             needs_password=True,
-            error_message=f"密码认证失败: {result.error_message}，请确认密码后重试",
+            error_message=f"密码认证失败: {last_result.error_message}，请确认密码后重试",
         )
 
-    # ── Step 3: 无密码 → password_required 设备走本地授权 ──
+    # ── Step 3: 无密码 → password_required 设备返回 pending_auth，引导云端授权 ──
     if dev_class == "password_required":
-        # 尝试向本地授权服务器发起请求
-        auth_result = request_cloud_auth(
-            camera_name=camera_name,
-            sn=cached.sn_code if cached else camera_name,
-            device_ip=dev_ip,
-            device_model=cached.model if cached else "",
+        return ConnectResult(
+            success=False,
+            status="pending_auth",
+            error_message=(
+                f"设备 {camera_name}({dev_ip}) 需要授权才能访问。"
+                f"请调用 big_connect(camera_name='{camera_name}') 发起云端授权，"
+                f"或提供密码后重新调用 connect_device。"
+            ),
         )
-        if auth_result.success:
-            return ConnectResult(
-                success=False,
-                status="pending_auth",
-                needs_password=True,
-                error_message=(
-                    f"已向本地授权服务器发起授权请求（claw_id={auth_result.claw_id}）。"
-                    f"请在浏览器中打开 {_LOCAL_AUTH_URL} 确认授权，"
-                    f"然后 Agent 调用 poll_auth_status() 轮询结果，"
-                    f"授权通过后提示用户输入密码并重新调用 connect_device。"
-                ),
-            )
-        else:
-            # 本地授权服务器不可达 → 降级为 needs_password
-            return ConnectResult(
-                success=False,
-                status="needs_password",
-                needs_password=True,
-                error_message=(
-                    f"本地授权服务器不可达 ({auth_result.error_message})。"
-                    f"设备 {camera_name}({dev_ip}) 需要密码，请直接输入密码。"
-                ),
-            )
 
     # ── Step 4: 非 password_required → 尝试免密拉流探测 ──
     access = _probe_stream_access(dev_ip, dev_rtsp_port, dev_rtsp_path)
@@ -989,12 +1039,15 @@ def connect_device(
         )
 
     if access == "auth_required":
-        # 需要密码 → 返回 needs_password，Agent 应提示用户输入
+        # 需要密码 → 返回 pending_auth，引导云端授权
         return ConnectResult(
             success=False,
-            status="needs_password",
-            needs_password=True,
-            error_message=f"设备 {camera_name}({dev_ip}) 需要密码才能访问，请输入密码",
+            status="pending_auth",
+            error_message=(
+                f"设备 {camera_name}({dev_ip}) 需要授权才能访问。"
+                f"请调用 big_connect(camera_name='{camera_name}') 发起云端授权，"
+                f"或提供密码后重新调用 connect_device。"
+            ),
         )
 
     # 设备不可达
@@ -1032,7 +1085,10 @@ def _probe_and_save_illumination(
         return cached.illumination_modes
     try:
         from .illumination import probe_illumination_capability
-        info = probe_illumination_capability(ip, port, username, password)
+        info = probe_illumination_capability(
+            ip, port, username, password,
+            sn_code=cached.sn_code if cached else "",
+        )
         if info.supported and info.supported_modes:
             # 探测到补光能力 → 持久化到 config.yaml
             register_camera(
@@ -1055,6 +1111,33 @@ def _probe_and_save_illumination(
     except Exception:
         pass  # 探测失败不阻断连接流程
     return []
+
+
+def _remove_camera_config(name: str) -> bool:
+    """从 config.yaml 移除指定摄像头的注册信息。
+
+    用于缓存凭据连接反复失败后清除过期注册，避免后续会话反复尝试无效设备。
+
+    Returns:
+        True 表示成功移除，False 表示未找到或写入失败。
+    """
+    if _yaml_lib is None:
+        return False
+    try:
+        if not CONFIG_PATH.exists():
+            return False
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = _yaml_lib.safe_load(f) or {}
+        cameras = data.get("cameras", [])
+        new_cameras = [c for c in cameras if c.get("name") != name]
+        if len(new_cameras) == len(cameras):
+            return False  # 未找到
+        data["cameras"] = new_cameras
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            _yaml_lib.safe_dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        return True
+    except Exception:
+        return False
 
 
 def _try_connect_with_password(
@@ -1359,150 +1442,275 @@ def _load_config_cameras() -> List[CameraConfig]:
     return configs
 
 
-def poll_auth_status(
-    camera_name: str,
-) -> AuthStatusResult:
+# ──────────────────────────────────────────────
+#  云端授权函数
+# ──────────────────────────────────────────────
+
+def _make_device_auth_sign(
+    request_id: str,
+    timestamp: str,
+    device_key: str,
+    agent_skill_id: str,
+) -> str:
+    """按 DeviceCryptUtils#ucHmacSHA256AuthSign 规则计算 scSign。
+
+    - 明文: requestId + timestamp + deviceKey + agentSkillId（无分隔符拼接）
+    - 密钥: MD5(agentSkillId)（32 位小写 hex）
+    - 签名: HMAC-SHA256(plain, secret) 的 hex 小写串取前 16 位
     """
-    轮询本地授权服务器，检查 Agent 是否已被授权连接该摄像头。
+    secret = hashlib.md5(agent_skill_id.encode("utf-8")).hexdigest()
+    plain = request_id + timestamp + device_key + agent_skill_id
+    return hmac.new(
+        secret.encode("utf-8"), plain.encode("utf-8"), hashlib.sha256
+    ).hexdigest()[:16]
 
-    在 connect_device() 返回 status="pending_auth" 后，Agent 应反复调用此函数
-    （建议间隔 5 秒，最长等待 120 秒），直到：
-    - status == "authorized" → Agent 提示用户输入密码，再调用 connect_device(camera_name, password)
-    - status == "rejected"   → 用户拒绝了授权，流程终止
-    - status == "error"      → 服务器异常，流程终止
 
-    安全约束: 无特殊约束
-
-    Args:
-        camera_name: 正在等待授权的摄像头名称
-
-    Returns:
-        AuthStatusResult:
-            - status: 授权状态 (AuthStatus.PENDING / AUTHORIZED / REJECTED / ERROR)
-            - camera_name: 摄像头名称
-            - message: 状态说明
+def request_cloud_auth(sn: str) -> CloudAuthRequestResult:
     """
-    if _requests_lib is None:
-        return AuthStatusResult(
-            status=AuthStatus.ERROR, camera_name=camera_name,
-            message="requests 未安装，无法轮询授权状态",
-        )
-
-    # 从 config.yaml 查设备 SN（如有）
-    claw_id = get_or_create_claw_id()
-    cached = _find_cached_camera(camera_name)
-    sn = cached.sn_code if cached else camera_name
-
-    url = f"{_LOCAL_AUTH_URL}/api/auth/status"
-    try:
-        resp = _requests_lib.get(url, params={"sn": sn, "claw_id": claw_id}, timeout=5.0)
-    except Exception as e:
-        return AuthStatusResult(
-            status=AuthStatus.ERROR, camera_name=camera_name,
-            message=f"本地授权服务器不可达: {e}（请确认已启动 python local_auth_server/server.py）",
-        )
-
-    if resp.status_code != 200:
-        return AuthStatusResult(
-            status=AuthStatus.ERROR, camera_name=camera_name,
-            message=f"本地授权服务器返回 HTTP {resp.status_code}",
-        )
-
-    try:
-        data = resp.json()
-    except ValueError:
-        return AuthStatusResult(
-            status=AuthStatus.ERROR, camera_name=camera_name,
-            message=f"服务器响应非 JSON: {resp.text[:200]}",
-        )
-
-    raw_status = str(data.get("status", "")).strip().lower()
-    msg = str(data.get("message", ""))
-
-    if raw_status in ("authorized", "success", "ok"):
-        return AuthStatusResult(status=AuthStatus.AUTHORIZED, camera_name=camera_name, message=msg or "用户已授权")
-    elif raw_status in ("rejected", "deny", "denied"):
-        return AuthStatusResult(status=AuthStatus.REJECTED, camera_name=camera_name, message=msg or "用户拒绝授权")
-    elif raw_status in ("pending", "wait", "waiting"):
-        return AuthStatusResult(status=AuthStatus.PENDING, camera_name=camera_name, message=msg or "等待用户确认")
-    else:
-        return AuthStatusResult(
-            status=AuthStatus.ERROR, camera_name=camera_name,
-            message=f"未识别的状态: {raw_status or data}",
-        )
-
-
-def request_cloud_auth(
-    camera_name: str,
-    sn: str = "",
-    device_ip: str = "",
-    device_model: str = "",
-) -> CloudAuthRequestResult:
-    """
-    向本地授权服务器发起设备授权请求（模拟智慧云）。
+    向云端发起设备授权请求（智能体认证设备授权参数）。
 
     在 search_devices 发现设备后、connect_device 之前调用。
-    向本地服务器 POST {sn, claw_id, device_ip, device_model}，
-    服务器在网页端弹出授权确认，Agent 随后调用 poll_auth_status 轮询。
+    向云端 POST /agent/skill/v1/deviceAuthReq，请求体为
+    {deviceKey: sn, agentSkillId: claw_id}，云端校验通过后返回 true。
 
-    clawID 从 config.yaml 读取（首次自动生成并持久化），HTTP 丢包重发时
-    复用同一 clawID，确保不会重复弹窗。
+    请求头携带设备签名（HMAC-SHA256）：
+    - requestId: 本次请求唯一标识（UUID）
+    - timestamp: 毫秒时间戳字符串
+    - scSign:    HMAC-SHA256(requestId+timestamp+deviceKey+agentSkillId,
+                 MD5(agentSkillId)) 的 hex 前 16 位
+
+    agentSkillId 复用 clawID（从 config.yaml 读取，首次自动生成并持久化），
+    HTTP 丢包重发时复用同一 clawID，确保云端识别为同一 Agent。
 
     安全约束: 无特殊约束（仅发起请求，不携带密码等敏感信息）
 
     Args:
-        camera_name:  摄像头名称
-        sn:           设备序列号（可选，从 camera_name 自动查找）
-        device_ip:    设备 IP（可选）
-        device_model: 设备型号（可选）
+        sn: 设备序列号（deviceKey）
 
     Returns:
         CloudAuthRequestResult:
-            - success: POST 是否成功（HTTP 200）
+            - success: 云端是否接受请求（R.data == true）
             - claw_id: 本次使用的 clawID（重发时传入相同值）
             - error_message: 失败原因
     """
     claw_id = get_or_create_claw_id()
 
+    if not _CLOUD_AUTH_URL:
+        return CloudAuthRequestResult(
+            success=False,
+            claw_id=claw_id,
+            error_message="云端授权地址未配置（_CLOUD_AUTH_URL 为空，请填入 http://host:port/path）",
+        )
+
     if _requests_lib is None:
         return CloudAuthRequestResult(
-            success=False, claw_id=claw_id,
+            success=False,
+            claw_id=claw_id,
             error_message="requests 未安装，无法发送 HTTP 请求",
         )
 
-    # 自动补全 SN / IP
-    if not sn or not device_ip:
-        cached = _find_cached_camera(camera_name)
-        if cached:
-            sn = sn or cached.sn_code or camera_name
-            device_ip = device_ip or cached.ip
+    # 构造设备签名请求头
+    request_id = str(uuid.uuid4())
+    timestamp = str(int(time.time() * 1000))
+    sc_sign = _make_device_auth_sign(request_id, timestamp, sn, claw_id)
 
-    body = {
-        "sn": sn,
-        "claw_id": claw_id,
-        "device_ip": device_ip,
-        "device_model": device_model,
+    body = {"deviceKey": sn, "agentSkillId": claw_id}
+    headers = {
+        "Content-Type": "application/json;charset=utf-8",
+        "requestId": request_id,
+        "timestamp": timestamp,
+        "scSign": sc_sign,
     }
     try:
         resp = _requests_lib.post(
-            f"{_LOCAL_AUTH_URL}/api/auth/request",
-            json=body,
-            headers={"Content-Type": "application/json; charset=utf-8"},
+            _CLOUD_AUTH_URL,
+            data=json.dumps(body, separators=(',', ':')),
+            headers=headers,
             timeout=10.0,
         )
-    except Exception as e:
+    except _requests_lib.RequestException as e:
         return CloudAuthRequestResult(
-            success=False, claw_id=claw_id,
-            error_message=f"本地授权服务器不可达: {e}（请确认已启动 python local_auth_server/server.py）",
+            success=False,
+            claw_id=claw_id,
+            error_message=f"HTTP 请求失败: {e}",
         )
 
     if resp.status_code != 200:
         return CloudAuthRequestResult(
-            success=False, claw_id=claw_id,
-            error_message=f"本地授权服务器返回 HTTP {resp.status_code}: {resp.text[:200]}",
+            success=False,
+            claw_id=claw_id,
+            error_message=f"云端返回 HTTP {resp.status_code}: {resp.text[:200]}",
         )
 
-    return CloudAuthRequestResult(success=True, claw_id=claw_id)
+    # 解析 SpringBlade R<T> 响应: code==200 且 data==true 才算成功
+    try:
+        payload = resp.json()
+    except ValueError:
+        return CloudAuthRequestResult(
+            success=False,
+            claw_id=claw_id,
+            error_message=f"云端响应非 JSON: {resp.text[:200]}",
+        )
+
+    if payload.get("code") == 200 and payload.get("data") is True:
+        return CloudAuthRequestResult(success=True, claw_id=claw_id)
+
+    return CloudAuthRequestResult(
+        success=False,
+        claw_id=claw_id,
+        error_message=f"云端拒绝请求（code={payload.get('code')}）: {payload.get('msg', '')}",
+    )
+
+
+def poll_auth_status(
+    camera_name: str,
+) -> AuthStatusResult:
+    """
+    检测智能体与设备的授权状态（对接 /agent/skill/v1/checkAuth）。
+
+    单次调用做一次查询。Agent 应反复调用（建议间隔 5 秒，最长等待 600 秒 / 10 分钟）：
+    - status == AUTHORIZED → devicePwd 已自动写回 config.yaml，可直接调 connect_device
+    - status == REJECTED   → 用户在 APP 端拒绝了授权，流程终止
+    - status == PENDING    → 用户尚未确认，继续轮询
+    - status == ERROR      → 服务器异常或本地配置缺失，流程终止
+
+    授权通过时，云端返回的 devicePwd（MD5(deviceKey) 后 6 位）会自动写入
+    config.yaml 中该摄像头的 password 字段，后续 connect_device 直接复用。
+
+    安全约束: 无特殊约束
+
+    Args:
+        camera_name: 摄像头名称或 SN（从 config.yaml 查找设备 SN）
+
+    Returns:
+        AuthStatusResult:
+            - status: 授权状态 (PENDING / AUTHORIZED / REJECTED / ERROR)
+            - camera_name: 摄像头名称
+            - message: 状态说明
+            - auth_status_code: 云端原始 authStatus（0/1/2）
+            - device_pwd: 授权通过时的设备密码（其余场景为空）
+    """
+    # 1. 从 config.yaml 查设备 SN
+    if _yaml_lib is None:
+        return AuthStatusResult(status=AuthStatus.ERROR, camera_name=camera_name, message="pyyaml 未安装")
+
+    cameras = get_registered_cameras()
+    camera = next(
+        (c for c in cameras if c.name == camera_name or (c.sn_code and c.sn_code == camera_name)),
+        None,
+    )
+    if camera is None or not camera.sn_code:
+        return AuthStatusResult(
+            status=AuthStatus.ERROR,
+            camera_name=camera_name,
+            message=f"未在 config.yaml 找到摄像头或其 SN: {camera_name}",
+        )
+
+    # 2. 取持久化 clawID
+    claw_id = get_or_create_claw_id()
+
+    # 3. 确定轮询 URL
+    check_url = _CLOUD_AUTH_POLL_URL or _CLOUD_AUTH_CHECK_URL
+    if not check_url:
+        return AuthStatusResult(
+            status=AuthStatus.ERROR,
+            camera_name=camera_name,
+            message="云端轮询地址未配置（_CLOUD_AUTH_CHECK_URL 和 _CLOUD_AUTH_POLL_URL 均为空）",
+        )
+
+    if _requests_lib is None:
+        return AuthStatusResult(
+            status=AuthStatus.ERROR,
+            camera_name=camera_name,
+            message="requests 未安装",
+        )
+
+    # 4. 构造签名 GET 请求
+    request_id = str(uuid.uuid4())
+    timestamp = str(int(time.time() * 1000))
+    sc_sign = _make_device_auth_sign(request_id, timestamp, camera.sn_code, claw_id)
+    params = {"deviceKey": camera.sn_code, "agentSkillId": claw_id}
+    headers = {
+        "requestId": request_id,
+        "timestamp": timestamp,
+        "scSign": sc_sign,
+    }
+    try:
+        resp = _requests_lib.get(check_url, params=params, headers=headers, timeout=10.0)
+    except _requests_lib.RequestException as e:
+        return AuthStatusResult(
+            status=AuthStatus.ERROR,
+            camera_name=camera_name,
+            message=f"HTTP 请求失败: {e}",
+        )
+
+    if resp.status_code != 200:
+        return AuthStatusResult(
+            status=AuthStatus.ERROR,
+            camera_name=camera_name,
+            message=f"云端返回 HTTP {resp.status_code}: {resp.text[:200]}",
+        )
+
+    # 5. 解析 R<AgentDeviceAuthVO>
+    try:
+        payload = resp.json()
+    except ValueError:
+        return AuthStatusResult(
+            status=AuthStatus.ERROR,
+            camera_name=camera_name,
+            message=f"云端响应非 JSON: {resp.text[:200]}",
+        )
+
+    if payload.get("code") != 200 or not payload.get("success"):
+        return AuthStatusResult(
+            status=AuthStatus.ERROR,
+            camera_name=camera_name,
+            message=f"云端拒绝请求（code={payload.get('code')}）: {payload.get('msg', '')}",
+        )
+
+    data = payload.get("data") or {}
+    auth_code = int(data.get("authStatus", 0))
+    device_pwd = str(data.get("devicePwd") or "")
+
+    # 6. 映射 authStatus → AuthStatus
+    if auth_code == 1:
+        # 授权通过：devicePwd 写回 config.yaml
+        if device_pwd:
+            register_camera(
+                name=camera.name,
+                ip=camera.ip,
+                port=camera.port,
+                username=camera.username,
+                password=device_pwd,
+                rtsp_port=camera.rtsp_port,
+                rtsp_path=camera.rtsp_path,
+                rtsp_sub_path=camera.rtsp_sub_path,
+                device_class=camera.device_class,
+                sn_code=camera.sn_code,
+                pkdk=camera.pkdk,
+            )
+        return AuthStatusResult(
+            status=AuthStatus.AUTHORIZED,
+            camera_name=camera.name,
+            message=f"用户已授权（devicePwd={device_pwd}）" if device_pwd else "用户已授权",
+            auth_status_code=auth_code,
+            device_pwd=device_pwd,
+        )
+    elif auth_code == 2:
+        return AuthStatusResult(
+            status=AuthStatus.REJECTED,
+            camera_name=camera.name,
+            message="用户在 APP 端拒绝了授权",
+            auth_status_code=auth_code,
+        )
+    else:
+        # auth_code == 0 或其他值都当作 PENDING
+        return AuthStatusResult(
+            status=AuthStatus.PENDING,
+            camera_name=camera.name,
+            message="等待用户确认",
+            auth_status_code=auth_code,
+        )
 
 
 def disconnect_device(
@@ -1543,3 +1751,270 @@ def disconnect_device(
         session_released=False,
         error_message="设备未在连接列表中",
     )
+
+
+# ──────────────────────────────────────────────
+#  共享辅助: camera 解析器 + resolve_target
+# ──────────────────────────────────────────────
+
+def _find_camera(name: str):
+    """按 name 查注册表（大小写不敏感）。返回 CameraConfig 或 None。"""
+    target = (name or "").strip().lower()
+    for cam in get_registered_cameras():
+        if (cam.name or "").strip().lower() == target:
+            return cam
+    return None
+
+
+def _dev_to_name(dev) -> str:
+    """DiscoveredDevice → 默认注册名（model 优先，IP 后缀防重名）"""
+    base = dev.model or dev.sn_code or "camera"
+    suffix = dev.ip.split(".")[-1] if dev.ip else "x"
+    return f"{base}_{suffix}"
+
+
+def big_register(
+    name: str = "",
+    ip: str = "",
+    onvif_port: int = 2000,
+    rtsp_port: int = 554,
+    sn_code: str = "",
+    password: str = "",
+    device_class: str = "password_required",
+) -> RegisterResult:
+    """注册摄像头到 config.yaml。name 为空时自动生成；提供 password 则验证 ONVIF 鉴权。"""
+    rr = register_camera(
+        name=name, ip=ip, port=onvif_port,
+        username="admin", password=password,
+        rtsp_port=rtsp_port,
+        device_class=device_class, sn_code=sn_code,
+    )
+    if not rr.success:
+        return rr
+
+    if password:
+        try:
+            cr = connect_device(rr.camera_name, password=password)
+            if not cr.success:
+                rr.success = False
+                rr.error_message = f"注册成功但 ONVIF 鉴权失败: {cr.error_message}"
+        except Exception as e:
+            rr.success = False
+            rr.error_message = f"注册成功但鉴权异常: {e}"
+
+    return rr
+
+
+def _resolve_connect_target(name: str) -> Tuple[Optional[CameraConfig], Optional[AuthOrchestrateResult]]:
+    """从 config.yaml 按 name 解析目标摄像头；返回 (target, early_result)。
+    early_result 不为 None 时，big_connect 应直接返回它。
+    """
+    cameras = get_registered_cameras()
+    if not cameras:
+        return None, AuthOrchestrateResult(
+            success=False, status="no_devices",
+            error_message="config.yaml 中没有已注册设备，请先调用 search_devices",
+        )
+    if not name:
+        if len(cameras) == 1:
+            return cameras[0], None
+        return None, AuthOrchestrateResult(
+            success=False, status="needs_selection",
+            available_cameras=[
+                {"name": c.name, "ip": c.ip, "sn": c.sn_code, "model": c.device_model}
+                for c in cameras
+            ],
+            error_message="config.yaml 中有多台设备，请指定 name 重新调用",
+        )
+    target = next((c for c in cameras if c.name == name or c.sn_code == name), None)
+    if target is None:
+        return None, AuthOrchestrateResult(
+            success=False, status="needs_selection",
+            available_cameras=[
+                {"name": c.name, "ip": c.ip, "sn": c.sn_code, "model": c.device_model}
+                for c in cameras
+            ],
+            error_message=f"未找到摄像头 '{name}'",
+        )
+    return target, None
+
+
+def big_connect(name: str = "") -> AuthOrchestrateResult:
+    """云端授权编排：发起授权 + 轮询状态，一次调用完成。
+
+    内部流程（对 Agent 透明）：
+    1. POST /deviceAuthReq 发起授权请求
+    2. GET /checkAuth 轮询状态（5 秒一次，最长 10 分钟）
+    3. 授权通过时自动把 devicePwd 写回 config.yaml
+
+    Args:
+        name: 摄像头名称（空 → 单台直接用，多台返回列表让 Agent 问用户）
+
+    Returns:
+        成功: AuthOrchestrateResult(success=True, status="authorized",
+              camera_name, sn, claw_id, device_pwd)
+        失败: AuthOrchestrateResult(success=False, status="rejected|timeout|error|...",
+              error_message)
+    """
+    # 1. 解析目标摄像头
+    target, early = _resolve_connect_target(name)
+    if early is not None:
+        return early
+    if not target.sn_code:
+        return AuthOrchestrateResult(
+            success=False, status="no_sn",
+            camera_name=target.name,
+            error_message=f"设备 '{target.name}' 未记录 SN，无法发起云端授权",
+        )
+
+    # 2. 发起授权请求（POST）
+    cr = request_cloud_auth(target.sn_code)
+    if not cr.success:
+        return AuthOrchestrateResult(
+            success=False, status="cloud_error",
+            camera_name=target.name, sn=target.sn_code,
+            claw_id=cr.claw_id,
+            error_message=cr.error_message,
+        )
+
+    # 3. 轮询授权状态（GET，5 秒一次，最多 10 分钟 = 120 次）
+    poll_interval = 5
+    max_polls = 120  # 10 * 60 / 5 = 120
+    for _ in range(max_polls):
+        time.sleep(poll_interval)
+        result = poll_auth_status(target.name)
+        if result.status == AuthStatus.AUTHORIZED:
+            return AuthOrchestrateResult(
+                success=True, status="authorized",
+                camera_name=target.name, sn=target.sn_code,
+                claw_id=cr.claw_id,
+                device_pwd=result.device_pwd,
+            )
+        elif result.status == AuthStatus.REJECTED:
+            return AuthOrchestrateResult(
+                success=False, status="rejected",
+                camera_name=target.name, sn=target.sn_code,
+                claw_id=cr.claw_id,
+                error_message="用户在 APP 端拒绝了授权",
+            )
+        elif result.status == AuthStatus.ERROR:
+            return AuthOrchestrateResult(
+                success=False, status="error",
+                camera_name=target.name, sn=target.sn_code,
+                claw_id=cr.claw_id,
+                error_message=result.message,
+            )
+        # PENDING: 继续轮询
+
+    # 4. 超时
+    return AuthOrchestrateResult(
+        success=False, status="timeout",
+        camera_name=target.name, sn=target.sn_code,
+        claw_id=cr.claw_id,
+        error_message="授权等待超时（10 分钟），用户未确认",
+    )
+
+
+def resolve_target(
+    name: Optional[str] = None,
+    answers: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    解析目标 camera，4 段降级（写死，agent 不需判断）：
+      Stage 0. answers["camera"] 已选（NEEDS_INPUT 重调）→ 查注册；未注册就重 search + register
+      Stage 1. name 显式给 → 查注册
+      Stage 2. 注册列表 1 台 → 用；多台 → NEEDS_INPUT
+      Stage 3. 注册列表 0 台 → 自动 search → 1 台 auto-register；多台 NEEDS_INPUT；0 台 NO_CAMERAS
+
+    Returns:
+        ok=True:  {"ok": True, "camera": CameraConfig, "via": "user_picked|user_picked_registered|registered|auto_registered"}
+        ok=False: {"ok": False, "error_code": "NEEDS_INPUT|CAMERA_NOT_FOUND|NO_CAMERAS|...", "message", "hint", "needs_input"?}
+    """
+    answers = answers or {}
+
+    # ── Stage 0: NEEDS_INPUT 重调带 camera 选 ──
+    if answers.get("camera"):
+        chosen = answers["camera"]
+        cam = _find_camera(chosen)
+        if cam:
+            return {"ok": True, "camera": cam, "via": "user_picked"}
+        # 未注册 → 从 search options 选的 → 重 search + register
+        try:
+            sr = search_devices(timeout=15.0)
+        except Exception as e:
+            return {"ok": False, "error_code": "SEARCH_FAILED", "message": f"重 search 失败: {e}"}
+        if sr.success:
+            for dev in sr.devices:
+                if _dev_to_name(dev) == chosen:
+                    reg = big_register(
+                        name=chosen, ip=dev.ip, onvif_port=dev.onvif_port,
+                        rtsp_port=dev.rtsp_port, sn_code=dev.sn_code,
+                        device_class=dev.device_class.value if hasattr(dev.device_class, "value") else str(dev.device_class),
+                    )
+                    if reg.success:
+                        return {"ok": True, "camera": _find_camera(chosen), "via": "user_picked_registered"}
+                    return {"ok": False, "error_code": "AUTO_REGISTER_FAILED",
+                            "message": f"注册 {chosen} 失败: {reg.error_message}"}
+        return {"ok": False, "error_code": "CAMERA_NOT_FOUND",
+                "message": f"选了 {chosen!r} 但局域网未发现该设备",
+                "hint": "重新调 search_devices 看当前可发现设备"}
+
+    # ── Stage 1: name 显式给 ──
+    if name:
+        cam = _find_camera(name)
+        if cam:
+            return {"ok": True, "camera": cam, "via": "registered"}
+        return {"ok": False, "error_code": "CAMERA_NOT_FOUND",
+                "message": f"name={name!r} 不在 config.yaml",
+                "hint": "用 get_registered_cameras 看已注册列表，或 search_devices 找新设备"}
+
+    # ── Stage 2: 没 name，看注册列表 ──
+    cams = get_registered_cameras()
+    if len(cams) == 1:
+        return {"ok": True, "camera": cams[0], "via": "registered"}
+    if len(cams) > 1:
+        return {"ok": False, "error_code": "NEEDS_INPUT",
+                "needs_input": [{
+                    "key": "camera",
+                    "question": f"已注册 {len(cams)} 台摄像头，选哪台？",
+                    "options": [{"label": f"{c.name} ({c.ip})", "value": c.name} for c in cams],
+                }]}
+
+    # ── Stage 3: list 空，自动 search ──
+    try:
+        sr = search_devices(timeout=15.0)
+    except Exception as e:
+        return {"ok": False, "error_code": "NO_CAMERAS",
+                "message": f"config.yaml 空 + search 失败: {e}",
+                "hint": "检查网络或手动 search_devices"}
+
+    if not sr.success or not sr.devices:
+        return {"ok": False, "error_code": "NO_CAMERAS",
+                "message": "config.yaml 空 + 局域网内未发现任何设备",
+                "hint": "检查相机电源和网络"}
+
+    # ── Stage 4: search 找到几台 ──
+    if len(sr.devices) == 1:
+        dev = sr.devices[0]
+        dev_name = _dev_to_name(dev)
+        reg = big_register(
+            name=dev_name, ip=dev.ip, onvif_port=dev.onvif_port,
+            rtsp_port=dev.rtsp_port, sn_code=dev.sn_code,
+            device_class=dev.device_class.value if hasattr(dev.device_class, "value") else str(dev.device_class),
+        )
+        if reg.success:
+            return {"ok": True, "camera": _find_camera(dev_name), "via": "auto_registered"}
+        return {"ok": False, "error_code": "AUTO_REGISTER_FAILED",
+                "message": f"自动注册 {dev_name} 失败: {reg.error_message}",
+                "hint": "手动调 register_camera 排查"}
+
+    # 多台 → NEEDS_INPUT
+    return {"ok": False, "error_code": "NEEDS_INPUT",
+            "needs_input": [{
+                "key": "camera",
+                "question": f"局域网发现 {len(sr.devices)} 台设备，注册哪台？",
+                "options": [{
+                    "label": f"{d.model or d.sn_code or '?'} ({d.ip})",
+                    "value": _dev_to_name(d),
+                } for d in sr.devices],
+            }]}

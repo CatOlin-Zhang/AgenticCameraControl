@@ -123,11 +123,11 @@ Search for available cameras on the local network. The tool automatically select
 
 ### `connect_device(camera_name, password=None, ip=None, port=None, rtsp_port=None, rtsp_path="/stream1", username="admin") -> ConnectResult`
 
-Establish connection to a camera. Uses cached credentials → ONVIF auth → authorization server → RTSP probe, in that order.
+Establish connection to a camera. Uses cached credentials (retry 3x) → user-provided password → RTSP probe, in that order.
 
 | Aspect | Detail |
 |--------|--------|
-| **Safety** | None (credentials are local-only; authorization server backend is pluggable) |
+| **Safety** | None (credentials are local-only) |
 | **Returns** | `ConnectResult` (see field table and scenario examples below) |
 | **When to call** | Phase 0 (cached cameras), Phase 2 (new cameras) |
 
@@ -137,7 +137,7 @@ Establish connection to a camera. Uses cached credentials → ONVIF auth → aut
 |-------|------|-------------|
 | `success` | bool | Whether the connection succeeded |
 | `auth_method` | string | Authentication method used: `"password"` or `"direct"` (empty if not connected) |
-| `status` | string | `"connected"` / `"pending_auth"` / `"needs_password"` / `"failed"` |
+| `status` | string | `"connected"` / `"needs_password"` / `"pending_auth"` / `"failed"` |
 | `error_message` | string | Failure reason or status detail (empty on success) |
 | `needs_password` | bool | `true` = Agent must prompt user for password and re-call with `password` arg |
 | `onvif_port` | int | Verified ONVIF port (0 = not verified; Skyworth: 2000) |
@@ -148,14 +148,13 @@ Establish connection to a camera. Uses cached credentials → ONVIF auth → aut
 
 **Connection flow:**
 
-1. Check `config.yaml` for cached credentials → if found, verify via ONVIF → connect
-2. If password provided → probe & verify ONVIF port → attempt ONVIF auth → TCP channel
-3. If no password and `device_class == "password_required"`:
-   - Authorization server reachable → return `status="pending_auth"`
-   - Authorization server unreachable → return `status="needs_password"`
+1. Check `config.yaml` for cached credentials → if found, retry ONVIF auth up to 3 times (1s interval) → connect. All retries fail → auto-remove registration from config.yaml → return `status="failed"`, `needs_password=True`
+2. If password provided by user → single attempt with ONVIF auth → TCP channel (no retry, no cache cleanup)
+3. If no password and `device_class == "password_required"` → return `status="needs_password"`, prompt user for password
 4. If not `password_required` → probe RTSP stream:
    - `200 OK` → direct-connect (`auth_method="direct"`)
    - `401 Unauthorized` → return `needs_password=True`
+5. If device requires cloud authorization (SN-based auth) → return `status="pending_auth"` → Agent should call `big_connect()` or loop `poll_auth_status()`
 
 #### Return JSON examples by scenario
 
@@ -171,6 +170,19 @@ Establish connection to a camera. Uses cached credentials → ONVIF auth → aut
 }
 ```
 
+**Cached credentials failed (registration auto-removed):**
+```json
+{
+  "success": false,
+  "auth_method": "",
+  "status": "failed",
+  "error_message": "缓存凭据连接失败（已重试 3 次）: ONVIF 认证失败. 已从 config.yaml 清除设备 '客厅摄像头' 的注册信息，请重新搜索并连接该设备。",
+  "needs_password": true,
+  "onvif_port": 0
+}
+```
+→ Agent: re-discover via `search_devices()` and re-connect.
+
 **Direct-connect — no password needed:**
 ```json
 {
@@ -183,43 +195,43 @@ Establish connection to a camera. Uses cached credentials → ONVIF auth → aut
 }
 ```
 
-**Password required, auth server available (pending_auth):**
-```json
-{
-  "success": false,
-  "auth_method": "",
-  "status": "pending_auth",
-  "error_message": "设备需要密码授权，已发送授权请求。请在浏览器中确认。",
-  "needs_password": true,
-  "onvif_port": 0
-}
-```
-→ Agent: call `poll_auth_status()` every ~5s (max 120s), then prompt user for password.
-
-**Password required, auth server unreachable (needs_password):**
+**Password required (no cached credentials):**
 ```json
 {
   "success": false,
   "auth_method": "",
   "status": "needs_password",
-  "error_message": "设备需要密码，授权服务器不可达。请直接输入密码。",
+  "error_message": "设备 客厅摄像头(192.168.1.100) 需要密码才能访问，请提供摄像头的管理密码（默认用户名一般为 admin）。",
   "needs_password": true,
   "onvif_port": 0
 }
 ```
-→ Agent: prompt user for password directly, then re-call `connect_device(camera_name, password=user_input, ip=..., rtsp_port=...)`.
+→ Agent: prompt user for password, then re-call `connect_device(camera_name, password=user_input, ip=..., rtsp_port=...)`.
 
-**Connection failed:**
+**Connection failed (user-provided password wrong):**
 ```json
 {
   "success": false,
   "auth_method": "",
   "status": "failed",
-  "error_message": "ONVIF 认证失败: 用户名或密码错误",
-  "needs_password": false,
+  "error_message": "密码认证失败: ONVIF 认证失败: 用户名或密码错误，请确认密码后重试",
+  "needs_password": true,
   "onvif_port": 2000
 }
 ```
+
+**Pending cloud authorization:**
+```json
+{
+  "success": false,
+  "auth_method": "",
+  "status": "pending_auth",
+  "error_message": "设备需要云端授权，请在 APP 端确认授权后调用 big_connect 或 poll_auth_status 轮询结果",
+  "needs_password": false,
+  "onvif_port": 0
+}
+```
+→ Agent: call `big_connect(camera_name)` for one-call flow, or loop `poll_auth_status(camera_name)`.
 
 ---
 
@@ -243,44 +255,63 @@ Disconnect a camera and release all resources (ONVIF connection, session state).
 
 ---
 
-### `request_cloud_auth(camera_name, sn="", device_ip="", device_model="") -> CloudAuthRequestResult`
-
-Submit an authorization request to the authorization server (currently local, pluggable for cloud). Normally called internally by `connect_device()` — the Agent rarely needs to call this directly.
-
-| Aspect | Detail |
-|--------|--------|
-| **Safety** | None (only sends device info, no credentials) |
-| **Returns** | `CloudAuthRequestResult` (see field table below) |
-| **Parameters** | `camera_name`: camera identifier. `sn`: device serial number (auto-lookup from config if omitted). `device_ip`: device IP (optional). `device_model`: device model (optional). |
-| **When to call** | After `connect_device()` returns `status="pending_auth"` (normally handled internally) |
-
-**CloudAuthRequestResult return fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `success` | bool | Whether the POST was delivered (HTTP 200) |
-| `claw_id` | string | Machine ID used for this request (persisted in config.yaml) |
-| `error_message` | string | Failure reason (empty on success) |
-
----
-
 ### `poll_auth_status(camera_name) -> AuthStatusResult`
 
-Poll the authorization server to check if the user has confirmed authorization in the browser.
+Poll the cloud authorization status for a device. Called after `connect_device` returns `pending_auth`. Agent should loop with ~5s intervals (max 600s / 10 minutes).
 
 | Aspect | Detail |
 |--------|--------|
-| **Safety** | None |
+| **Safety** | None (read-only query) |
 | **Returns** | `AuthStatusResult` (see field table below) |
-| **Parameters** | `camera_name`: camera identifier |
-| **When to call** | After `connect_device()` returns `status="pending_auth"`. Poll every ~5s, max 120s. |
+| **Parameters** | `camera_name`: camera identifier or SN code (looks up device SN from config.yaml) |
+| **When to call** | After `connect_device` returns `status="pending_auth"`, or as part of manual polling loop |
 
 **AuthStatusResult return fields:**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `status` | string | `"pending"` (user hasn't confirmed yet) / `"authorized"` (user approved) / `"rejected"` (user denied or timeout) / `"error"` (server error) |
+| `status` | string | Authorization status: `PENDING` / `AUTHORIZED` / `REJECTED` / `ERROR` |
 | `camera_name` | string | Camera identifier |
-| `message` | string | Status description (e.g. `"用户已授权"` or `"超时未确认"`) |
+| `message` | string | Human-readable status description |
+| `auth_status_code` | int | Raw cloud authStatus code (0=pending, 1=authorized, 2=rejected) |
+| `device_pwd` | string | Device password returned on authorization (empty otherwise) |
 
-**Agent flow after `authorized`:** prompt user for camera password → call `connect_device(camera_name, password=user_input, ip=..., rtsp_port=...)` → on success call `register_camera()`.
+**Agent behavior:**
+- `AUTHORIZED` → devicePwd has been auto-written to config.yaml; call `connect_device()` to complete connection
+- `REJECTED` → user declined authorization in the app; inform user
+- `PENDING` → continue polling (5s interval)
+- `ERROR` → report error to user
+
+---
+
+### `big_connect(name="") -> AuthOrchestrateResult`
+
+One-call cloud authorization flow: initiates authorization request + polls status (up to 10 minutes) + auto-connects on success. The device password is automatically written to config.yaml upon authorization.
+
+| Aspect | Detail |
+|--------|--------|
+| **Safety** | None (blocking call, may wait up to 10 minutes) |
+| **Returns** | `AuthOrchestrateResult` (see field table below) |
+| **Parameters** | `name`: camera name (optional; empty = auto-select if only one device, or return `needs_selection` if multiple) |
+| **When to call** | After `connect_device` returns `pending_auth`, as a one-call alternative to manual polling |
+
+**AuthOrchestrateResult return fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | bool | Whether the full flow succeeded |
+| `status` | string | `authorized` / `rejected` / `timeout` / `error` / `no_devices` / `needs_selection` / `no_sn` / `cloud_error` |
+| `camera_name` | string | Camera identifier |
+| `sn` | string | Device serial number |
+| `claw_id` | string | Agent session identifier |
+| `device_pwd` | string | Device password (on authorization) |
+| `error_message` | string | Failure reason (empty on success) |
+| `available_cameras` | list | Camera list (only when `status="needs_selection"`) |
+
+**Internal flow (transparent to Agent):**
+1. Resolve target camera from config.yaml
+2. POST `/deviceAuthReq` with `{claw_id, sn, device_ip, device_model}`
+3. Poll GET `/checkAuth` every 5s (up to 120 polls = 10 min)
+4. On authorization: auto-write devicePwd to config.yaml via `register_camera()`
+
+---

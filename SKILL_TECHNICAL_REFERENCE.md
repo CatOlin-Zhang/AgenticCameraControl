@@ -8,13 +8,12 @@
 
 | 分类 | MCP 外部工具 | 内部函数（不暴露给 Agent） |
 |------|:---:|:---:|
-| 设备管理 (device_mgmt) | 7 | 8 |
+| 设备管理 (device_mgmt) | 7 | 6 |
 | 音视频流 (stream) | 4 | 0 |
 | 云台控制 (ptz) | 4 | 1 |
 | 事件监听 (events) | 1 | 5 |
 | 补光控制 (illumination) | 1 | 6 |
-| 鉴权模块 (auth) | 0 | 全部内部 |
-| **合计** | **17** | **20+** |
+| **合计** | **17** | **18+** |
 
 > 注: `discovery.py` 中的 `send_tcp_command`、`discover_sky_devices` 等为内部函数，由 device_mgmt / ptz / illumination 等模块间接调用，不注册为 MCP 工具。
 
@@ -29,10 +28,15 @@
 | 1 | `get_registered_cameras` | 从 config.yaml 加载所有已注册摄像头配置 | 无 |
 | 2 | `register_camera` | 将摄像头凭据持久化到 config.yaml | name(必填), ip, port, username, password, rtsp_port, rtsp_path, device_class, sn_code, pkdk 等 |
 | 3 | `search_devices` | 搜索局域网摄像头（WS-Discovery / 创维私有 / USB） | method(ws_discovery\|sky_discovery\|usb), timeout |
-| 4 | `connect_device` | 连接摄像头（自动缓存凭据、探测 ONVIF 端口、本地授权降级） | camera_name(必填), password, ip, port, rtsp_port, rtsp_path, username |
+| 4 | `connect_device` | 连接摄像头（自动缓存凭据、探测 ONVIF 端口） | camera_name(必填), password, ip, port, rtsp_port, rtsp_path, username |
 | 5 | `disconnect_device` | 断开连接并释放资源 | camera_name(必填) |
-| 6 | `request_cloud_auth` | 向本地授权服务器发起授权请求（模拟智慧云） | camera_name(必填), sn, device_ip, device_model |
-| 7 | `poll_auth_status` | 轮询本地授权服务器检查授权状态 | camera_name(必填) |
+
+### 2.1b 云端授权 — `device_mgmt.py`
+
+| # | 工具名 | 功能 | 关键参数 |
+|---|--------|------|----------|
+| 6 | `poll_auth_status` | 轮询云端授权状态，单次查询 | camera_name(必填) |
+| 7 | `big_connect` | 一站式云端授权：发起请求 + 轮询结果（最长 10 分钟）+ 自动连接 | name(可选，空时自动选择) |
 
 ### 2.2 音视频流 — `stream.py`
 
@@ -86,8 +90,6 @@
 | 函数名 | 功能 | 调用者 |
 |--------|------|--------|
 | `_build_rtsp_url` | 构造完整 RTSP URL（自动注入凭据） | `get_audio_video_stream`、`capture_video_screenshot` |
-| `generate_claw_id` | 生成 Claw ID（MAC + 时间戳） | `get_or_create_claw_id` |
-| `get_or_create_claw_id` | 从 config.yaml 读取或生成并持久化 Claw ID | `request_cloud_auth`、`poll_auth_status` |
 | `_onvif_digest_auth_header` | 生成 ONVIF WS-UsernameToken SOAP Header | `_onvif_post_with_auth` |
 | `_onvif_post_with_auth` | POST SOAP 到 ONVIF endpoint（自动注入鉴权） | 事件监听 ONVIF 订阅/拉取、illumination ONVIF 回退 |
 | `_probe_onvif_port` | 探测设备真实 ONVIF 服务端口 | `connect_device`、`start_event_monitor` |
@@ -116,15 +118,6 @@
 | `_send_sk_filllight` | 通过 TCP 通道发送补光命令 | `_sk_get/set_filllight*` |
 | `_get_device_connection` | 获取设备连接信息 | `_send_sk_filllight` |
 
-### 3.6 Auth 模块（全部内部，不注册 MCP 工具）
-
-| 子模块 | 函数 | 功能 |
-|--------|------|------|
-| token_manager | `parse_token` / `validate_token` / `destroy_token` / `is_token_expired` / `has_permission` | Token 生命周期管理 |
-| cloud_client | `request_authorization` / `notify_connection` / `check_internet_available` | 智慧云 API 客户端 |
-| session | `create_session` / `send_heartbeat` / `release_session` / `get_active_sessions` / `get_fifo_queue` / `auto_release_check` | 会话管理（心跳/释放/FIFO） |
-
----
 
 ## 四、调用关系图
 
@@ -155,18 +148,20 @@
 │  │                        │     ├─→ _probe_onvif_port           │   │
 │  │                        │     ├─→ send_tcp_command (discovery)│   │
 │  │                        │     └─→ ONVIFCamera (onvif 库)      │   │
-│  │                        ├─→ request_cloud_auth                │   │
-│  │                        │     └─→ get_or_create_claw_id       │   │
-│  │                        │          └─→ generate_claw_id       │   │
 │  │                        ├─→ _probe_stream_access              │   │
 │  │                        ├─→ _probe_and_save_illumination      │   │
 │  │                        │     └─→ probe_illumination_capability│  │
 │  │                        └─→ register_camera (自动缓存)        │   │
 │  │                                                              │   │
 │  │  [MCP] disconnect_device ──→ _connected_devices.pop()        │   │
-│  │  [MCP] request_cloud_auth ──→ get_or_create_claw_id          │   │
-│  │  [MCP] poll_auth_status ──→ get_or_create_claw_id            │   │
-│  │                           ──→ _find_cached_camera             │   │
+│  │                                                              │   │
+│  │  [MCP] poll_auth_status ──→ get_registered_cameras           │   │
+│  │                               ──→ get_or_create_claw_id      │   │
+│  │                               ──→ HTTP GET checkAuth         │   │
+│  │                               ──→ register_camera (授权通过时) │   │
+│  │  [MCP] big_connect ─┬─→ _resolve_connect_target              │   │
+│  │                     ├─→ request_cloud_auth (POST 发起授权)   │   │
+│  │                     └─→ poll_auth_status (轮询 5s×120)      │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                     │
 │  ┌─── stream ───────────────────────────────────────────────────┐   │
@@ -239,14 +234,6 @@
 │  └──────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────────┐
-│                     Auth (scripts/auth/) — 全部内部                  │
-│  token_manager: parse / validate / destroy / is_expired / has_perm  │
-│  cloud_client:  request_authorization / notify_connection           │
-│  session:       create / heartbeat / release / fifo_queue           │
-│  注: 当前 device_mgmt 中的本地授权服务器直接通信，                   │
-│      未走 auth 模块（auth 模块为智慧云方案预留）                     │
-└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -288,8 +275,6 @@ illumination──imports──→ device_mgmt (_connected_devices, _find_cached
 |-----------|---------|---------|
 | `send_tcp_command` | **内部函数** | 原始 TCP 通信能力不暴露给 Agent，仅由高层工具内部调用 |
 | `_move_to_position` | **内部函数** | 绝对坐标移动降级为内部函数，不作为 MCP 工具 |
-| `request_cloud_auth` | MCP 工具 | 不携带密码，仅发送 SN + ClawID 发起授权请求 |
-| `connect_device` | MCP 工具 | 密码认证失败时降级到本地授权或提示用户输入 |
+| `connect_device` | MCP 工具 | 密码认证失败时提示用户输入正确密码 |
 | `manage_camera_events` (start) | MCP 工具 | 后台线程仅用户显式确认后启动；行为限于报警订阅 + 白名单路径写入 |
 | `manage_illumination` (set) | MCP 工具 | 硬件参数修改，需用户确认；set 操作自动 GET→merge→SET，不覆盖未指定参数 |
-| Auth 模块全部函数 | **内部函数** | 智慧云 Token/会话管理不暴露给 Agent |

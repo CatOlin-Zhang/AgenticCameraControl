@@ -11,9 +11,6 @@ Place `config.yaml` at the skill root (`xpai-camera-control/config.yaml`) to def
 ## Full Schema
 
 ```yaml
-# ── Machine identity ──
-claw_id: string             # Auto-generated machine ID (claw-{MAC}-{timestamp}), persisted on first use
-
 # ── Camera definitions ──
 cameras:
   - name: string              # Required. Unique camera identifier
@@ -47,13 +44,6 @@ cameras:
     # Illumination capability (auto-probed at connect time, cached)
     illumination_modes: list   # Supported illumination modes (e.g. ["OFF", "AUTO", "ON"]); empty = unsupported or not yet probed
 
-# ── Auth configuration ──
-auth:
-  local_auth_url: string      # Local auth server URL (default: "http://127.0.0.1:18899")
-  cloud_url: string           # Cloud authorization API endpoint (reserved for future use)
-  token_timeout: int          # Token validity in seconds (default: 300)
-  auth_timeout: int           # Cloud HTTP request timeout in seconds (default: 30)
-  auto_request_auth: bool     # Auto-request auth on connect (default: true)
 ```
 
 ---
@@ -115,37 +105,12 @@ rtsp://{username}:{password}@{ip}:{rtsp_port}{rtsp_path}
 
 When ONVIF is available, the URL is fetched dynamically via `GetStreamUri` which may return a different path. Bare RTSP URLs from ONVIF are auto-injected with auth credentials (existing credentials in the URL are replaced). URL encoding is applied to username and password.
 
-### Claw ID
-
-Auto-generated machine identifier persisted at the top level of `config.yaml`:
-
-| Field | Format | Notes |
-|-------|--------|-------|
-| `claw_id` | `claw-{MAC12}-{yyyyMMddHHmmssSSS}` | Generated on first use via `get_or_create_claw_id()`. Used in `request_cloud_auth()` to identify the requesting machine. Re-using the same claw_id prevents duplicate browser popups. |
-
----
-
-## Auth Config Details
-
-The `auth` section configures authorization settings for the camera control system.
-
-| Field | Default | Notes |
-|-------|---------|-------|
-| `local_auth_url` | `"http://127.0.0.1:18899"` | Local authorization server URL. Must be running for browser-based auth flow with password-required cameras. Start with `python local_auth_server/server.py`. |
-| `cloud_url` | `""` | Cloud authorization API endpoint (reserved for future use; currently `local_auth_url` handles all auth requests). |
-| `token_timeout` | `300` | Reserved. Token validity in seconds. |
-| `auth_timeout` | `30` | Reserved. Cloud HTTP request timeout in seconds. |
-| `auto_request_auth` | `true` | Reserved. |
-
----
 
 ## Example Configs
 
-### Single ONVIF camera (password-required, with local auth)
+### Single ONVIF camera (password-required)
 
 ```yaml
-claw_id: "claw-AABBCCDDEEFF-20260727143052000"
-
 cameras:
   - name: office_cam
     connection_type: onvif
@@ -163,11 +128,6 @@ cameras:
     sn: "SN20240001"
     device_class: password_required
     illumination_modes: ["OFF", "AUTO", "ON"]
-
-auth:
-  local_auth_url: "http://127.0.0.1:18899"
-  cloud_url: ""
-  auto_request_auth: true
 ```
 
 ### Direct-connect camera (no password)
@@ -183,18 +143,11 @@ cameras:
     rtsp_port: 554
     rtsp_path: /stream1
     device_class: direct_connect
-
-auth:
-  local_auth_url: "http://127.0.0.1:18899"
-  cloud_url: ""
-  auto_request_auth: true
 ```
 
 ### Mixed: ONVIF (password) + USB + direct-connect
 
 ```yaml
-claw_id: "claw-AABBCCDDEEFF-20260727143052000"
-
 cameras:
   - name: main_ipc
     connection_type: onvif
@@ -223,10 +176,5 @@ cameras:
     rtsp_port: 554
     rtsp_path: /stream1
     device_class: direct_connect
-
-auth:
-  local_auth_url: "http://127.0.0.1:18899"
-  cloud_url: ""
-  auto_request_auth: true
 ```
 

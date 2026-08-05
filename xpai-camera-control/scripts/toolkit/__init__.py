@@ -6,9 +6,9 @@ XPAI Camera Control — Toolkit 工具集
   2. ptz          — 云台与巡航
   3. device_mgmt  — 设备管理与维护
   4. events       — IPC 事件接收（双协议告警监听 + 落盘）
-  5. illumination — 补光模式控制（创维私有协议优先 + ONVIF Imaging Service 回退）
+  5. illumination — 补光模式控制（SK HTTP 私有协议）
 
-注意: discovery.py / auth/ 为内部实现模块，其函数（send_tcp_command、
+注意: discovery.py 为内部实现模块，其函数（send_tcp_command、
 discover_sky_devices 等）不在此导出，Agent 通过 MCP 工具间接使用。
 """
 
@@ -46,8 +46,6 @@ from .device_mgmt import (
     search_devices,
     connect_device,
     disconnect_device,
-    poll_auth_status,
-    request_cloud_auth,
     DiscoveredDevice,
     SearchResult,
     ConnectResult,
@@ -56,9 +54,15 @@ from .device_mgmt import (
     DeviceClass,
     CameraConfig,
     RegisterResult,
-    AuthStatusResult,
+    # 云端授权
     AuthStatus,
+    AuthOrchestrateResult,
+    AuthStatusResult,
     CloudAuthRequestResult,
+    request_cloud_auth,
+    poll_auth_status,
+    big_connect,
+    resolve_target,
 )
 
 # ── events (IPC 事件接收) ──
@@ -76,8 +80,10 @@ from .illumination import (
     probe_illumination_capability,
     IlluminationAction,
     IlluminationInfo,
-    IlluminationResult,
-    IlluminationCapability,
+    FilllightQueryResult,
+    FilllightSetResult,
+    big_filllight_query,
+    big_filllight_set,
     DAYNIGHT_MODES,
     FILLLIGHT_MODES,
 )
@@ -111,8 +117,6 @@ __all__ = [
     "search_devices",
     "connect_device",
     "disconnect_device",
-    "poll_auth_status",
-    "request_cloud_auth",
     "DiscoveredDevice",
     "SearchResult",
     "ConnectResult",
@@ -121,9 +125,15 @@ __all__ = [
     "DeviceClass",
     "CameraConfig",
     "RegisterResult",
-    "AuthStatusResult",
+    # device_mgmt (云端授权)
     "AuthStatus",
+    "AuthOrchestrateResult",
+    "AuthStatusResult",
     "CloudAuthRequestResult",
+    "request_cloud_auth",
+    "poll_auth_status",
+    "big_connect",
+    "resolve_target",
     # events (IPC 事件接收)
     "manage_camera_events",
     "EventAction",
@@ -135,8 +145,10 @@ __all__ = [
     "probe_illumination_capability",
     "IlluminationAction",
     "IlluminationInfo",
-    "IlluminationResult",
-    "IlluminationCapability",
+    "FilllightQueryResult",
+    "FilllightSetResult",
+    "big_filllight_query",
+    "big_filllight_set",
     "DAYNIGHT_MODES",
     "FILLLIGHT_MODES",
 ]

@@ -8,13 +8,13 @@
 - [ ] **Snapshot & event retention** — 将 `events/` 和事件快照接入 `manage_storage_status` 策略（max age / max count 清理），防止存储无限膨胀
 - [ ] **Desktop notification fallback** — MCP server 进程在事件到达时弹出 Windows toast 通知（不依赖 Agent 会话存活；用户打开聊天后可获取完整分析）
 
-### Cloud Authorization（本地授权 → 云端授权升级）
+### Cloud Authorization（云端授权 — 已实现基础能力）
 
-> **Status:** 当前 `request_cloud_auth` / `poll_auth_status` 为本地模拟（`local_auth_server`），未来将升级为真实云端授权服务。
+> **Status:** 云端授权基础流程已实现。`poll_auth_status` 和 `big_connect` 已作为 MCP 工具暴露，支持与云端服务器的签名通信（HTTP + scSign）。以下为未实现的优化项。
 
-- [ ] **云端授权服务器对接** — 提供远程服务器域名与接口后，将 `request_cloud_auth` 的目标地址从 `http://127.0.0.1:18899` 切换为云端域名；请求体保持 `{claw_id, sn, device_ip, device_model}` 不变
-- [ ] **授权流程内部化** — 云端授权作为 `connect_device` 的内部环节（密码认证失败 → 自动发起云端授权 → 轮询状态 → 获取密码），不作为独立 MCP 工具暴露给 Agent；现有 `request_cloud_auth` / `poll_auth_status` 两个 MCP 工具降级为内部函数
-- [ ] **授权状态轮询** — `connect_device` 内部循环调用轮询接口检查授权状态（间隔 5s，上限 120s），授权通过后自动获取密码并完成连接，对 Agent 只返回最终连接结果
+- [x] **云端授权服务器对接** — ✅ v0.5.0 已实现。`poll_auth_status`（单次查询）和 `big_connect`（一站式授权）已作为 MCP 工具暴露，支持签名请求、自动密码持久化
+- [ ] **授权流程内部化** — 云端授权作为 `connect_device` 的内部环节（密码认证失败 → 自动发起云端授权 → 轮询状态 → 获取密码），不作为独立 MCP 工具暴露给 Agent；现有 `poll_auth_status` / `big_connect` 两个 MCP 工具降级为内部函数
+- [x] **授权状态轮询** — ✅ `big_connect` 内部已实现 5s×120=600s 轮询循环
 - [ ] **本地授权兼容降级** — 云端不可达时自动降级到本地 `local_auth_server`（如已启动），两者均不可达时返回 `needs_password` 提示用户手动输入
 
 ### Camera Tracking & Night Vision（摄像头追踪与夜视控制）
@@ -37,9 +37,9 @@ Agent 首次收到监控请求时，执行一次能力探测决策树，选取�
 - T3 纯 Agent 侧行为，技能包无需改动
 - T4 需要技能包增加 webhook POST 能力（依赖宿主先提供 webhook 接口）
 
-### MCP Tool Surface Optimization（MCP 工具面优化 — 17 → 13）
+### MCP Tool Surface Optimization（MCP 工具面优化）
 
-> **Status:** 评估完成，待实施。目标是将 17 个 MCP 工具精简至 13 个，通过参数裁剪、描述精简和子流程内部化降低 Agent 上下文开销。
+> **Status:** 评估完成，待实施。当前 17 个 MCP 工具，目标通过参数裁剪、描述精简和子流程内部化降低 Agent 上下文开销。
 
 #### Phase A — Schema 瘦身（零行为变更）
 

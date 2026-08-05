@@ -80,7 +80,7 @@ TOOLS = [
     ),
     Tool(
         name="connect_device",
-        description="连接摄像头。自动加载缓存凭据；无缓存时探测是否需要密码。",
+        description="连接摄像头。自动加载缓存凭据；无缓存时探测是否需要密码。无密码且需要密码的设备返回 pending_auth 状态，此时应调用 big_connect 发起云端授权（或调用 poll_auth_status 轮询授权结果）。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -106,29 +106,29 @@ TOOLS = [
             "required": ["camera_name"],
         },
     ),
+
+
+    # ── Cloud Auth (云端授权) ──
     Tool(
-        name="request_cloud_auth",
-        description="向本地授权服务器发起设备授权请求（模拟智慧云）。用户在浏览器中确认授权后，Agent 调用 poll_auth_status 轮询结果。",
+        name="poll_auth_status",
+        description="轮询云端授权状态。当 connect_device 返回 pending_auth 时调用，等待用户在云端完成授权。最长轮询 10 分钟，授权通过后自动将密码写入 config.yaml。",
         inputSchema={
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "摄像头名称"},
-                "sn": {"type": "string", "description": "设备序列号（可选，自动查找）"},
-                "device_ip": {"type": "string", "description": "设备 IP（可选）"},
-                "device_model": {"type": "string", "description": "设备型号（可选）"},
             },
             "required": ["camera_name"],
         },
     ),
     Tool(
-        name="poll_auth_status",
-        description="轮询本地授权服务器，检查 Agent 是否已被授权。应在 request_cloud_auth 后反复调用（间隔 5s，最长 120s）。",
+        name="big_connect",
+        description="云端授权全流程：一次调用完成请求授权 + 轮询结果（最长 10 分钟）。授权通过后自动将密码写入 config.yaml 并连接设备。适用于 connect_device 返回 pending_auth 后的授权编排。",
         inputSchema={
             "type": "object",
             "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
+                "name": {"type": "string", "description": "摄像头名称（可省略，省略时自动选择唯一设备或返回 needs_input）"},
             },
-            "required": ["camera_name"],
+            "required": [],
         },
     ),
 
@@ -320,7 +320,7 @@ TOOLS = [
     # ── Illumination (补光模式控制) ──
     Tool(
         name="manage_illumination",
-        description="摄像头补光模式统一入口。get=查询当前设置和参数范围；set=设置补光参数（仅指定需修改的参数，其余保持不变）。创维设备使用私有协议(TCP 9010)，其他设备回退 ONVIF。",
+        description="摄像头补光模式统一入口。get=查询当前设置和参数范围（含中文标签）；set=设置补光参数（仅指定需修改的参数，其余保持不变；枚举参数接受整数或字符串别名如 daynightmode='auto'）。通过 SK HTTP 动态 Token 私有协议(9010)通信。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -334,24 +334,28 @@ TOOLS = [
                     "description": "摄像头名称",
                 },
                 "daynightmode": {
-                    "type": "integer",
-                    "description": "日夜模式: 0=白天 1=夜晚 2=自动 3=定时 4=智能",
+                    "description": "日夜模式: 0白天/1夜晚/2自动/3定时/4智能（别名: day/night/auto/timer/smart 或 白天/夜晚/自动/定时/智能）",
                 },
                 "filllightmode": {
-                    "type": "integer",
-                    "description": "补光方式: 0=全彩 1=红外 2=智能夜视",
+                    "description": "补光方式: 0全彩/1红外/2智能夜视（别名: color/ir/smart 或 全彩/红外/智能夜视）",
                 },
                 "duration": {
                     "type": "integer",
-                    "description": "智能夜视白光灯补光时间 (5-60 秒)",
+                    "description": "智能夜视白光灯补光时长 (5-60 秒)",
                 },
                 "brightnessmode": {
-                    "type": "integer",
-                    "description": "白光灯亮度模式: 0=自动 1=手动",
+                    "description": "白光灯亮度调节: 0自动/1手动（别名: auto/manual 或 自动/手动）",
                 },
                 "brightness": {
                     "type": "integer",
-                    "description": "白光灯手动亮度 (1-100)",
+                    "description": "白光灯亮度 (1-100)",
+                },
+                "irmode": {
+                    "description": "红外灯亮度调节: 0自动/1手动（别名: auto/manual 或 自动/手动）",
+                },
+                "irbrightness": {
+                    "type": "integer",
+                    "description": "红外灯亮度 (1-100)",
                 },
                 "begintime": {
                     "type": "integer",
@@ -366,16 +370,7 @@ TOOLS = [
                     "description": "定时模式重复日期 (如 sun,mon,tue,wed,thu,fri,sat,)",
                 },
                 "enable": {
-                    "type": "integer",
-                    "description": "定时器使能: 0=关 1=开",
-                },
-                "irmode": {
-                    "type": "integer",
-                    "description": "红外灯亮度模式: 0=自动 1=手动",
-                },
-                "irbrightness": {
-                    "type": "integer",
-                    "description": "红外灯手动亮度 (1-100)",
+                    "description": "定时器使能: 0关/1开",
                 },
                 "whiteonvalue": {
                     "type": "integer",
@@ -440,11 +435,11 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
         return _serialize(tk.connect_device(**args))
     elif name == "disconnect_device":
         return _serialize(tk.disconnect_device(**args))
-    elif name == "request_cloud_auth":
-        return _serialize(tk.request_cloud_auth(**args))
+    # ── Cloud Auth ──
     elif name == "poll_auth_status":
         return _serialize(tk.poll_auth_status(**args))
-
+    elif name == "big_connect":
+        return _serialize(tk.big_connect(**args))
     # ── Stream ──
     elif name == "get_audio_video_stream":
         return _serialize(tk.get_audio_video_stream(**args))
@@ -494,7 +489,7 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
 #  Server Setup
 # ═══════════════════════════════════════════════
 
-server = Server("xpai-camera-control", version="0.4.5")
+server = Server("xpai-camera-control", version="0.5.0")
 
 
 @server.list_tools()

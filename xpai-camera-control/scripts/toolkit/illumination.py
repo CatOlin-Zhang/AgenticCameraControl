@@ -1,1114 +1,743 @@
 """
-Toolkit: 补光模式控制 (Illumination Mode Control)
+Toolkit: 补光设置（协议 5.2 SK_SETTING_*_FILLLIGHT 三命令）
 
 工具清单：
-  - manage_illumination  统一补光模式入口（唯一 MCP 工具），action 切换工作模式:
-      get  — 查询当前补光设置及设备支持的可选范围
-      set  — 设置补光参数（daynightmode / filllightmode / brightness 等）
-  - probe_illumination_capability  探测设备补光能力（内部函数，供连接/发现阶段调用）
+  - big_filllight_query         查询补光能力清单 + 当前值
+  - big_filllight_set           设置补光参数（读-校验-合并-写-回读）
+  - manage_illumination         统一补光管理入口（查询/设置）
+  - probe_illumination_capability  探测摄像头补光能力
 
-双协议策略（与 PTZ 模块一致）：
-  1. 创维私有协议（TCP 9010）— 主路径
-     - SK_SETTING_GET_FILLLIGHT_OPTION  → 查询补光能力（参数范围）
-     - SK_SETTING_GET_FILLLIGHT         → 查询当前补光设置
-     - SK_SETTING_SET_FILLLIGHT         → 设置补光参数
-     - 提供更精细的控制：日夜模式、补光方式、亮度、定时、灵敏度等
-  2. ONVIF Imaging Service (ver20) — 回退路径（非创维设备）
-     - GetMoveOptions → 获取设备支持的 IlluminationConfiguration 可选项
-     - GetImagingSettings → 获取当前补光设置
-     - SetImagingSettings → 修改补光模式
-
-安全边界：
-  - 操作前校验设备是否已连接
-  - set 操作时校验参数范围（从 GET_FILLLIGHT_OPTION 响应中提取 min/max）
-  - ONVIF 回退时不修改其他 Imaging 参数，ForcePersistence 固定为 False
+SK 动态 Token 鉴权：先调 GET_MAGIC 拿 stamp，再 token = Base64(SHA1(stamp + sn + KEY))
+固件返回能力项：daynightmode/filllightmode/duration/brightnessmode/
+                brightness/begintime/endtime/repeatdays/enable/
+                irmode/irbrightness/whiteonvalue/whiteoffvalue/ironvalue/iroffvalue
+SET_FILLLIGHT 是全量下发，设置前必须先 GET_FILLLIGHT 读基线再合并
 """
-import re
+import base64
+import hashlib
+import os
+import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 try:
-    import requests as _requests_lib
-except ImportError:
-    _requests_lib = None
+    import requests
+except ImportError:  # SK/ONVIF HTTP 需要；缺失时不可用
+    requests = None
 
 try:
-    import xml.etree.ElementTree as ET
-except ImportError:
-    ET = None
-
-from .discovery import send_tcp_command, SK_TCP_PORT
-
+    from .device_mgmt import resolve_target, CameraConfig
+except ImportError:  # 独立脚本运行时无包上下文
+    from device_mgmt import resolve_target, CameraConfig
 
 # ──────────────────────────────────────────────
-#  常量
+#  枚举与常量
 # ──────────────────────────────────────────────
 
-# ── 日夜模式 (daynightmode) ──
-DAYNIGHT_MODES = {
-    0: "白天模式",
-    1: "夜晚模式",
-    2: "自动模式",
-    3: "定时模式",
-    4: "智能模式",
-}
-
-# ── 补光方式 (filllightmode) ──
-FILLLIGHT_MODES = {
-    0: "全彩模式",
-    1: "红外模式",
-    2: "智能夜视",
-}
-
-# ONVIF Imaging 服务候选路径（非创维设备回退用）
-_IMAGING_SERVICE_PATHS = [
-    "/onvif/image_service",     # ZCR461 实测正确路径
-    "/onvif/imaging_service",
-    "/onvif/Imaging",
-    "/onvif/device_service",
-]
-
-# XML 命名空间
-_NS = {
-    "soap": "http://www.w3.org/2003/05/soap-envelope",
-    "timg": "http://www.onvif.org/ver20/imaging/wsdl",
-    "tt": "http://www.onvif.org/ver10/schema",
-}
-
-
-# ──────────────────────────────────────────────
-#  枚举与数据结构
-# ──────────────────────────────────────────────
 
 class IlluminationAction(str, Enum):
-    """manage_illumination 工作模式"""
-    GET = "get"    # 查询当前补光设置及可选项
-    SET = "set"    # 设置补光参数
+    """补光管理操作类型"""
+    QUERY = "get"           # 查询补光能力与当前值
+    SET = "set"              # 设置补光参数
 
 
-@dataclass
-class IlluminationCapability:
-    """单个补光参数的能力描述（从 GET_FILLLIGHT_OPTION 提取）"""
-    name: str = ""
-    type: str = ""                # int / enum / text
-    min_val: Optional[int] = None
-    max_val: Optional[int] = None
-    desc: str = ""                # 参数说明（如 "0:off,1:on,2:auto,3:timer,4:smart"）
-    enum_vals: Dict[str, str] = field(default_factory=dict)  # enum 类型的选项映射
+class DaynightMode(str, Enum):
+    """开灯设置（日夜模式）"""
+    DAY = "day"              # 0 白天模式
+    NIGHT = "night"          # 1 夜晚模式
+    AUTO = "auto"            # 2 自动模式
+    TIMER = "timer"          # 3 定时模式
+    SMART = "smart"          # 4 智能模式
 
+
+class FilllightModeEnum(str, Enum):
+    """补光方式"""
+    FULL_COLOR = "full_color"  # 0 全彩模式
+    INFRARED = "infrared"      # 1 红外模式
+    SMART = "smart"            # 2 智能夜视
+
+
+class AdjustMode(str, Enum):
+    """亮度调节模式"""
+    AUTO = "auto"      # 0 自动调节
+    MANUAL = "manual"  # 1 手动调节
+
+
+# 日夜模式：整数 ↔ 中文/英文别名
+DAYNIGHT_MODES = {
+    0: "白天模式", 1: "夜晚模式", 2: "自动模式", 3: "定时模式", 4: "智能模式",
+}
+
+# 补光方式：整数 ↔ 中文/英文别名
+FILLLIGHT_MODES = {
+    0: "全彩模式", 1: "红外模式", 2: "智能夜视",
+}
+
+
+# ──────────────────────────────────────────────
+#  数据结构
+# ──────────────────────────────────────────────
 
 @dataclass
 class IlluminationInfo:
-    """补光能力信息"""
-    supported: bool = False
-    protocol: str = ""                               # sky_private / onvif
-    capabilities: List[IlluminationCapability] = field(default_factory=list)
-    current_settings: Dict[str, Any] = field(default_factory=dict)
-    # 向后兼容字段
-    supported_modes: List[str] = field(default_factory=list)
-    current_mode: str = ""
-    error_message: str = ""
+    """补光能力信息（单条能力项 + 当前值）"""
+    name: str                                 # 协议字段名
+    label: str                                # 中文标签
+    type: str = "int"                         # 参数类型
+    min: Optional[int] = None                 # 最小值
+    max: Optional[int] = None                 # 最大值
+    current: Optional[Any] = None             # 当前值
+    current_text: str = ""                    # 当前值中文说明
+    options: Dict[str, str] = field(default_factory=dict)  # 枚举选项 {值: 说明}
 
 
 @dataclass
-class IlluminationResult:
-    """manage_illumination 返回结果"""
-    success: bool
-    action: str = ""                                 # get / set
-    protocol: str = ""                               # sky_private / onvif
-    current_settings: Dict[str, Any] = field(default_factory=dict)
-    previous_settings: Dict[str, Any] = field(default_factory=dict)
-    capabilities: List[Dict[str, Any]] = field(default_factory=list)
-    # 向后兼容字段
-    current_mode: str = ""
-    previous_mode: str = ""
-    supported_modes: List[str] = field(default_factory=list)
-    error_message: str = ""
+class FilllightQueryResult:
+    """补光查询结果。"""
+    ok: bool
+    camera: str = ""
+    channel: str = ""       # "sk" | "onvif"：实际生效协议通道
+    capabilities: list = field(default_factory=list)
+    current: Dict[str, Any] = field(default_factory=dict)
+    error_code: str = ""
+    message: str = ""
+    hint: str = ""
+    needs_input: list = field(default_factory=list)
+
+
+@dataclass
+class FilllightSetResult:
+    """补光设置结果（SK 通道始终回读确认，verified=True）。"""
+    ok: bool
+    camera: str = ""
+    channel: str = ""
+    updated: Dict[str, Any] = field(default_factory=dict)
+    current: Dict[str, Any] = field(default_factory=dict)
+    verified: bool = True
+    error_code: str = ""
+    message: str = ""
+    hint: str = ""
+    needs_input: list = field(default_factory=list)
 
 
 # ──────────────────────────────────────────────
-#  ONVIF SOAP 模板（回退路径）
+#  调试日志
 # ──────────────────────────────────────────────
 
-_GET_PROFILES_BODY = (
-    '<?xml version="1.0" encoding="UTF-8"?>'
-    '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" '
-    'xmlns:trt="http://www.onvif.org/ver10/media/wsdl">'
-    '<soap:Header/><soap:Body>'
-    '<trt:GetVideoSources/>'
-    '</soap:Body></soap:Envelope>'
-)
+_FILL_DEBUG = os.environ.get("XPAI_FILL_DEBUG", "1") != "0"
 
-_GET_MOVE_OPTIONS_BODY = (
-    '<?xml version="1.0" encoding="UTF-8"?>'
-    '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" '
-    'xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl">'
-    '<soap:Header/><soap:Body>'
-    '<timg:GetMoveOptions>'
-    '<timg:VideoSourceToken>{token}</timg:VideoSourceToken>'
-    '</timg:GetMoveOptions>'
-    '</soap:Body></soap:Envelope>'
-)
 
-_GET_IMAGING_SETTINGS_BODY = (
-    '<?xml version="1.0" encoding="UTF-8"?>'
-    '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" '
-    'xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl">'
-    '<soap:Header/><soap:Body>'
-    '<timg:GetImagingSettings>'
-    '<timg:VideoSourceToken>{token}</timg:VideoSourceToken>'
-    '</timg:GetImagingSettings>'
-    '</soap:Body></soap:Envelope>'
-)
+def set_filllight_debug(enable: bool = True) -> None:
+    """开关补光设置调试日志。"""
+    global _FILL_DEBUG
+    _FILL_DEBUG = bool(enable)
 
-_SET_ILLUMINATION_BODY = (
-    '<?xml version="1.0" encoding="UTF-8"?>'
-    '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" '
-    'xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl" '
-    'xmlns:tt="http://www.onvif.org/ver10/schema">'
-    '<soap:Header/><soap:Body>'
-    '<timg:SetImagingSettings>'
-    '<timg:VideoSourceToken>{token}</timg:VideoSourceToken>'
-    '<timg:ImagingSettings>'
-    '<tt:Extension>'
-    '<tt:IlluminationConfiguration>'
-    '<tt:Mode>{mode}</tt:Mode>'
-    '</tt:IlluminationConfiguration>'
-    '</tt:Extension>'
-    '</timg:ImagingSettings>'
-    '<timg:ForcePersistence>false</timg:ForcePersistence>'
-    '</timg:SetImagingSettings>'
-    '</soap:Body></soap:Envelope>'
-)
 
-# IrCutFilter 日夜模式切换（ONVIF 标准方式，适用于不支持 IlluminationConfiguration 的设备）
-_SET_IRCUTFILTER_BODY = (
-    '<?xml version="1.0" encoding="UTF-8"?>'
-    '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" '
-    'xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl" '
-    'xmlns:tt="http://www.onvif.org/ver10/schema">'
-    '<soap:Header/><soap:Body>'
-    '<timg:SetImagingSettings>'
-    '<timg:VideoSourceToken>{token}</timg:VideoSourceToken>'
-    '<timg:ImagingSettings>'
-    '<tt:IrCutFilter>{mode}</tt:IrCutFilter>'
-    '</timg:ImagingSettings>'
-    '<timg:ForcePersistence>false</timg:ForcePersistence>'
-    '</timg:SetImagingSettings>'
-    '</soap:Body></soap:Envelope>'
-)
-
-_GET_OPTIONS_BODY = (
-    '<?xml version="1.0" encoding="UTF-8"?>'
-    '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" '
-    'xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl">'
-    '<soap:Header/><soap:Body>'
-    '<timg:GetOptions>'
-    '<timg:VideoSourceToken>{token}</timg:VideoSourceToken>'
-    '</timg:GetOptions>'
-    '</soap:Body></soap:Envelope>'
-)
-
-# IrCutFilter 与日夜模式的映射
-_IRCUT_TO_DAYNIGHT = {"ON": 0, "OFF": 1, "AUTO": 2}
-_DAYNIGHT_TO_IRCUT = {0: "ON", 1: "OFF", 2: "AUTO"}
-_IRCUT_MODE_NAMES = {"ON": "白天模式", "OFF": "夜晚模式", "AUTO": "自动模式"}
+def _log(*args) -> None:
+    if _FILL_DEBUG:
+        print("[filllight]", *args, file=sys.stderr)
 
 
 # ──────────────────────────────────────────────
-#  辅助函数
+#  SK 协议常量
 # ──────────────────────────────────────────────
 
-def _get_device_connection(camera_name: str) -> Optional[Dict[str, Any]]:
-    """获取设备连接信息，返回 None 表示未连接"""
-    from .device_mgmt import _connected_devices, _find_cached_camera
+_SK_IMAGE_PORT = 9010                            # SK TCP HTTP 服务端口
+_SK_IMAGE_TIMEOUT = 3.0                          # 设置类命令超时（秒）
+_SK_OK_CODE = "C0000"                            # 协议成功状态码
 
-    conn_info = _connected_devices.get(camera_name)
-    if conn_info:
-        return conn_info
+_SK_CMD_FILLLIGHT_OPTION = "SK_SETTING_GET_FILLLIGHT_OPTION"
+_SK_CMD_FILLLIGHT_GET = "SK_SETTING_GET_FILLLIGHT"
+_SK_CMD_FILLLIGHT_SET = "SK_SETTING_SET_FILLLIGHT"
 
-    cached = _find_cached_camera(camera_name)
-    if cached and cached.ip:
-        # 缓存回退路径：始终包含 tcp_port 以供创维设备尝试 TCP 9010
-        # （_send_sk_filllight 使用 conn.get("tcp_port", SK_TCP_PORT) 默认 9010）
-        return {
-            "ip": cached.ip,
-            "port": cached.port,
-            "username": cached.username,
-            "password": cached.password,
-            "tcp_port": SK_TCP_PORT,
-        }
-    return None
+# 补光参数中文标签（协议字段 → 中文，协议 5.2.1 参数表）
+_SK_FILLLIGHT_LABELS = {
+    "daynightmode": "开灯设置（日夜模式）",
+    "filllightmode": "补光方式",
+    "duration": "智能夜视白光灯补光时长（秒）",
+    "brightnessmode": "白光灯亮度调节模式",
+    "brightness": "白光灯亮度",
+    "begintime": "定时模式开始时间（秒）",
+    "endtime": "定时模式结束时间（秒）",
+    "repeatdays": "定时模式重复日期",
+    "enable": "定时器使能",
+    "irmode": "红外灯亮度调节模式",
+    "irbrightness": "红外灯亮度",
+    "whiteonvalue": "白光灯开灯灵敏度",
+    "whiteoffvalue": "白光灯关灯灵敏度",
+    "ironvalue": "红外灯开灯灵敏度",
+    "iroffvalue": "红外灯关灯灵敏度",
+}
 
+# 枚举档位文本（协议 5.2.1）
+_SK_FILLLIGHT_VALUE_TEXTS = {
+    "daynightmode": {0: "白天模式", 1: "夜晚模式", 2: "自动模式", 3: "定时模式", 4: "智能模式"},
+    "filllightmode": {0: "全彩模式", 1: "红外模式", 2: "智能夜视"},
+    "brightnessmode": {0: "自动调节", 1: "手动调节"},
+    "irmode": {0: "自动调节", 1: "手动调节"},
+    "enable": {0: "关闭", 1: "开启"},
+}
 
-def _build_sk_msg_id() -> str:
-    """生成创维私有协议消息 ID（与 ptz.py 同格式）"""
-    now = time.time()
-    ts = time.strftime("%Y%m%d%H%M%S", time.localtime(now))
-    frac = int((now - int(now)) * 1_000_000)
-    return f"{ts}{frac:06d}"[:21]
+# 枚举参数的字符串别名（字符串/整数均可传入，小写后匹配）
+_SK_DAYNIGHT_ALIASES = {"day": 0, "白天": 0, "night": 1, "夜晚": 1, "auto": 2, "自动": 2,
+                        "timer": 3, "定时": 3, "smart": 4, "智能": 4}
+_SK_FILLMODE_ALIASES = {"color": 0, "full_color": 0, "全彩": 0,
+                        "ir": 1, "infrared": 1, "红外": 1,
+                        "smart": 2, "智能夜视": 2}
+_SK_ADJMODE_ALIASES = {"auto": 0, "自动": 0, "manual": 1, "手动": 1}
 
-
-def _send_sk_filllight(camera_name: str, command: dict) -> Optional[dict]:
-    """通过创维 TCP 通道发送补光命令"""
-    conn = _get_device_connection(camera_name)
-    if not conn:
-        return None
-
-    ip = conn.get("ip", "")
-    username = conn.get("username", "admin")
-    password = conn.get("password", "")
-    tcp_port = conn.get("tcp_port", SK_TCP_PORT)
-
-    if not ip:
-        return None
-
-    return send_tcp_command(
-        ip=ip,
-        command=command,
-        username=username,
-        password=password,
-        timeout=8.0,
-        port=tcp_port,
-    )
+# ── SK 协议动态 Token 计算 ──
+# Authorization: Basic <SHA1(stamp + sn + KEY) 的 base64>
+# stamp 通过 SK_SETTING_GET_MAGIC 获取；KEY 是 16 字节固定常量
+_SK_AUTH_KEY = bytes([0x72, 0x58, 0xea, 0xd7, 0x50, 0xd7, 0x38, 0xe6,
+                      0x54, 0x25, 0x51, 0x90, 0x81, 0x4c, 0x4d, 0x68])
+_SK_MAX_RETRIES = 3  # SK 命令最大重试次数（含首次，共 3 次机会）
+_SK_RETRY_INTERVAL = 0.5  # 重试间隔（秒）
 
 
 # ──────────────────────────────────────────────
-#  创维私有协议实现
+#  SK 协议底层函数
 # ──────────────────────────────────────────────
 
-def _sk_get_filllight_option(camera_name: str, channel: int = 2) -> Optional[List[IlluminationCapability]]:
-    """查询补光能力 (SK_SETTING_GET_FILLLIGHT_OPTION)"""
-    command = {
-        "service_type": "setting",
-        "msg_id": _build_sk_msg_id(),
-        "cmd_name": "SK_SETTING_GET_FILLLIGHT_OPTION",
-        "ver": "1.0",
-        "channel": channel,
-        "sequence": 0,
-    }
-    resp = _send_sk_filllight(camera_name, command)
-    if not resp or resp.get("code") != "C0000":
-        return None
-
-    filllight_list = resp.get("filllight", [])
-    if not filllight_list:
-        return None
-
-    capabilities = []
-    for item in filllight_list:
-        cap = IlluminationCapability(
-            name=item.get("name", ""),
-            type=item.get("type", ""),
-            desc=item.get("desc", ""),
-        )
-        specs = item.get("specs", {})
-        if "min" in specs:
-            try:
-                cap.min_val = int(specs["min"])
-            except (ValueError, TypeError):
-                pass
-        if "max" in specs:
-            try:
-                cap.max_val = int(specs["max"])
-            except (ValueError, TypeError):
-                pass
-        # enum 类型的 specs 可能是 {"0": "off", "1": "on"}
-        for k, v in specs.items():
-            if k not in ("min", "max", "length") and isinstance(v, str):
-                cap.enum_vals[k] = v
-        capabilities.append(cap)
-
-    return capabilities
+def _sk_err(result_cls, error_code: str, message: str, hint: str = "", needs_input=None, camera: str = ""):
+    """构造统一失败结果。"""
+    return result_cls(ok=False, error_code=error_code, message=message, hint=hint,
+                      needs_input=needs_input or [], camera=camera)
 
 
-def _sk_get_filllight(camera_name: str, channel: int = 2) -> Optional[Dict[str, Any]]:
-    """查询当前补光设置 (SK_SETTING_GET_FILLLIGHT)"""
-    command = {
-        "service_type": "setting",
-        "msg_id": _build_sk_msg_id(),
-        "cmd_name": "SK_SETTING_GET_FILLLIGHT",
-        "ver": "1.0",
-        "channel": channel,
-        "sequence": 0,
-    }
-    resp = _send_sk_filllight(camera_name, command)
-    if not resp or resp.get("code") != "C0000":
-        return None
-
-    # 提取所有补光参数（排除协议框架字段）
-    _FRAMEWORK_KEYS = {"service_type", "msg_id", "cmd_name", "ver", "code", "msg", "channel", "sequence"}
-    settings = {k: v for k, v in resp.items() if k not in _FRAMEWORK_KEYS}
-    return settings
+def _sk_resolve_camera(name, answers, result_cls):
+    """resolve_target 公共前置：返回 (err_result, cam) 二元组，成功时 err_result=None。"""
+    rt = resolve_target(name=name, answers=answers)
+    if not rt["ok"]:
+        return _sk_err(result_cls, rt.get("error_code", "RESOLVE_FAILED"),
+                       rt.get("message", "解析目标摄像头失败"), rt.get("hint", ""),
+                       rt.get("needs_input")), None
+    return None, rt["camera"]
 
 
-def _sk_set_filllight(
-    camera_name: str,
-    settings: Dict[str, Any],
-    channel: int = 2,
-) -> tuple:
-    """设置补光参数 (SK_SETTING_SET_FILLLIGHT)
+def _sk_compute_auth_token(sn: str, username: str, password: str,
+                           host: str, port: int, timeout: float) -> Optional[str]:
+    """计算 SK 协议的动态 Authorization token。
 
-    Returns:
-        (success: bool, error_message: str)
+    步骤：
+      1. 先用 Basic Auth(username:password) 发 SK_SETTING_GET_MAGIC 拿 stamp
+      2. token = Base64(SHA1(stamp + sn + KEY))
+
+    重试策略：GET_MAGIC 返回 404 时最多重试 _SK_MAX_RETRIES 次（含首次），
+    连接失败/超时/其他 HTTP 错误不重试。
     """
-    command = {
-        "service_type": "setting",
-        "msg_id": _build_sk_msg_id(),
-        "cmd_name": "SK_SETTING_SET_FILLLIGHT",
-        "ver": "1.0",
-        "channel": channel,
-        "sequence": 0,
+    if not sn:
+        _log("SK auth: sn 为空，无法计算 token")
+        return None
+    url = f"http://{host}:{port}/xiaopaitech/device_service"
+    basic_token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "Authorization": f"Basic {basic_token}",
     }
-    command.update(settings)
 
-    resp = _send_sk_filllight(camera_name, command)
-    if resp is None:
-        return False, "TCP 通道无响应"
-    if resp.get("code") != "C0000":
-        return False, resp.get("msg", "未知错误")
-    return True, ""
-
-
-# ──────────────────────────────────────────────
-#  ONVIF 回退实现
-# ──────────────────────────────────────────────
-
-def _imaging_post(
-    ip: str, port: int, body: str,
-    username: str, password: str, timeout: float = 8.0,
-) -> tuple:
-    """向 ONVIF Imaging 服务发送 SOAP 请求，自动尝试候选路径"""
-    from .device_mgmt import _onvif_post_with_auth
-    if _requests_lib is None:
-        return 0, "", ""
-    for path in _IMAGING_SERVICE_PATHS:
-        try:
-            status, text = _onvif_post_with_auth(
-                ip, port, path, body, username, password, timeout=timeout,
-            )
-            if status and "Envelope" in (text or ""):
-                return status, text, path
-        except Exception:
-            continue
-    return 0, "", ""
-
-
-def _extract_text_by_local_name(root, local_name: str) -> str:
-    """从 XML 树中按 local name 提取第一个匹配元素的文本"""
-    for el in root.iter():
-        tag = el.tag
-        if "}" in tag:
-            tag = tag.split("}", 1)[1]
-        if tag == local_name and (el.text or "").strip():
-            return el.text.strip()
-    return ""
-
-
-def _get_video_source_token(conn_info: Dict[str, Any]) -> str:
-    """获取设备的 VideoSourceToken（回退默认 "0"）"""
-    ip = conn_info.get("ip", "")
-    port = conn_info.get("port", 0)
-    username = conn_info.get("username", "admin")
-    password = conn_info.get("password", "")
-    if not port:
-        return "0"
-    from .device_mgmt import _onvif_post_with_auth
-    for path in ["/onvif/media_service", "/onvif/Media", "/onvif/device_service"]:
-        try:
-            status, text = _onvif_post_with_auth(
-                ip, port, path, _GET_PROFILES_BODY,
-                username, password, timeout=5.0,
-            )
-            if status and "Envelope" in text:
-                root = ET.fromstring(text)
-                token = _extract_text_by_local_name(root, "token")
-                if token:
-                    return token
-                for el in root.iter():
-                    tag = el.tag
-                    if "}" in tag:
-                        tag = tag.split("}", 1)[1]
-                    if tag in ("VideoSources", "VideoSource"):
-                        tok = el.get("token", "")
-                        if tok:
-                            return tok
-        except Exception:
-            continue
-    return "0"
-
-
-def _parse_illumination_modes_from_move_options(body: str) -> List[str]:
-    """从 GetMoveOptionsResponse 提取支持的补光模式列表"""
-    try:
-        root = ET.fromstring(body)
-    except ET.ParseError:
-        return []
-    modes = []
-    in_illumination = False
-    for el in root.iter():
-        tag = el.tag
-        if "}" in tag:
-            tag = tag.split("}", 1)[1]
-        if tag == "IlluminationConfiguration":
-            in_illumination = True
-            continue
-        if in_illumination and tag == "Mode":
-            if el.text and el.text.strip():
-                modes.append(el.text.strip())
-            for child in el:
-                child_tag = child.tag
-                if "}" in child_tag:
-                    child_tag = child_tag.split("}", 1)[1]
-                if child.text and child.text.strip():
-                    modes.append(child.text.strip())
-    if not modes:
-        for el in root.iter():
-            tag = el.tag
-            if "}" in tag:
-                tag = tag.split("}", 1)[1]
-            if tag == "Mode" and el.text and el.text.strip():
-                val = el.text.strip()
-                if val not in modes:
-                    modes.append(val)
-    return modes
-
-
-def _parse_ircut_from_imaging_settings(body: str) -> str:
-    """从 GetImagingSettings 响应中提取 IrCutFilter 值 (ON/OFF/AUTO)"""
-    try:
-        root = ET.fromstring(body)
-    except ET.ParseError:
-        return ""
-    for el in root.iter():
-        tag = el.tag
-        if "}" in tag:
-            tag = tag.split("}", 1)[1]
-        if tag == "IrCutFilter" and el.text:
-            return el.text.strip().upper()
-    return ""
-
-
-def _parse_ircut_modes_from_options(body: str) -> list:
-    """从 GetOptions 响应中提取 IrCutFilterModes 列表"""
-    try:
-        root = ET.fromstring(body)
-    except ET.ParseError:
-        return []
-    modes = []
-    for el in root.iter():
-        tag = el.tag
-        if "}" in tag:
-            tag = tag.split("}", 1)[1]
-        if tag == "IrCutFilterModes" and el.text:
-            m = el.text.strip().upper()
-            if m and m not in modes:
-                modes.append(m)
-    return modes
-
-
-def _parse_current_mode_from_imaging_settings(body: str) -> str:
-    """从 GetImagingSettingsResponse 提取当前补光模式"""
-    try:
-        root = ET.fromstring(body)
-    except ET.ParseError:
-        return ""
-    in_illumination = False
-    for el in root.iter():
-        tag = el.tag
-        if "}" in tag:
-            tag = tag.split("}", 1)[1]
-        if tag == "IlluminationConfiguration":
-            in_illumination = True
-            continue
-        if in_illumination and tag == "Mode":
-            if el.text and el.text.strip():
-                return el.text.strip()
-    return ""
-
-
-# ──────────────────────────────────────────────
-#  内部探测函数（供连接阶段调用）
-# ──────────────────────────────────────────────
-
-def probe_illumination_capability(
-    ip: str,
-    port: int,
-    username: str = "admin",
-    password: str = "",
-    channel: int = 2,
-) -> IlluminationInfo:
-    """探测设备补光能力（供连接阶段调用，不作为 MCP 工具暴露）。
-
-    双协议策略:
-      1. 先尝试创维私有协议 (SK_SETTING_GET_FILLLIGHT_OPTION via TCP 9010)
-      2. 失败则回退到 ONVIF Imaging Service (GetMoveOptions)
-
-    Returns:
-        IlluminationInfo: 设备补光能力信息
-    """
-    # ── 尝试 1: 创维私有协议 ──
-    try:
-        # 构造临时 camera_name 用于 TCP 探测
-        # 直接通过 send_tcp_command 发送，避免依赖 _connected_devices
-        cmd = {
+    for attempt in range(1, _SK_MAX_RETRIES + 1):
+        msg_id = time.strftime("%y%m%d%H%M%S") + uuid.uuid4().hex[:6]
+        body = {
             "service_type": "setting",
-            "msg_id": _build_sk_msg_id(),
-            "cmd_name": "SK_SETTING_GET_FILLLIGHT_OPTION",
+            "msg_id": msg_id,
+            "cmd_name": "SK_SETTING_GET_MAGIC",
             "ver": "1.0",
-            "channel": channel,
+            "channel": 2,
+            "sequence": 0,
+            "refresh": "0",
+        }
+        _log(f"SK auth: 请求 GET_MAGIC sn={sn}（第 {attempt}/{_SK_MAX_RETRIES} 次）")
+        try:
+            resp = requests.post(url, json=body, headers=headers, timeout=timeout)
+        except requests.RequestException as e:
+            _log(f"SK auth: GET_MAGIC 失败 {type(e).__name__}: {e}")
+            return None  # 连接失败不重试
+        if resp.status_code == 404 and attempt < _SK_MAX_RETRIES:
+            _log(f"SK auth: GET_MAGIC 404（固件间歇性），{_SK_RETRY_INTERVAL}s 后重试...")
+            time.sleep(_SK_RETRY_INTERVAL)
+            continue
+        if resp.status_code != 200:
+            _log(f"SK auth: GET_MAGIC HTTP {resp.status_code}")
+            return None  # 其他 HTTP 错误不重试
+        try:
+            data = resp.json()
+        except ValueError:
+            _log("SK auth: GET_MAGIC 响应非 JSON")
+            return None
+        stamp = data.get("stamp")
+        if not stamp:
+            _log(f"SK auth: GET_MAGIC 未返回 stamp (code={data.get('code')})")
+            return None
+        _log(f"SK auth: stamp={stamp}")
+        # 2. 计算 token = Base64(SHA1(stamp + sn + KEY))
+        h = hashlib.sha1()
+        h.update(stamp.encode("utf-8"))
+        h.update(sn.encode("utf-8"))
+        h.update(_SK_AUTH_KEY)
+        token = base64.b64encode(h.digest()).decode("utf-8")
+        _log(f"SK auth: token={token}")
+        return token
+
+    return None  # 兜底
+
+
+def _sk_http_query_ex(host: str, port: int, cmd_name: str, payload: dict,
+                      sn: str, username: str, password: str, timeout: float):
+    """SK 协议 HTTP POST 查询，区分"HTTP 错误(404=命令不支持)"与"连接失败"。
+
+    Authorization 通过动态计算 token 下发：
+      1. 先用 Basic Auth 调 GET_MAGIC 拿 stamp
+      2. token = Base64(SHA1(stamp + sn + KEY))
+
+    重试策略：固件间歇性 404 时最多重试 _SK_MAX_RETRIES 次（含首次），
+    连接失败/超时/其他 HTTP 错误不重试。
+
+    Returns: (ok: bool, data: dict|None, status: int|None)
+    """
+    if requests is None:
+        return False, None, None
+
+    for attempt in range(1, _SK_MAX_RETRIES + 1):
+        token = _sk_compute_auth_token(sn, username, password, host, port, timeout)
+        if not token:
+            _log(f"SK 鉴权失败: 无法计算 token（sn={sn!r}）")
+            return False, None, None
+        url = f"http://{host}:{port}/xiaopaitech/device_service"
+        msg_id = time.strftime("%y%m%d%H%M%S") + uuid.uuid4().hex[:6]
+        body = {
+            "service_type": "setting",
+            "msg_id": msg_id,
+            "cmd_name": cmd_name,
+            "ver": "1.0",
+            "channel": 2,
             "sequence": 0,
         }
-        resp = send_tcp_command(
-            ip=ip, command=cmd,
-            username=username, password=password,
-            timeout=5.0, port=SK_TCP_PORT,
-        )
-        if resp and resp.get("code") == "C0000":
-            filllight_list = resp.get("filllight", [])
-            if filllight_list:
-                capabilities = []
-                supported_modes = []
-                for item in filllight_list:
-                    cap = IlluminationCapability(
-                        name=item.get("name", ""),
-                        type=item.get("type", ""),
-                        desc=item.get("desc", ""),
-                    )
-                    specs = item.get("specs", {})
-                    if "min" in specs:
-                        try:
-                            cap.min_val = int(specs["min"])
-                        except (ValueError, TypeError):
-                            pass
-                    if "max" in specs:
-                        try:
-                            cap.max_val = int(specs["max"])
-                        except (ValueError, TypeError):
-                            pass
-                    for k, v in specs.items():
-                        if k not in ("min", "max", "length") and isinstance(v, str):
-                            cap.enum_vals[k] = v
-                    capabilities.append(cap)
+        body.update(payload)
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "Authorization": f"Basic {token}",
+        }
+        _log(f"SK POST {url} cmd={cmd_name} payload_extra={list(payload) or '无'}（第 {attempt}/{_SK_MAX_RETRIES} 次）")
+        try:
+            resp = requests.post(url, json=body, headers=headers, timeout=timeout)
+        except requests.RequestException as e:
+            _log(f"SK 连接失败/超时: {type(e).__name__}: {e}")
+            return False, None, None  # 连接失败/超时不重试
+        if resp.status_code == 404 and attempt < _SK_MAX_RETRIES:
+            _log(f"SK HTTP 404（固件间歇性），{_SK_RETRY_INTERVAL}s 后重试...")
+            time.sleep(_SK_RETRY_INTERVAL)
+            continue
+        if resp.status_code != 200:
+            _log(f"SK HTTP {resp.status_code}（非 200，404=设备未实现该命令）")
+            return False, None, resp.status_code  # HTTP 错误不重试
+        try:
+            data = resp.json()
+            _log(f"SK 200 响应 code={data.get('code')} cmd={data.get('cmd_name')}")
+            return True, data, resp.status_code
+        except ValueError:
+            _log("SK 200 但响应体非 JSON")
+            return False, None, resp.status_code
 
-                    # 提取 daynightmode 的描述作为 supported_modes（向后兼容）
-                    if cap.name == "daynightmode" and cap.desc:
-                        supported_modes = [
-                            s.strip() for s in cap.desc.split(",") if s.strip()
-                        ]
+    # 理论上不会到这里（循环内必 return），兜底
+    return False, None, None
 
-                return IlluminationInfo(
-                    supported=True,
-                    protocol="sky_private",
-                    capabilities=capabilities,
-                    supported_modes=supported_modes,
-                )
-    except Exception:
-        pass
 
-    # ── 尝试 2: ONVIF Imaging Service ──
-    if not port or _requests_lib is None:
-        return IlluminationInfo(
-            supported=False,
-            error_message="TCP 通道和 ONVIF 端口均不可用",
-        )
+# ──────────────────────────────────────────────
+#  SK 补光命令实现
+# ──────────────────────────────────────────────
 
-    conn_info = {"ip": ip, "port": port, "username": username, "password": password}
-    token = _get_video_source_token(conn_info)
+def _coerce_int(v):
+    """能力 specs 的 min/max 是字符串，安全转 int；失败返回 None。"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
 
-    move_body = _GET_MOVE_OPTIONS_BODY.format(token=token)
-    status, resp_text, _ = _imaging_post(ip, port, move_body, username, password)
 
-    # 尝试从 GetMoveOptions 提取 IlluminationConfiguration 支持的模式
-    supported_modes = []
-    if status and "Envelope" in resp_text:
-        if "Fault" not in resp_text[:2048]:
-            supported_modes = _parse_illumination_modes_from_move_options(resp_text)
+def _merge_capabilities(caps: list, current: Dict[str, Any],
+                        labels: Optional[Dict[str, str]] = None,
+                        value_texts: Optional[Dict[str, dict]] = None) -> list:
+    """能力清单 + 当前值合并，并补中文标签与档位文本。"""
+    labels = labels if labels is not None else _SK_FILLLIGHT_LABELS
+    value_texts = value_texts if value_texts is not None else _SK_FILLLIGHT_VALUE_TEXTS
+    merged = []
+    for item in caps:
+        if not isinstance(item, dict):
+            continue
+        fname = str(item.get("name", ""))
+        specs = item.get("specs") or {}
+        entry: Dict[str, Any] = {
+            "name": fname,
+            "label": labels.get(fname, fname),
+            "type": item.get("type", "int"),
+            "min": _coerce_int(specs.get("min")),
+            "max": _coerce_int(specs.get("max")),
+        }
+        if fname in current:
+            entry["current"] = current[fname]
+            text_map = value_texts.get(fname)
+            cv = _coerce_int(current[fname])
+            if text_map and cv is not None and cv in text_map:
+                entry["current_text"] = text_map[cv]
+            if text_map:
+                lo, hi = entry["min"], entry["max"]
+                if lo is not None and hi is not None:
+                    entry["options"] = {str(v): text_map[v] for v in range(lo, hi + 1) if v in text_map}
+        merged.append(entry)
+    return merged
 
-    # ── IrCutFilter 降级检测 ──
-    # 当设备不支持 IlluminationConfiguration 时，检测 IrCutFilter 作为日夜模式控制
-    options_body = _GET_OPTIONS_BODY.format(token=token)
-    ircut_modes = []
-    status_opt, resp_opt, _ = _imaging_post(ip, port, options_body, username, password)
-    if status_opt and "Envelope" in (resp_opt or ""):
-        ircut_modes = _parse_ircut_modes_from_options(resp_opt)
 
-    # 优先使用 IrCutFilter（如果可用）
-    if ircut_modes and not supported_modes:
-        # IrCutFilter ON=白天, OFF=夜晚, AUTO=自动
-        ircut_as_modes = [_IRCUT_MODE_NAMES.get(m, m) for m in ircut_modes]
-        current_ircut = ""
-        get_body = _GET_IMAGING_SETTINGS_BODY.format(token=token)
-        status2, resp_text2, _ = _imaging_post(ip, port, get_body, username, password)
-        if status2 and "Envelope" in resp_text2:
-            current_ircut = _parse_ircut_from_imaging_settings(resp_text2)
-        return IlluminationInfo(
-            supported=True,
-            protocol="onvif_ircut",
-            capabilities=[],
-            supported_modes=ircut_as_modes,
-            current_mode=_IRCUT_MODE_NAMES.get(current_ircut, current_ircut),
-        )
+def _enum_coerce(v, aliases: Dict[str, int], field_name: str, result_cls, camera: str = ""):
+    """枚举参数归一：接受 int / 数字字符串 / 别名。成功 (True, int, None)，失败 (False, None, err)。"""
+    if isinstance(v, bool):
+        return False, None, _sk_err(result_cls, "INVALID_PARAM_TYPE",
+                                    f"{field_name} 需要整数或字符串别名，收到 {v!r}", camera=camera)
+    if isinstance(v, int):
+        return True, v, None
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in aliases:
+            return True, aliases[s], None
+        if s.isdigit():
+            return True, int(s), None
+    return False, None, _sk_err(result_cls, "INVALID_PARAM_VALUE",
+                                f"{field_name} 取值 {v!r} 无法识别",
+                                f"支持整数或别名：{', '.join(sorted(aliases))}", camera=camera)
 
-    if not supported_modes:
-        return IlluminationInfo(
-            supported=False,
-            protocol="onvif",
-            error_message="设备不支持 IlluminationConfiguration 和 IrCutFilter",
-        )
 
-    current_mode = ""
-    get_body = _GET_IMAGING_SETTINGS_BODY.format(token=token)
-    status2, resp_text2, _ = _imaging_post(ip, port, get_body, username, password)
-    if status2 and "Envelope" in resp_text2:
-        current_mode = _parse_current_mode_from_imaging_settings(resp_text2)
+def _sk_filllight_option(cam) -> Dict[str, Any]:
+    """SK_SETTING_GET_FILLLIGHT_OPTION：返回 {"ok", "capabilities", "code", "status", "raw"}。"""
+    ok, resp, _status = _sk_http_query_ex(cam.ip, _SK_IMAGE_PORT, _SK_CMD_FILLLIGHT_OPTION, {},
+                                          cam.sn_code, cam.username, cam.password, _SK_IMAGE_TIMEOUT)
+    if not ok or not resp:
+        _log(f"SK 查补光能力失败（status={_status}）")
+        return {"ok": False, "status": _status}
+    caps = resp.get("filllight")
+    _ok = resp.get("code") == _SK_OK_CODE and isinstance(caps, list)
+    if _ok:
+        _log(f"SK 补光能力 {len(caps)} 项: {[c.get('name') for c in caps if isinstance(c, dict)]}")
+    else:
+        _log(f"SK 补光能力响应异常 code={resp.get('code')}")
+    return {"ok": _ok, "capabilities": caps if isinstance(caps, list) else [],
+            "code": resp.get("code", ""), "status": _status, "raw": resp}
 
-    return IlluminationInfo(
-        supported=True,
-        protocol="onvif",
-        supported_modes=supported_modes,
-        current_mode=current_mode,
+
+def _sk_filllight_cur(cam) -> Dict[str, Any]:
+    """SK_SETTING_GET_FILLLIGHT：返回 {"ok", "current", "code", "status", "raw"}。"""
+    ok, resp, _status = _sk_http_query_ex(cam.ip, _SK_IMAGE_PORT, _SK_CMD_FILLLIGHT_GET, {},
+                                          cam.sn_code, cam.username, cam.password, _SK_IMAGE_TIMEOUT)
+    if not ok or not resp:
+        _log(f"SK 查补光当前值失败（status={_status}）")
+        return {"ok": False, "status": _status}
+    _head = {"service_type", "msg_id", "cmd_name", "ver", "code", "msg", "channel", "sequence"}
+    current = {k: v for k, v in resp.items() if k not in _head}
+    _ok = resp.get("code") == _SK_OK_CODE
+    _log(f"SK 补光当前值 code={resp.get('code')}: {current if _ok else '（code 非 C0000）'}")
+    return {"ok": _ok, "current": current,
+            "code": resp.get("code", ""), "status": _status, "raw": resp}
+
+
+def _sk_filllight_set(cam, updates: Dict[str, Any]) -> FilllightSetResult:
+    """SK 私有协议通道补光设置（读-校验-合并-写-回读，协议 5.2.2）。"""
+    # 1. 查能力 → 客户端校验
+    opt = _sk_filllight_option(cam)
+    if not opt["ok"]:
+        if opt.get("status") is None:
+            return _sk_err(FilllightSetResult, "DEVICE_UNREACHABLE",
+                           f"无法连接 {cam.ip}:{_SK_IMAGE_PORT}（SK HTTP 无响应）", camera=cam.name)
+        return _sk_err(FilllightSetResult, "OPTION_QUERY_FAILED",
+                       f"查询补光能力失败（code={opt.get('code') or '404'}）", camera=cam.name)
+    cap_map: Dict[str, dict] = {}
+    for item in opt["capabilities"]:
+        if isinstance(item, dict) and item.get("name"):
+            cap_map[str(item["name"])] = item
+    for k, v in updates.items():
+        item = cap_map.get(k)
+        if item is None:
+            return _sk_err(FilllightSetResult, "PARAM_NOT_SUPPORTED",
+                           f"该摄像头不支持补光参数 {k}",
+                           f"支持的参数：{', '.join(sorted(cap_map)) or '无'}", camera=cam.name)
+        specs = item.get("specs") or {}
+        lo, hi = _coerce_int(specs.get("min")), _coerce_int(specs.get("max"))
+        if lo is not None and hi is not None and not (lo <= v <= hi):
+            return _sk_err(FilllightSetResult, "PARAM_OUT_OF_RANGE",
+                           f"{k}={v} 超出允许范围 {lo}-{hi}", camera=cam.name)
+    # 2. 读基线（SET_FILLLIGHT 是全量下发）
+    base = _sk_filllight_cur(cam)
+    if not base["ok"]:
+        if base.get("status") is None:
+            return _sk_err(FilllightSetResult, "DEVICE_UNREACHABLE",
+                           f"无法连接 {cam.ip}:{_SK_IMAGE_PORT}（SK HTTP 无响应）", camera=cam.name)
+        return _sk_err(FilllightSetResult, "CURRENT_QUERY_FAILED",
+                       f"查询补光当前值失败（code={base['code']}）", camera=cam.name)
+    payload = dict(base["current"])
+    payload.update(updates)
+    _log(f"SK 补光下发全量 payload={payload}")
+    # 3. 全量下发
+    ok, resp, _status = _sk_http_query_ex(cam.ip, _SK_IMAGE_PORT, _SK_CMD_FILLLIGHT_SET, payload,
+                                          cam.sn_code, cam.username, cam.password, _SK_IMAGE_TIMEOUT)
+    if not ok or not resp:
+        return _sk_err(FilllightSetResult, "DEVICE_UNREACHABLE" if _status is None else "SET_FAILED",
+                       f"补光设置命令下发失败：{cam.ip}:{_SK_IMAGE_PORT}"
+                       + ("" if _status is None else f"（HTTP {_status}）"), camera=cam.name)
+    if resp.get("code") != _SK_OK_CODE:
+        return _sk_err(FilllightSetResult, "SET_FAILED",
+                       f"设备拒绝设置（code={resp.get('code')} msg={resp.get('msg')}）", camera=cam.name)
+    # 4. 回读确认
+    rb = _sk_filllight_cur(cam)
+    cur = rb["current"] if rb["ok"] else dict(payload)
+    updated = {k: cur[k] for k in updates if k in cur}
+    _log(f"SK 补光回读确认 updated={updated}")
+    return FilllightSetResult(ok=True, camera=cam.name, channel="sk", updated=updated, current=cur,
+                              message=f"补光参数已生效：{updated}")
+
+
+# ──────────────────────────────────────────────
+#  编排入口
+# ──────────────────────────────────────────────
+
+def _query_filllight_cam(cam) -> FilllightQueryResult:
+    """SK 私有协议补光查询：能力 + 当前值。"""
+    _log(f"[SK] 尝试补光私有协议 {cam.ip}:{_SK_IMAGE_PORT}")
+    opt = _sk_filllight_option(cam)
+    if not opt["ok"]:
+        if opt.get("status") is None:
+            return _sk_err(FilllightQueryResult, "DEVICE_UNREACHABLE",
+                           f"无法连接 {cam.ip}:{_SK_IMAGE_PORT}（SK HTTP 无响应）",
+                           "确认摄像头在线、网络可达，且已注册正确凭据", camera=cam.name)
+        return _sk_err(FilllightQueryResult, "OPTION_QUERY_FAILED",
+                       f"查询补光能力失败（code={opt.get('code') or '404'}）",
+                       "确认设备固件版本是否支持补光设置", camera=cam.name)
+    cur = _sk_filllight_cur(cam)
+    if not cur["ok"]:
+        return _sk_err(FilllightQueryResult, "CURRENT_QUERY_FAILED",
+                       f"查询补光当前值失败（code={cur['code']}）", camera=cam.name)
+    return FilllightQueryResult(
+        ok=True, camera=cam.name, channel="sk",
+        capabilities=_merge_capabilities(opt["capabilities"], cur["current"],
+                                         _SK_FILLLIGHT_LABELS, _SK_FILLLIGHT_VALUE_TEXTS),
+        current=cur["current"],
     )
 
 
-# ──────────────────────────────────────────────
-#  MCP 工具入口
-# ──────────────────────────────────────────────
-
-# set 操作支持的参数名列表
-_SETTABLE_PARAMS = [
-    "daynightmode", "filllightmode", "duration",
-    "brightnessmode", "brightness",
-    "begintime", "endtime", "repeatdays", "enable",
-    "irmode", "irbrightness",
-    "whiteonvalue", "whiteoffvalue",
-    "ironvalue", "iroffvalue",
-]
+def _set_filllight_cam(cam, updates: Dict[str, Any]) -> FilllightSetResult:
+    """SK 私有协议补光设置。"""
+    _log(f"[SK] 尝试补光私有协议设置 {cam.ip}:{_SK_IMAGE_PORT}")
+    return _sk_filllight_set(cam, updates)
 
 
-def manage_illumination(
-    camera_name: str,
-    action: IlluminationAction,
-    daynightmode: Optional[int] = None,
-    filllightmode: Optional[int] = None,
+def big_filllight_query(
+    name: Optional[str] = None,
+    answers: Optional[Dict[str, Any]] = None,
+) -> FilllightQueryResult:
+    """
+    查询 IPC 夜视补光设置：能力清单 + 当前值（协议 5.2.1 / 5.2.3）。
+
+    SK 私有协议（动态 Token 鉴权），返回补光能力与完整当前值。
+    可独立调试：直接调用本函数即可，无需 MCP。
+
+    Args:
+        name:    摄像头名称（None 时走 resolve_target 降级：唯一一台直接用）
+        answers: NEEDS_INPUT 重调时的回答 dict
+
+    Returns:
+        FilllightQueryResult:
+            ok=True:  capabilities 能力列表；current 当前值；channel="sk"
+            ok=False: error_code + message + hint
+    """
+    err, cam = _sk_resolve_camera(name, answers, FilllightQueryResult)
+    if err:
+        _log(f"补光查询终止：resolve_target 失败 error_code={err.error_code}")
+        return err
+    _log(f"===== 补光查询开始 camera={cam.name} ip={cam.ip} =====")
+    result = _query_filllight_cam(cam)
+    _log(f"===== 补光查询结束 ok={result.ok} channel={result.channel} error_code={result.error_code} =====")
+    return result
+
+
+def big_filllight_set(
+    name: Optional[str] = None,
+    daynightmode=None,
+    filllightmode=None,
     duration: Optional[int] = None,
-    brightnessmode: Optional[int] = None,
+    brightnessmode=None,
     brightness: Optional[int] = None,
+    irmode=None,
+    irbrightness: Optional[int] = None,
     begintime: Optional[int] = None,
     endtime: Optional[int] = None,
     repeatdays: Optional[str] = None,
     enable: Optional[int] = None,
-    irmode: Optional[int] = None,
-    irbrightness: Optional[int] = None,
     whiteonvalue: Optional[int] = None,
     whiteoffvalue: Optional[int] = None,
     ironvalue: Optional[int] = None,
     iroffvalue: Optional[int] = None,
-) -> IlluminationResult:
+    answers: Optional[Dict[str, Any]] = None,
+) -> FilllightSetResult:
     """
-    摄像头补光模式统一入口，action 切换工作模式：
-    - get: 查询当前补光设置及设备支持的参数范围
-    - set: 设置补光参数（仅指定需要修改的参数，其余保持不变）
+    设置 IPC 夜视补光参数（协议 5.2.2 SK_SETTING_SET_FILLLIGHT，读-校验-合并-写-回读）。
 
-    双协议策略: 创维私有协议 (TCP 9010) 优先，ONVIF Imaging Service 回退。
-
-    安全约束: 操作前校验设备已连接；set 时校验参数范围
+    仅传需要修改的参数；枚举参数接受整数或字符串别名（如 daynightmode='auto' 或 2）。
+    可独立调试：直接调用本函数即可，无需 MCP。
 
     Args:
-        camera_name:    摄像头名称
-        action:         工作模式 (IlluminationAction.GET / SET)
-        daynightmode:   日夜模式 0=白天 1=夜晚 2=自动 3=定时 4=智能
-        filllightmode:  补光方式 0=全彩 1=红外 2=智能夜视
-        duration:       智能夜视白光灯补光时间 (5-60 秒)
-        brightnessmode: 白光灯亮度模式 0=自动 1=手动
-        brightness:     白光灯手动亮度 (1-100)
-        begintime:      定时模式开始时间 (0-86399 秒)
-        endtime:        定时模式结束时间 (0-172799 秒)
-        repeatdays:     定时模式重复日期 (如 "sun,mon,tue,wed,thu,fri,sat,")
-        enable:         定时器使能 0=关 1=开
-        irmode:         红外灯亮度模式 0=自动 1=手动
-        irbrightness:   红外灯手动亮度 (1-100)
-        whiteonvalue:   白光灯开灯灵敏度 (0-100)
-        whiteoffvalue:  白光灯关灯灵敏度 (0-100)
-        ironvalue:      红外灯开灯灵敏度 (0-100)
-        iroffvalue:     红外灯关灯灵敏度 (0-100)
+        name:           摄像头名称（None 时走 resolve_target 降级）
+        daynightmode:   开灯设置 0白天/1夜晚/2自动/3定时/4智能（别名 day/night/auto/timer/smart）
+        filllightmode:  补光方式 0全彩/1红外/2智能夜视（别名 color/ir/smart）
+        duration:       智能夜视白光灯补光时长（5-60 秒）
+        brightnessmode: 白光灯亮度调节 0自动/1手动（别名 auto/manual）
+        brightness:     白光灯亮度（1-100）
+        irmode:         红外灯亮度调节 0自动/1手动（别名 auto/manual）
+        irbrightness:   红外灯亮度（1-100）
+        begintime/endtime: 定时模式起止时间（秒）
+        repeatdays:     定时模式重复日期（字符串，如 "sun,mon,tue,wed,thu,fri,sat,"）
+        enable:         定时器使能 0关/1开
+        whiteonvalue/whiteoffvalue: 白光灯开/关灯灵敏度（0-100）
+        ironvalue/iroffvalue:       红外灯开/关灯灵敏度（0-100）
+        answers:        NEEDS_INPUT 重调时的回答 dict
 
     Returns:
-        IlluminationResult
+        FilllightSetResult:
+            ok=True:  updated 生效字段；current 完整当前值；channel="sk"
+            ok=False: error_code + message + hint
     """
-    # ── Step 1: 获取设备连接信息 ──
-    conn_info = _get_device_connection(camera_name)
-    if not conn_info:
-        return IlluminationResult(
-            success=False, action=action.value,
-            error_message=f"设备 {camera_name} 未连接，请先调用 connect_device()",
-        )
+    updates: Dict[str, Any] = {}
+    for k, v, aliases in (("daynightmode", daynightmode, _SK_DAYNIGHT_ALIASES),
+                          ("filllightmode", filllightmode, _SK_FILLMODE_ALIASES),
+                          ("brightnessmode", brightnessmode, _SK_ADJMODE_ALIASES),
+                          ("irmode", irmode, _SK_ADJMODE_ALIASES)):
+        if v is None:
+            continue
+        okv, val, err = _enum_coerce(v, aliases, k, FilllightSetResult)
+        if not okv:
+            return err
+        updates[k] = val
+    for k, v in (("duration", duration), ("brightness", brightness), ("irbrightness", irbrightness),
+                 ("begintime", begintime), ("endtime", endtime), ("enable", enable),
+                 ("whiteonvalue", whiteonvalue), ("whiteoffvalue", whiteoffvalue),
+                 ("ironvalue", ironvalue), ("iroffvalue", iroffvalue)):
+        if v is None:
+            continue
+        if isinstance(v, bool) or not isinstance(v, int):
+            return _sk_err(FilllightSetResult, "INVALID_PARAM_TYPE", f"{k} 需要整数，收到 {v!r}")
+        updates[k] = v
+    # repeatdays 为字符串类型，直接透传
+    if repeatdays is not None:
+        updates["repeatdays"] = str(repeatdays)
+    if not updates:
+        return _sk_err(FilllightSetResult, "NO_PARAMS", "未传入任何要修改的补光参数",
+                       "至少传一个参数，如 daynightmode='auto'；可先调 big_filllight_query 查看可设置项")
 
-    # ── Step 2: 尝试创维私有协议 (TCP 9010) ──
-    # 始终尝试 TCP：只要有 IP 就有可能走私有协议
-    # （与 PTZ 模块对称：PTZ 先 ONVIF 再 TCP fallback；illumination 先 TCP 再 ONVIF fallback）
-    ip = conn_info.get("ip", "")
-    channel = conn_info.get("channel", 2)
+    err, cam = _sk_resolve_camera(name, answers, FilllightSetResult)
+    if err:
+        _log(f"补光设置终止：resolve_target 失败 error_code={err.error_code}")
+        return err
+    _log(f"===== 补光设置开始 camera={cam.name} ip={cam.ip} updates={updates} =====")
+    result = _set_filllight_cam(cam, updates)
+    _log(f"===== 补光设置结束 ok={result.ok} channel={result.channel} error_code={result.error_code} =====")
+    return result
 
-    if ip:
-        result = _manage_via_private_protocol(
-            camera_name, action, channel,
-            daynightmode=daynightmode, filllightmode=filllightmode,
-            duration=duration, brightnessmode=brightnessmode,
-            brightness=brightness, begintime=begintime, endtime=endtime,
-            repeatdays=repeatdays, enable=enable,
-            irmode=irmode, irbrightness=irbrightness,
-            whiteonvalue=whiteonvalue, whiteoffvalue=whiteoffvalue,
-            ironvalue=ironvalue, iroffvalue=iroffvalue,
+
+# ──────────────────────────────────────────────
+#  高级封装：manage_illumination / probe_illumination_capability
+# ──────────────────────────────────────────────
+
+def manage_illumination(
+    action: IlluminationAction = IlluminationAction.QUERY,
+    camera_name: Optional[str] = None,
+    name: Optional[str] = None,
+    daynightmode=None,
+    filllightmode=None,
+    duration: Optional[int] = None,
+    brightnessmode=None,
+    brightness: Optional[int] = None,
+    irmode=None,
+    irbrightness: Optional[int] = None,
+    begintime: Optional[int] = None,
+    endtime: Optional[int] = None,
+    repeatdays: Optional[str] = None,
+    enable: Optional[int] = None,
+    whiteonvalue: Optional[int] = None,
+    whiteoffvalue: Optional[int] = None,
+    ironvalue: Optional[int] = None,
+    iroffvalue: Optional[int] = None,
+    answers: Optional[Dict[str, Any]] = None,
+):
+    """
+    统一补光管理入口：根据 action 分发到查询或设置。
+
+    Args:
+        action:         操作类型 (IlluminationAction: get / set)
+        camera_name:    摄像头名称（MCP 层传入，优先使用）
+        name:           摄像头名称（内部调用兼容）
+        daynightmode:   开灯设置（仅 SET）
+        filllightmode:  补光方式（仅 SET）
+        duration:       智能夜视补光时长（仅 SET）
+        brightnessmode: 白光灯亮度调节模式（仅 SET）
+        brightness:     白光灯亮度（仅 SET）
+        irmode:         红外灯亮度调节模式（仅 SET）
+        irbrightness:   红外灯亮度（仅 SET）
+        begintime:      定时开始时间（仅 SET）
+        endtime:        定时结束时间（仅 SET）
+        repeatdays:     定时模式重复日期（仅 SET，如 "sun,mon,tue"）
+        enable:         定时器使能 0关/1开（仅 SET）
+        whiteonvalue:   白光灯开灯灵敏度（仅 SET）
+        whiteoffvalue:  白光灯关灯灵敏度（仅 SET）
+        ironvalue:      红外灯开灯灵敏度（仅 SET）
+        iroffvalue:     红外灯关灯灵敏度（仅 SET）
+        answers:        NEEDS_INPUT 重调时的回答 dict
+
+    Returns:
+        FilllightQueryResult (action=get) 或 FilllightSetResult (action=set)
+    """
+    # camera_name 与 name 统一归并：MCP 传 camera_name，内部可调 name
+    resolved_name = camera_name or name
+
+    if action == IlluminationAction.QUERY:
+        return big_filllight_query(name=resolved_name, answers=answers)
+    elif action == IlluminationAction.SET:
+        return big_filllight_set(
+            name=resolved_name,
+            daynightmode=daynightmode,
+            filllightmode=filllightmode,
+            duration=duration,
+            brightnessmode=brightnessmode,
+            brightness=brightness,
+            irmode=irmode,
+            irbrightness=irbrightness,
+            begintime=begintime,
+            endtime=endtime,
+            repeatdays=repeatdays,
+            enable=enable,
+            whiteonvalue=whiteonvalue,
+            whiteoffvalue=whiteoffvalue,
+            ironvalue=ironvalue,
+            iroffvalue=iroffvalue,
+            answers=answers,
         )
-        if result.success:
-            # TCP 成功 → 回写 tcp_port 到连接状态，供后续操作使用
-            if not conn_info.get("tcp_port"):
-                from .device_mgmt import _connected_devices
-                if camera_name in _connected_devices:
-                    _connected_devices[camera_name]["tcp_port"] = SK_TCP_PORT
-            return result
-        # TCP 失败 → 记录原因，继续尝试 ONVIF 回退
-        _tcp_error = result.error_message
     else:
-        _tcp_error = "设备无 IP 地址"
-
-    # ── Step 3: 回退到 ONVIF ──
-    port = conn_info.get("port", 0)
-    if port:
-        return _manage_via_onvif(
-            camera_name, conn_info, action,
-            daynightmode=daynightmode, filllightmode=filllightmode,
-        )
-
-    return IlluminationResult(
-        success=False, action=action.value,
-        error_message=(
-            f"设备 {camera_name} 补光控制失败："
-            f"私有协议(TCP 9010): {_tcp_error}；ONVIF: 无可用端口"
-        ),
-    )
+        return FilllightSetResult(ok=False, error_code="INVALID_ACTION",
+                                  message=f"不支持的操作：{action}")
 
 
-def _manage_via_private_protocol(
-    camera_name: str,
-    action: IlluminationAction,
-    channel: int,
-    **kwargs,
-) -> IlluminationResult:
-    """通过创维私有协议处理补光操作"""
-
-    # ── GET: 查询能力 + 当前设置 ──
-    if action == IlluminationAction.GET:
-        capabilities = _sk_get_filllight_option(camera_name, channel)
-        current = _sk_get_filllight(camera_name, channel)
-
-        if capabilities is None and current is None:
-            # 诊断: 检测 TCP 私有协议不可用 (HTTP 404 / TCP RST / 连接拒绝 / 超时)
-            _diag_resp = _send_sk_filllight(camera_name, {
-                "service_type": "setting",
-                "msg_id": _build_sk_msg_id(),
-                "cmd_name": "SK_SETTING_GET_FILLLIGHT_OPTION",
-                "ver": "1.0",
-                "channel": channel,
-                "sequence": 0,
-            })
-            if _diag_resp and isinstance(_diag_resp, dict):
-                _http = _diag_resp.get("_http_status", 0)
-                _tcp_err = _diag_resp.get("_tcp_error", "")
-                if _http == 404:
-                    return IlluminationResult(
-                        success=False, action="get", protocol="sky_private",
-                        error_message=(
-                            "创维私有协议 (TCP 9010) 不可用：设备返回 HTTP 404，"
-                            "表明该型号固件不支持 TCP 私有协议接口。"
-                            "设备仅可通过 ONVIF 协议控制。"
-                        ),
-                    )
-                elif _tcp_err == "connection_reset":
-                    return IlluminationResult(
-                        success=False, action="get", protocol="sky_private",
-                        error_message=(
-                            "创维私有协议 (TCP 9010) 不可用：连接被重置 (RST)，"
-                            "该型号固件不支持 TCP 私有协议接口。"
-                            "设备仅可通过 ONVIF 协议控制。"
-                        ),
-                    )
-                elif _tcp_err == "connection_refused":
-                    return IlluminationResult(
-                        success=False, action="get", protocol="sky_private",
-                        error_message="创维私有协议 (TCP 9010) 不可用：连接被拒绝，端口未监听",
-                    )
-                elif _tcp_err == "timeout":
-                    return IlluminationResult(
-                        success=False, action="get", protocol="sky_private",
-                        error_message="创维私有协议 (TCP 9010) 不可用：连接超时",
-                    )
-                elif _http in (401, 403):
-                    return IlluminationResult(
-                        success=False, action="get", protocol="sky_private",
-                        error_message=f"创维私有协议认证失败 (HTTP {_http})，请检查设备密码",
-                    )
-            return IlluminationResult(
-                success=False, action="get", protocol="sky_private",
-                error_message="查询补光信息失败 (SK_SETTING_GET_FILLLIGHT_OPTION 和 GET_FILLLIGHT 均无响应)",
-            )
-
-        # 构建 capabilities 序列化格式
-        cap_list = []
-        supported_modes = []
-        if capabilities:
-            for cap in capabilities:
-                cap_dict = {"name": cap.name, "type": cap.type}
-                if cap.min_val is not None:
-                    cap_dict["min"] = cap.min_val
-                if cap.max_val is not None:
-                    cap_dict["max"] = cap.max_val
-                if cap.desc:
-                    cap_dict["desc"] = cap.desc
-                if cap.enum_vals:
-                    cap_dict["enum"] = cap.enum_vals
-                cap_list.append(cap_dict)
-                if cap.name == "daynightmode" and cap.desc:
-                    supported_modes = [s.strip() for s in cap.desc.split(",") if s.strip()]
-
-        current_mode = ""
-        if current and "daynightmode" in current:
-            dm = current["daynightmode"]
-            current_mode = DAYNIGHT_MODES.get(int(dm), str(dm))
-
-        return IlluminationResult(
-            success=True,
-            action="get",
-            protocol="sky_private",
-            current_settings=current or {},
-            capabilities=cap_list,
-            current_mode=current_mode,
-            supported_modes=supported_modes,
-        )
-
-    # ── SET: 设置补光参数 ──
-    if action == IlluminationAction.SET:
-        # 先查询当前设置（用于合并 + 回显 previous）
-        current = _sk_get_filllight(camera_name, channel) or {}
-
-        # 收集用户指定的参数
-        new_settings = {}
-        for param in _SETTABLE_PARAMS:
-            val = kwargs.get(param)
-            if val is not None:
-                new_settings[param] = val
-
-        if not new_settings:
-            return IlluminationResult(
-                success=False, action="set", protocol="sky_private",
-                current_settings=current,
-                error_message="set 操作至少需要指定一个补光参数",
-            )
-
-        # 合并：当前设置 + 用户修改（设备要求发送完整参数集）
-        merged = dict(current)
-        merged.update(new_settings)
-
-        # 过滤掉非设置字段
-        send_settings = {k: v for k, v in merged.items() if k in _SETTABLE_PARAMS}
-
-        ok, err = _sk_set_filllight(camera_name, send_settings, channel)
-        if not ok:
-            return IlluminationResult(
-                success=False, action="set", protocol="sky_private",
-                previous_settings=current,
-                current_settings=current,
-                error_message=f"设置补光参数失败: {err}",
-            )
-
-        # 查询设置后的新状态
-        updated = _sk_get_filllight(camera_name, channel) or merged
-
-        current_mode = ""
-        previous_mode = ""
-        if updated and "daynightmode" in updated:
-            dm = updated["daynightmode"]
-            current_mode = DAYNIGHT_MODES.get(int(dm), str(dm))
-        if current and "daynightmode" in current:
-            dm = current["daynightmode"]
-            previous_mode = DAYNIGHT_MODES.get(int(dm), str(dm))
-
-        return IlluminationResult(
-            success=True,
-            action="set",
-            protocol="sky_private",
-            previous_settings=current,
-            current_settings=updated,
-            current_mode=current_mode,
-            previous_mode=previous_mode,
-        )
-
-    return IlluminationResult(
-        success=False, action=action.value, protocol="sky_private",
-        error_message=f"未知的 action: {action}",
-    )
-
-
-def _manage_via_onvif(
-    camera_name: str,
-    conn_info: Dict[str, Any],
-    action: IlluminationAction,
-    daynightmode: Optional[int] = None,
-    filllightmode: Optional[int] = None,
-) -> IlluminationResult:
-    """通过 ONVIF Imaging Service 处理补光操作（回退路径）。
-
-    支持两种模式:
-    - IlluminationConfiguration (传统补光模式控制)
-    - IrCutFilter 日夜模式 (ON=白天/OFF=夜晚/AUTO=自动)
+def probe_illumination_capability(
+    name: Optional[str] = None,
+    answers: Optional[Dict[str, Any]] = None,
+) -> FilllightQueryResult:
     """
-    ip = conn_info.get("ip", "")
-    port = conn_info.get("port", 0)
-    username = conn_info.get("username", "admin")
-    password = conn_info.get("password", "")
+    探测摄像头补光能力：返回设备支持的补光参数列表与当前值。
 
-    token = _get_video_source_token(conn_info)
+    等价于 big_filllight_query 的别名，用于连接后自动探测补光能力。
 
-    # ── 检测 IrCutFilter 支持 ──
-    options_body = _GET_OPTIONS_BODY.format(token=token)
-    ircut_modes = []
-    status_opt, resp_opt, _ = _imaging_post(ip, port, options_body, username, password)
-    if status_opt and "Envelope" in (resp_opt or ""):
-        ircut_modes = _parse_ircut_modes_from_options(resp_opt)
-    use_ircut = bool(ircut_modes)
+    Args:
+        name:    摄像头名称
+        answers: NEEDS_INPUT 重调时的回答 dict
 
-    # ── GET ──
-    if action == IlluminationAction.GET:
-        if use_ircut:
-            # IrCutFilter 路径: 读取当前 IrCutFilter 值
-            get_body = _GET_IMAGING_SETTINGS_BODY.format(token=token)
-            status2, resp_text2, _ = _imaging_post(ip, port, get_body, username, password)
-            current_ircut = ""
-            if status2 and "Envelope" in resp_text2:
-                current_ircut = _parse_ircut_from_imaging_settings(resp_text2)
-            mode_names = [_IRCUT_MODE_NAMES.get(m, m) for m in ircut_modes]
-            return IlluminationResult(
-                success=True, action="get", protocol="onvif_ircut",
-                current_mode=_IRCUT_MODE_NAMES.get(current_ircut, current_ircut),
-                supported_modes=mode_names,
-            )
-
-        # 传统 IlluminationConfiguration 路径
-        move_body = _GET_MOVE_OPTIONS_BODY.format(token=token)
-        status, resp_text, _ = _imaging_post(ip, port, move_body, username, password)
-
-        supported_modes = []
-        if status and "Envelope" in resp_text and "Fault" not in resp_text[:2048]:
-            supported_modes = _parse_illumination_modes_from_move_options(resp_text)
-
-        if not supported_modes:
-            return IlluminationResult(
-                success=False, action="get", protocol="onvif",
-                error_message="设备不支持 IlluminationConfiguration 和 IrCutFilter",
-            )
-
-        current_mode = ""
-        get_body = _GET_IMAGING_SETTINGS_BODY.format(token=token)
-        status2, resp_text2, _ = _imaging_post(ip, port, get_body, username, password)
-        if status2 and "Envelope" in resp_text2:
-            current_mode = _parse_current_mode_from_imaging_settings(resp_text2)
-
-        return IlluminationResult(
-            success=True, action="get", protocol="onvif",
-            current_mode=current_mode,
-            supported_modes=supported_modes,
-        )
-
-    # ── SET ──
-    if action == IlluminationAction.SET:
-        # 获取当前值作为 previous
-        get_body = _GET_IMAGING_SETTINGS_BODY.format(token=token)
-        status_g, resp_g, _ = _imaging_post(ip, port, get_body, username, password)
-
-        if use_ircut:
-            previous_ircut = ""
-            if status_g and "Envelope" in resp_g:
-                previous_ircut = _parse_ircut_from_imaging_settings(resp_g)
-
-            # 映射 daynightmode 数值 → IrCutFilter 字符串
-            ircut_mode = ""
-            if daynightmode is not None:
-                ircut_mode = _DAYNIGHT_TO_IRCUT.get(daynightmode, "")
-            if not ircut_mode and ircut_modes:
-                ircut_mode = ircut_modes[0]  # 默认第一个
-
-            if not ircut_mode:
-                return IlluminationResult(
-                    success=False, action="set", protocol="onvif_ircut",
-                    error_message="无法确定 IrCutFilter 目标模式",
-                )
-
-            set_body = _SET_IRCUTFILTER_BODY.format(token=token, mode=ircut_mode)
-            status, resp_text, _ = _imaging_post(ip, port, set_body, username, password, timeout=10.0)
-
-            if not status:
-                return IlluminationResult(
-                    success=False, action="set", protocol="onvif_ircut",
-                    previous_mode=_IRCUT_MODE_NAMES.get(previous_ircut, previous_ircut),
-                    error_message="ONVIF Imaging 服务不可达",
-                )
-
-            if "Fault" in (resp_text or "")[:2048]:
-                return IlluminationResult(
-                    success=False, action="set", protocol="onvif_ircut",
-                    previous_mode=_IRCUT_MODE_NAMES.get(previous_ircut, previous_ircut),
-                    error_message=f"IrCutFilter 设置失败: {_extract_text_by_local_name(ET.fromstring(resp_text), 'Reason')}",
-                )
-
-            return IlluminationResult(
-                success=True, action="set", protocol="onvif_ircut",
-                previous_mode=_IRCUT_MODE_NAMES.get(previous_ircut, previous_ircut),
-                current_mode=_IRCUT_MODE_NAMES.get(ircut_mode, ircut_mode),
-            )
-
-        # 传统 IlluminationConfiguration SET 路径
-        previous_mode = ""
-        if status_g and "Envelope" in resp_g:
-            previous_mode = _parse_current_mode_from_imaging_settings(resp_g)
-
-        mode_str = ""
-        if daynightmode is not None:
-            mode_str = DAYNIGHT_MODES.get(daynightmode, str(daynightmode))
-        elif filllightmode is not None:
-            mode_str = FILLLIGHT_MODES.get(filllightmode, str(filllightmode))
-
-        if not mode_str:
-            return IlluminationResult(
-                success=False, action="set", protocol="onvif",
-                error_message="ONVIF 回退模式需要指定 daynightmode 或 filllightmode",
-            )
-
-        set_body = _SET_ILLUMINATION_BODY.format(token=token, mode=mode_str)
-        status, resp_text, _ = _imaging_post(ip, port, set_body, username, password, timeout=10.0)
-
-        if not status:
-            return IlluminationResult(
-                success=False, action="set", protocol="onvif",
-                previous_mode=previous_mode, current_mode=previous_mode,
-                error_message="ONVIF Imaging 服务不可达",
-            )
-
-        if "Fault" in (resp_text or "")[:2048]:
-            return IlluminationResult(
-                success=False, action="set", protocol="onvif",
-                previous_mode=previous_mode, current_mode=previous_mode,
-                error_message=f"ONVIF 设置失败: {_extract_text_by_local_name(ET.fromstring(resp_text), 'Reason')}",
-            )
-
-        return IlluminationResult(
-            success=True, action="set", protocol="onvif",
-            previous_mode=previous_mode, current_mode=mode_str,
-        )
-
-    return IlluminationResult(
-        success=False, action=action.value, protocol="onvif",
-        error_message=f"未知的 action: {action}",
-    )
+    Returns:
+        FilllightQueryResult
+    """
+    return big_filllight_query(name=name, answers=answers)

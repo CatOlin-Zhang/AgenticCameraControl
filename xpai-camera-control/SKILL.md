@@ -45,7 +45,7 @@ python scripts/mcp_server.py
 }
 ```
 
-The MCP server exposes **17 tools** covering 5 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and return fields.
+The MCP server exposes **17 tools** covering 6 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and return fields.
 
 ### MCP-Only Interaction (Hard Rule)
 
@@ -63,6 +63,7 @@ At the beginning of each session, check if there are any registered cameras in c
 
 1. Call `get_registered_cameras()` to read the camera configurations (including credentials) saved in config.yaml
 2. For each registered camera, call `connect_device(cam.name)` — the tool will automatically use the credentials in config.yaml to connect, **no need for the user to input a password again**
+   - Cached credentials are retried up to 3 times on failure; if all attempts fail, the registration is automatically removed from config.yaml and the tool returns `status="failed"` with `needs_password=True`
 3. If config.yaml is empty or all registered cameras fail to connect → enter Phase 1
 
 ### Phase 1 — Discover Cameras
@@ -75,17 +76,16 @@ When Phase 0 cache is unavailable, call `search_devices()` to discover cameras o
 
 ### Phase 2 — Connect & Authorize
 
-For each discovered camera, call `connect_device()` to connect. **The specific connection process is handled internally by the tool** . The Agent's responsibilities are as follows:
+For each discovered camera, call `connect_device()` to connect. **The specific connection process is handled internally by the tool**. The Agent's responsibilities are as follows:
 
 | Scenario | Agent Operation |
 |----------|----------------|
-| **Cached credentials** (config.yaml has password) | Tool auto-loads credentials → ONVIF auth verification → `ConnectResult(success=True)` — no user interaction |
+| **Cached credentials** (config.yaml has password) | Tool auto-loads credentials → ONVIF auth verification (retry 3x) → `ConnectResult(success=True)` — no user interaction. If all retries fail → registration auto-removed from config.yaml → `status="failed"`, `needs_password=True` |
 | **direct_connect** (stream probe succeeds) | Tool connects directly via RTSP → `ConnectResult(auth_method="direct")` — no user interaction |
-| **pending_auth** (password_required, authorization server available) | Tool sends request to authorization server → `ConnectResult(status="pending_auth", needs_password=True)` → Agent calls `poll_auth_status()` (every ~5s, max 120s) → when authorized, prompt user for password → call `connect_device(name, password=xxx)` |
-| **needs_password** (stream probe returns 401 or auth server unreachable) | Tool returns `ConnectResult(status="needs_password", needs_password=True)` → Agent prompts user for password → calls `connect_device(name, password=user_input)` |
+| **password_required** | Device requires a password. Agent prompts user for password → calls `connect_device(name, password=user_input)` |
+| **needs_password** | Agent prompts user for password → calls `connect_device(name, password=user_input)` |
+| **pending_auth** (cloud auth needed) | Agent calls `big_connect(name)` (one-call flow, blocks up to 10 min) or loops `poll_auth_status(name)` (5s intervals). On `AUTHORIZED` → call `connect_device()` to complete connection |
 | **Connection successful** | Agent calls `register_camera()` to persist credentials to config.yaml → future sessions auto-connect via Phase 0 |
-
-**Authorization Server:** Password-required cameras without cached credentials use the authorization server (`local_auth_url` in config.yaml). Currently backed by a local server (`local_auth_server/server.py`); future versions will point to a cloud service. The user confirms authorization in the browser, then the Agent polls for the result. See [Authorization Server](#authorization-server) section below.
 
 ### Phase 3 — Stream & Capture
 
@@ -127,22 +127,24 @@ The following tools extend the skill's functionality beyond the core workflow. T
 |------|-------------|-------------|----------|
 | `manage_camera_events` | Alarm event receiving (motion, human, vehicle, tamper, …) with linked snapshots. Actions: `start` / `stop` / `poll` / `wait`. | Camera connected via `connect_device()` | [commands/events.md](references/commands/events.md) |
 | `manage_illumination` | Query & adjust camera illumination (15 parameters: daynight/filllight mode, brightness, timer, sensitivity). Dual-protocol: Skyworth private (TCP 9010) + ONVIF fallback. Actions: `get` / `set`. | Camera connected; capability auto-probed at connect time and cached in `config.yaml` (`illumination_modes`) | [commands/illumination.md](references/commands/illumination.md) |
+| `poll_auth_status` | Poll cloud authorization status. Called after `connect_device` returns `pending_auth`. | Camera registered with SN code | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
+| `big_connect` | One-call cloud authorization flow: request + poll (up to 10 min) + auto-connect. | Camera registered in config.yaml | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
 
-> **Note:** `manage_camera_events(action="start")` spawns a background listener thread — **requires explicit user confirmation** before calling. `manage_illumination(action="set")` modifies a hardware setting — also requires user confirmation. See the linked reference docs for full parameter/return field details.
+> **Note:** `manage_camera_events(action="start")` spawns a background listener thread — **requires explicit user confirmation** before calling. `manage_illumination(action="set")` modifies a hardware setting — also requires user confirmation. `big_connect` is a blocking call that may wait up to 10 minutes for user authorization. See the linked reference docs for full parameter/return field details.
 
 ## Toolkit Modules
 
-5 modules exposed as MCP tools via `scripts/mcp_server.py`. For per-tool parameter signatures, return fields, and safety constraints: [commands/](references/commands/) — [device_mgmt.md](references/commands/device_mgmt.md) · [stream.md](references/commands/stream.md) · [ptz.md](references/commands/ptz.md) · [events.md](references/commands/events.md) · [illumination.md](references/commands/illumination.md).
+6 modules exposed as MCP tools via `scripts/mcp_server.py`. For per-tool parameter signatures, return fields, and safety constraints: [commands/](references/commands/) — [device_mgmt.md](references/commands/device_mgmt.md) · [stream.md](references/commands/stream.md) · [ptz.md](references/commands/ptz.md) · [events.md](references/commands/events.md) · [illumination.md](references/commands/illumination.md).
 
 | Module | Key Functions | Reference |
 |--------|--------------|----------|
-| `device_mgmt` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device`, `request_cloud_auth`, `poll_auth_status` | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
+| `device_mgmt` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device`, `poll_auth_status`, `big_connect` | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
 | `stream` | `capture_video_screenshot`, `get_audio_video_stream`, `toggle_recording`, `manage_storage_status` | [commands/stream.md](references/commands/stream.md) |
 | `ptz` | `control_ptz`, `get_ptz_parameters`, `calibrate_ptz`, `stop_ptz` | [commands/ptz.md](references/commands/ptz.md) |
 | `events` | `manage_camera_events` (action: `start` / `stop` / `poll` / `wait`) | [commands/events.md](references/commands/events.md) |
 | `illumination` | `manage_illumination` (action: `get` / `set`) | [commands/illumination.md](references/commands/illumination.md) |
 
-Internal implementation modules (Skyworth private protocol discovery, TCP command channel, auth client, illumination probe) are **not exposed** — all their functionality is accessed through the MCP tools above.
+Internal implementation modules (Skyworth private protocol discovery, TCP command channel, illumination probe) are **not exposed** — all their functionality is accessed through the MCP tools above.
 
 ## Security Constraints
 
@@ -150,7 +152,6 @@ Internal implementation modules (Skyworth private protocol discovery, TCP comman
 |------------|------|-----------|
 | **Explicit Prompt** | Inform the user of the operation content before execution and wait for confirmation | PTZ, streaming, screenshots, event monitor start, illumination mode change |
 | **Code Validation** | Validate parameters, device status, and connection availability | Recording, storage configuration |
-| **Cloud Auth Flow** | Authorization server browser confirmation + password input | Password-required cameras without cached credentials (pending_auth flow) |
 | **Background Thread Boundary** | The only background threads in this skill are the per-camera event listeners; they start **only** after explicit user enablement via `manage_camera_events(action="start")`, and their behavior is limited to alarm subscription plus writes into the `snapshots/` and `events/` whitelist paths. Auto-resume after a process restart re-arms **only** listeners the user enabled and never stopped (persisted intent) — it never starts new listeners on its own | Event monitoring |
 
 ## Gotchas
@@ -160,7 +161,7 @@ Internal implementation modules (Skyworth private protocol discovery, TCP comman
 - **Chinese characters in Windows paths cause `cv2.imwrite()` to silently fail.** → **Action:** no manual workaround needed — the toolkit handles this internally. If you pass a custom `save_path`, prefer ASCII-only paths.
 - **Connection state is in-memory only — silently lost across sessions.** → **Action:** if any operation returns `success=false` with a connection-related error, call `connect_device()` first to re-establish the connection, then retry the failed operation. All operations must run in the same MCP server process.
 - **Skyworth cameras use non-standard RTSP paths.** → **Action:** no manual path configuration needed — the toolkit auto-tries fallback paths (ONVIF standard → Skyworth private) when the configured path fails.
-- **Authorization server unreachable → auto-degrades.** → **Action:** if `connect_device()` returns `status="needs_password"`, skip the browser step and ask the user for the password directly.
+- **Cached credentials failed → registration auto-removed.** → **Action:** if `connect_device()` reports that cached credentials failed and registration was cleared, re-discover the device via `search_devices()` and re-connect.
 
 ## Quick Reference — Common Operation Sequences
 
@@ -197,6 +198,12 @@ Internal implementation modules (Skyworth private protocol discovery, TCP comman
 2. manage_illumination(action="get", camera_name="前门")       → current_settings + capabilities
 3. If supported → manage_illumination(action="set", daynightmode=2, brightness=80, ...)  → user confirms first!
    → see commands/illumination.md for full parameter list
+
+# Cloud authorization — when connect_device returns pending_auth
+1. connect_device(camera_name="前门")                          → status="pending_auth"
+2. big_connect(name="前门")                                    → blocks up to 10 min, authorized → auto-connect
+   # Or poll manually:
+   poll_auth_status(camera_name="前门")                        → PENDING / AUTHORIZED / REJECTED
 ```
 
 ## Failure Response Quick Reference
@@ -204,11 +211,11 @@ Internal implementation modules (Skyworth private protocol discovery, TCP comman
 | `error_message` pattern / `status` | Agent Action |
 |------------------------------------|--------------|
 | `not_connected` / `device not found` | Call `connect_device()` first, then retry the failed operation |
+| `pending_auth` (status) | Call `big_connect(name)` for one-call auth flow, or loop `poll_auth_status(name)` with 5s intervals |
 | `needs_password` (status) | Ask user for password → `connect_device(camera_name, password=user_input)` |
-| `pending_auth` (status) | Poll `poll_auth_status()` every ~5s (max 120s) → then prompt password |
+| `cached credentials cleared` (in error_message) | Re-discover via `search_devices()` and re-connect; old registration has been auto-removed |
 | `degraded=true` (PTZ result) | **MUST** relay `degrade_reason` to user verbatim |
 | `limit_reached=true` | Stop sending PTZ commands in that direction — physical limit reached |
-| `authorization server unreachable` | Skip browser step, ask user for password directly |
 | `stream unavailable` / RTSP failure | Check camera is online, verify network connectivity |
 | `storage full` | Suggest cleanup via `manage_storage_status()` or change storage policy |
 | `not support illumination` | Device doesn't support illumination mode control — inform user |
@@ -227,28 +234,6 @@ When any MCP tool call fails, crashes, **or the MCP tools are unavailable in the
 4. **Wait for the user's decision.** Do not proceed with retries, fallbacks, or alternative approaches until the user confirms.
 
 
-## Authorization Server
-
-A standalone authorization server (`local_auth_server/server.py`, **outside** the skill package) implements the authorization flow. Currently runs locally; the architecture is pluggable — `local_auth_url` in config.yaml can point to a cloud service in the future. Required for password-required cameras when no cached credentials exist.
-
-**Setup & Usage:**
-
-```bash
-# Start local auth server (from project root)
-python local_auth_server/server.py              # default port 18899
-python local_auth_server/server.py --port 9090  # custom port
-```
-
-The server automatically opens a browser window at `http://127.0.0.1:18899`. When a camera requires authorization:
-1. Skill calls `request_cloud_auth()` → POST to local server
-2. A pending request appears in the browser UI
-3. User clicks "Authorize" or "Reject" in the browser
-4. Skill polls `poll_auth_status()` every ~5s until result is returned
-5. If authorized, Agent prompts user for the camera password and calls `connect_device(camera_name, password=xxx)`
-
-**Note:** The authorization server must be started **before** the MCP server if password-required cameras are expected. If the server is unreachable, the flow degrades gracefully to `needs_password` (direct password input without browser confirmation).
-
-
 ## Configuration
 
 Camera configurations are saved in the skill's root directory under `config.yaml`. After a successful connection, the credentials are automatically written to config.yaml and are reused in subsequent conversations. Complete schema can be found in [references/CONFIG.md](references/CONFIG.md).
@@ -257,11 +242,10 @@ Camera configurations are saved in the skill's root directory under `config.yaml
 
 - Cameras and host must be on the same local network
 - RTSP streams require local network connectivity
-- Password-required cameras: authorization server must be running for browser-based auth flow; otherwise falls back to direct password input
+- Password-required cameras: the Agent must ask the user for the device password and call `connect_device(camera_name, password=user_input)`
 - ONVIF authentication uses WS-UsernameToken (PasswordDigest) — credentials are auto-injected into RTSP URLs internally
 - Screenshot/recording requires `opencv-python` (included in requirements.txt)
 - MCP server mode uses stdio transport only
-- `claw_id` is auto-generated and persisted in config.yaml to prevent duplicate auth popups
 
 
 
@@ -273,4 +257,3 @@ Camera configurations are saved in the skill's root directory under `config.yaml
 - [references/CONFIG.md](references/CONFIG.md) — [config.yaml full schema](references/CONFIG.md#full-schema) and [example configs](references/CONFIG.md#example-configs)
 - [references/EVENT_INTEGRATION.md](references/EVENT_INTEGRATION.md) — [On-disk event store schema 1.0](references/EVENT_INTEGRATION.md#4-schema-10-fields) & [external-consumer contract](references/EVENT_INTEGRATION.md#5-consumer-integration-guidelines) (for other skills / forwarders that build on top of this skill)
 - [requirements.txt](requirements.txt) — Python dependencies for MCP Server mode
-- [local_auth_server/](../local_auth_server/) — Standalone authorization server (outside skill package; currently local, pluggable for cloud)

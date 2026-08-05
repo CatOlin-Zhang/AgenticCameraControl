@@ -10,10 +10,17 @@
 
 | 变更 | 说明 |
 |---|---|
-| 新 MCP 工具 `manage_illumination` | 统一补光入口，action 切换 get/set，17 个参数（daynightmode、filllightmode、brightness、timer、sensitivity 等） |
+| 新 MCP 工具 `manage_illumination` | 统一补光入口，action 切换 get/set，15 个参数（daynightmode、filllightmode、brightness、timer、sensitivity 等） |
 | 双协议策略 | 创维私有协议 (TCP 9010) 优先 → ONVIF Imaging Service 回退。与 PTZ 方向相反 |
 | 能力探测与缓存 | `connect_device` 成功后自动探测补光能力 (`probe_illumination_capability`)，结果持久化到 config.yaml 的 `illumination_modes` 字段 |
 | 纵深防御路由修复 | 三处修复确保创维设备始终尝试 TCP 9010：(1) 路由层 always-try-TCP (2) 探测层回写 tcp_port (3) 缓存层补充 tcp_port |
+
+### 新增：云端授权工具 (`device_mgmt.py`)
+
+| 变更 | 说明 |
+|---|---|
+| 新 MCP 工具 `poll_auth_status` | 轮询云端授权状态，单次查询。connect_device 返回 pending_auth 后调用，Agent 应循环调用（5s 间隔，最长 10 分钟） |
+| 新 MCP 工具 `big_connect` | 一站式云端授权：发起请求 + 轮询结果（最长 10 分钟）+ 自动写密码 + 连接设备。可省略 name 参数自动选择唯一设备 |
 
 ### 文档更新
 
