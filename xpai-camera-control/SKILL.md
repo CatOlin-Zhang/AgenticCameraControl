@@ -45,7 +45,7 @@ python scripts/mcp_server.py
 }
 ```
 
-The MCP server exposes **17 tools** covering 6 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and return fields.
+The MCP server exposes **15 tools** covering 6 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and return fields.
 
 ### MCP-Only Interaction (Hard Rule)
 
@@ -82,10 +82,13 @@ For each discovered camera, call `connect_device()` to connect. **The specific c
 |----------|----------------|
 | **Cached credentials** (config.yaml has password) | Tool auto-loads credentials → ONVIF auth verification (retry 3x) → `ConnectResult(success=True)` — no user interaction. If all retries fail → registration auto-removed from config.yaml → `status="failed"`, `needs_password=True` |
 | **direct_connect** (stream probe succeeds) | Tool connects directly via RTSP → `ConnectResult(auth_method="direct")` — no user interaction |
-| **password_required** | Device requires a password. Agent prompts user for password → calls `connect_device(name, password=user_input)` |
+| **password_required** (cloud auth auto-triggered) | Tool internally requests cloud authorization. The Agent does **not** need to call any extra tool. |
+| Cloud authorized → `success=True` | Tool auto-connected with cloud password, credentials persisted. No user interaction needed |
+| Cloud rejected → `status="auth_rejected"` | Inform user: authorization was denied, cannot connect |
+| Cloud unavailable → `status="needs_password"` | Inform user: cloud service unreachable, ask user to input password directly → `connect_device(name, password=user_input)` |
+| Cloud password mismatch → `status="cloud_pwd_failed"` | Inform user: cloud password doesn't work (device may have changed password), ask user to input correct password → `connect_device(name, password=user_input)` |
 | **needs_password** | Agent prompts user for password → calls `connect_device(name, password=user_input)` |
-| **pending_auth** (cloud auth needed) | Agent calls `big_connect(name)` (one-call flow, blocks up to 10 min) or loops `poll_auth_status(name)` (5s intervals). On `AUTHORIZED` → call `connect_device()` to complete connection |
-| **Connection successful** | Agent calls `register_camera()` to persist credentials to config.yaml → future sessions auto-connect via Phase 0 |
+| **Connection successful** | Credentials already persisted by the tool → future sessions auto-connect via Phase 0 |
 
 ### Phase 3 — Stream & Capture
 
@@ -127,10 +130,8 @@ The following tools extend the skill's functionality beyond the core workflow. T
 |------|-------------|-------------|----------|
 | `manage_camera_events` | Alarm event receiving (motion, human, vehicle, tamper, …) with linked snapshots. Actions: `start` / `stop` / `poll` / `wait`. | Camera connected via `connect_device()` | [commands/events.md](references/commands/events.md) |
 | `manage_illumination` | Query & adjust camera illumination (15 parameters: daynight/filllight mode, brightness, timer, sensitivity). Dual-protocol: Skyworth private (TCP 9010) + ONVIF fallback. Actions: `get` / `set`. | Camera connected; capability auto-probed at connect time and cached in `config.yaml` (`illumination_modes`) | [commands/illumination.md](references/commands/illumination.md) |
-| `poll_auth_status` | Poll cloud authorization status. Called after `connect_device` returns `pending_auth`. | Camera registered with SN code | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
-| `big_connect` | One-call cloud authorization flow: request + poll (up to 10 min) + auto-connect. | Camera registered in config.yaml | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
 
-> **Note:** `manage_camera_events(action="start")` spawns a background listener thread — **requires explicit user confirmation** before calling. `manage_illumination(action="set")` modifies a hardware setting — also requires user confirmation. `big_connect` is a blocking call that may wait up to 10 minutes for user authorization. See the linked reference docs for full parameter/return field details.
+> **Note:** `manage_camera_events(action="start")` spawns a background listener thread — **requires explicit user confirmation** before calling. `manage_illumination(action="set")` modifies a hardware setting — also requires user confirmation. Cloud authorization is handled internally by `connect_device` (blocking call, may wait up to 10 minutes).
 
 ## Toolkit Modules
 
@@ -138,7 +139,7 @@ The following tools extend the skill's functionality beyond the core workflow. T
 
 | Module | Key Functions | Reference |
 |--------|--------------|----------|
-| `device_mgmt` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device`, `poll_auth_status`, `big_connect` | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
+| `device_mgmt` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device` | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
 | `stream` | `capture_video_screenshot`, `get_audio_video_stream`, `toggle_recording`, `manage_storage_status` | [commands/stream.md](references/commands/stream.md) |
 | `ptz` | `control_ptz`, `get_ptz_parameters`, `calibrate_ptz`, `stop_ptz` | [commands/ptz.md](references/commands/ptz.md) |
 | `events` | `manage_camera_events` (action: `start` / `stop` / `poll` / `wait`) | [commands/events.md](references/commands/events.md) |
@@ -199,11 +200,9 @@ Internal implementation modules (Skyworth private protocol discovery, TCP comman
 3. If supported → manage_illumination(action="set", daynightmode=2, brightness=80, ...)  → user confirms first!
    → see commands/illumination.md for full parameter list
 
-# Cloud authorization — when connect_device returns pending_auth
-1. connect_device(camera_name="前门")                          → status="pending_auth"
-2. big_connect(name="前门")                                    → blocks up to 10 min, authorized → auto-connect
-   # Or poll manually:
-   poll_auth_status(camera_name="前门")                        → PENDING / AUTHORIZED / REJECTED
+# Cloud authorization — handled internally by connect_device
+1. connect_device(camera_name="前门", sn_code="SN123")   → status="needs_password" (cloud unreachable) or auth_rejected or cloud_pwd_failed
+2. If needs_password → ask user for password → connect_device(camera_name="前门", password=user_input)
 ```
 
 ## Failure Response Quick Reference
@@ -211,8 +210,9 @@ Internal implementation modules (Skyworth private protocol discovery, TCP comman
 | `error_message` pattern / `status` | Agent Action |
 |------------------------------------|--------------|
 | `not_connected` / `device not found` | Call `connect_device()` first, then retry the failed operation |
-| `pending_auth` (status) | Call `big_connect(name)` for one-call auth flow, or loop `poll_auth_status(name)` with 5s intervals |
-| `needs_password` (status) | Ask user for password → `connect_device(camera_name, password=user_input)` |
+| `needs_password` (status) | Cloud service unreachable or SN missing — ask user for password → `connect_device(camera_name, password=user_input)` |
+| `auth_rejected` (status) | User denied cloud authorization — inform user, cannot connect |
+| `cloud_pwd_failed` (status) | Cloud password doesn't match — device may have changed password, ask user for correct password |
 | `cached credentials cleared` (in error_message) | Re-discover via `search_devices()` and re-connect; old registration has been auto-removed |
 | `degraded=true` (PTZ result) | **MUST** relay `degrade_reason` to user verbatim |
 | `limit_reached=true` | Stop sending PTZ commands in that direction — physical limit reached |

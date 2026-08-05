@@ -80,7 +80,7 @@ TOOLS = [
     ),
     Tool(
         name="connect_device",
-        description="连接摄像头。自动加载缓存凭据；无缓存时探测是否需要密码。无密码且需要密码的设备返回 pending_auth 状态，此时应调用 big_connect 发起云端授权（或调用 poll_auth_status 轮询授权结果）。",
+        description="连接摄像头。自动加载缓存凭据；无缓存时探测是否需要密码。需要密码的设备自动发起云端授权（内部流程，无需额外工具）：云端同意则自动连接；云端不可用则返回 needs_password 让用户直接输入；云端拒绝返回 auth_rejected；云端密码不匹配返回 cloud_pwd_failed。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -91,6 +91,7 @@ TOOLS = [
                 "rtsp_port": {"type": "integer", "description": "RTSP 端口"},
                 "rtsp_path": {"type": "string", "description": "RTSP 路径"},
                 "username": {"type": "string", "description": "登录用户名"},
+                "sn_code": {"type": "string", "description": "设备 SN（发现阶段获取，云端授权必需）"},
             },
             "required": ["camera_name"],
         },
@@ -107,30 +108,9 @@ TOOLS = [
         },
     ),
 
-
     # ── Cloud Auth (云端授权) ──
-    Tool(
-        name="poll_auth_status",
-        description="轮询云端授权状态。当 connect_device 返回 pending_auth 时调用，等待用户在云端完成授权。最长轮询 10 分钟，授权通过后自动将密码写入 config.yaml。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "摄像头名称"},
-            },
-            "required": ["camera_name"],
-        },
-    ),
-    Tool(
-        name="big_connect",
-        description="云端授权全流程：一次调用完成请求授权 + 轮询结果（最长 10 分钟）。授权通过后自动将密码写入 config.yaml 并连接设备。适用于 connect_device 返回 pending_auth 后的授权编排。",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "摄像头名称（可省略，省略时自动选择唯一设备或返回 needs_input）"},
-            },
-            "required": [],
-        },
-    ),
+    # 注意: poll_auth_status / big_connect 已从 MCP 工具降为内部函数；
+    # 云端授权流程完全封装在 connect_device 内部，Agent 无需感知。
 
     # ── Stream ──
     Tool(
@@ -436,10 +416,8 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     elif name == "disconnect_device":
         return _serialize(tk.disconnect_device(**args))
     # ── Cloud Auth ──
-    elif name == "poll_auth_status":
-        return _serialize(tk.poll_auth_status(**args))
-    elif name == "big_connect":
-        return _serialize(tk.big_connect(**args))
+    # 注意: poll_auth_status / big_connect 已降为内部函数，
+    # 云端授权由 connect_device 内部自动处理。
     # ── Stream ──
     elif name == "get_audio_video_stream":
         return _serialize(tk.get_audio_video_stream(**args))

@@ -793,6 +793,85 @@ def _silent_discover(
 
 
 # ──────────────────────────────────────────────
+#  单播 SN 探测（WS-Discovery 补探测用）
+# ──────────────────────────────────────────────
+
+def probe_device_sn(
+    ip: str,
+    timeout: float = 3.0,
+    bind_port: int = SK_TOOL_RECV_PORT,
+) -> str:
+    """
+    通过创维私有协议单播探测指定设备的 SN。
+
+    向目标 IP 的 UDP 9008 端口发送 SK_DISCOVERY_SEARCH 命令（单播），
+    在 bind_port (默认 9028) 监听 SK_DISCOVERY_SEARCH_R 响应，
+    从中提取设备 SN。主要用于 WS-Discovery 发现设备后补全 SN 信息。
+
+    非创维设备或网络不通时返回空字符串，不影响主流程。
+
+    Args:
+        ip:        目标设备 IP
+        timeout:   等待响应的超时时间（秒，默认 3s）
+        bind_port: 本机接收响应的端口（默认 9028）
+
+    Returns:
+        设备 SN 字符串，探测失败返回 ""
+    """
+    local_ip = _get_local_ip()
+    search_cmd = build_search_command(
+        local_ip=local_ip or "",
+        local_port=bind_port,
+    )
+
+    recv_sock: Optional[socket.socket] = None
+    try:
+        recv_sock = _create_recv_socket(bind_port)
+        recv_sock.settimeout(min(1.0, timeout))
+
+        # 单播发送到目标设备 IP 的 9008 端口
+        recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        try:
+            recv_sock.sendto(search_cmd, (ip, SK_MULTICAST_PORT))
+        except OSError:
+            pass
+        # 同时发送到组播地址（部分固件只响应组播）
+        try:
+            recv_sock.sendto(search_cmd, (SK_MULTICAST_ADDR, SK_MULTICAST_PORT))
+        except OSError:
+            pass
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                data, addr = recv_sock.recvfrom(65535)
+            except (socket.timeout, OSError):
+                continue
+
+            device = _parse_search_response(data)
+            if device is None:
+                continue
+
+            # 匹配目标 IP（响应中的 IP 或 UDP 源地址）
+            device_ip = device.ip if device.ip else addr[0]
+            if device_ip == ip or addr[0] == ip:
+                return device.sn
+
+    except OSError:
+        pass  # socket 创建失败，静默返回
+    except Exception:
+        pass  # 其他异常静默处理
+    finally:
+        if recv_sock:
+            try:
+                recv_sock.close()
+            except Exception:
+                pass
+
+    return ""
+
+
+# ──────────────────────────────────────────────
 #  命令行入口
 # ──────────────────────────────────────────────
 if __name__ == "__main__":

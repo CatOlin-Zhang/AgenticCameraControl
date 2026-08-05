@@ -37,21 +37,31 @@ Before ONVIF authentication, `connect_device` verifies the real ONVIF port inter
       → Agent must re-discover via search_devices() and re-connect
 ```
 
-### Flow for Password-Required Cameras (No Cached Credentials)
+### Flow for Password-Required Cameras (No Cached Credentials — Cloud Auth Auto-Triggered)
 
 ```
-1. Agent → calls connect_device(camera_name)
+1. Agent → calls connect_device(camera_name, sn_code="SN123456")
    └─ Tool checks config.yaml → no cached password
    └─ Tool detects device_class == "password_required"
-   └─ Tool returns ConnectResult(success=False, status="needs_password", needs_password=True)
+   └─ Tool internally calls _cloud_auth_and_connect():
+      ├─ SN available → POST /deviceAuthReq → poll /checkAuth (5s × 120)
+      │  ├─ AUTHORIZED → auto-connect with cloud password → credentials persisted
+      │  │  → ConnectResult(success=True, auth_method="password")
+      │  ├─ REJECTED → user declined in app
+      │  │  → ConnectResult(success=False, status="auth_rejected")
+      │  ├─ Cloud unreachable (404 / network error)
+      │  │  → ConnectResult(success=False, status="needs_password")
+      │  ├─ Cloud password mismatch (authorized but connect fails)
+      │  │  → ConnectResult(success=False, status="cloud_pwd_failed")
+      │  └─ Timeout (10 min)
+      │     → ConnectResult(success=False, status="needs_password")
+      └─ SN unavailable → ConnectResult(success=False, status="needs_password")
 
-2. Agent prompts user for the device management password
-
-3. Agent → calls connect_device(camera_name, password=user_input, ip=..., rtsp_port=...)
-   └─ Single attempt with user-provided password (no retry, no cache cleanup)
-   └─ Tool attempts ONVIF WS-UsernameToken auth → TCP channel (port 9010)
-   └─ Success → registers to config.yaml → ConnectResult(success=True)
-   └─ Failure → ConnectResult(success=False, status="failed", needs_password=True)
+2. Agent handles result by status:
+   ├─ success=True → no action, credentials auto-persisted
+   ├─ needs_password → prompt user, call connect_device(name, password=..., ip=..., rtsp_port=...)
+   ├─ auth_rejected → inform user, cannot connect
+   └─ cloud_pwd_failed → inform user password mismatch, ask for correct password
 ```
 
 ### Flow for Password-Required Cameras (User Provides Password)
@@ -116,10 +126,33 @@ This is injected as a SOAP header for ONVIF service calls. RTSP URLs are auto-co
 
 | Field | Source | Purpose |
 |-------|--------|---------|
-| SN (Serial Number) | ONVIF GetDeviceInformation | Unique device identifier |
+| SN (Serial Number) | Skyworth private protocol unicast probe (`probe_device_sn`) after WS-Discovery | Unique device identifier, required for cloud authorization. WS-Discovery does **not** provide SN; it is supplemented via a `SK_DISCOVERY_SEARCH` unicast to the device IP (port 9008). Skyworth discovery provides SN natively. |
 | Model | WS-Discovery Scopes / ONVIF | Device model identification |
 | ONVIF Port | WS-Discovery XAddrs parsing | **Parse from XAddrs — not always 80**. `sky_discovery` returns `onvif_port=0` (private protocol only reports the web port); the real port is probed & persisted by `connect_device`. |
 | IP Address | WS-Discovery source address | LAN communication address |
+
+### SN Supplement Probe (WS-Discovery → Skyworth Private)
+
+WS-Discovery (ONVIF) does not return the device SN, which blocks the cloud authorization path. To solve this, after WS-Discovery finds a device, a **unicast SN probe** is performed using the Skyworth private protocol:
+
+```
+1. WS-Discovery discovers device at IP X
+   └─ _search_ws_discovery_devices() calls _probe_sn_via_sky(ip=X)
+
+2. _probe_sn_via_sky(ip, timeout=2.0):
+   └─ Calls probe_device_sn() from discovery.py
+   └─ Builds SK_DISCOVERY_SEARCH command (reuse build_search_command)
+   └─ Unicast send to ip:9008 (UDP) + multicast to 239.230.236.230:9008
+   └─ Listen on local port 9028 for SK_DISCOVERY_SEARCH_R response
+   └─ Match response by source IP → extract sn field
+   └─ Return SN string or "" (timeout / non-Skyworth device / network error)
+
+3. SN is attached to DiscoveredDevice.sn_code
+   └─ Agent passes sn_code to connect_device() for cloud auth
+   └─ Non-Skyworth devices: sn_code="" → cloud auth skipped, falls back to needs_password
+```
+
+This probe is **non-blocking** for the main discovery flow — a 2-second timeout ensures non-Skyworth devices do not slow down discovery.
 
 ### Fallback Discovery
 
@@ -134,34 +167,41 @@ When WS-Discovery fails (firewall, non-ONVIF cameras, wrong subnet):
 | Type | Auth | Agent Behavior |
 |------|------|---------------|
 | Password-Required (cached) | ONVIF WS-UsernameToken from config.yaml (retry 3x) | Auto-connect — no user input needed. All retries fail → registration auto-removed, re-discover needed |
-| Password-Required (uncached) | User provides password → ONVIF WS-UsernameToken auth | Agent detects `needs_password` → prompts user → connects with password → registers credentials |
+| Password-Required (uncached, cloud auth) | Cloud authorization auto-triggered inside `connect_device` | Tool handles cloud auth internally. Agent handles returned status: `success` / `needs_password` / `auth_rejected` / `cloud_pwd_failed` |
+| Password-Required (uncached, user password) | User provides password → ONVIF WS-UsernameToken auth | Agent detects `needs_password` → prompts user → connects with password → registers credentials |
 | Direct-Connect | None | Auto-connect — RTSP probe returns 200 OK |
-| Pending Auth | Cloud authorization required | Agent calls `big_connect` or `poll_auth_status` → device password auto-written to config.yaml upon authorization |
 
-## Cloud Authorization Flow
+## Cloud Authorization Flow (Internal)
 
-When a device requires cloud-based authorization (e.g. Skyworth cameras with SN-based authentication), the system supports a cloud authorization workflow:
+Cloud authorization is fully encapsulated inside `connect_device` via the internal `_cloud_auth_and_connect()` function. The Agent does **not** call any separate cloud auth tool — `big_connect` and `poll_auth_status` have been deprecated as external MCP tools.
 
 ```
-1. Agent → calls connect_device(camera_name)
-   └─ Tool returns ConnectResult(success=False, status="pending_auth")
-   └─ Agent notifies user that authorization is needed
+1. connect_device() detects password_required / auth_required
+   └─ Calls _cloud_auth_and_connect(camera_name, ip, port, sn_code, ...)
 
-2. Agent → calls big_connect(name=camera_name)   [one-call flow]
-   └─ Tool resolves target camera from config.yaml
-   └─ POST /deviceAuthReq with {claw_id, sn, device_ip, device_model}
-   └─ Polls GET /checkAuth every 5 seconds (up to 10 minutes / 120 polls)
-   └─ authStatus=1 (AUTHORIZED) → devicePwd auto-written to config.yaml
-      → AuthOrchestrateResult(success=True, status="authorized")
-   └─ authStatus=2 (REJECTED) → user declined in app
-      → AuthOrchestrateResult(success=False, status="rejected")
-   └─ Timeout → AuthOrchestrateResult(success=False, status="timeout")
-
-   Alternative: Agent → calls poll_auth_status(camera_name)   [manual polling]
-   └─ Single GET /checkAuth with signed request
-   └─ Returns AuthStatusResult(status=PENDING|AUTHORIZED|REJECTED|ERROR)
-   └─ Agent loops with 5s interval until AUTHORIZED or REJECTED
+2. _cloud_auth_and_connect():
+   ├─ Check SN availability → no SN → return needs_password
+   ├─ POST /deviceAuthReq with {claw_id, sn, device_ip, device_model}
+   │  └─ Failure (network/404) → return needs_password
+   ├─ Register device info to config.yaml (for poll_auth_status lookup)
+   ├─ Poll GET /checkAuth every 5 seconds (up to 10 minutes / 120 polls)
+   │  ├─ authStatus=AUTHORIZED → try connect with cloud devicePwd
+   │  │  ├─ Connect success → persist credentials → return connected
+   │  │  └─ Connect failure → return cloud_pwd_failed
+   │  ├─ authStatus=REJECTED → return auth_rejected
+   │  ├─ authStatus=ERROR → return needs_password
+   │  └─ authStatus=PENDING → continue polling
+   └─ Timeout (10 min) → return needs_password
 ```
+
+**ConnectResult status values (cloud auth):**
+
+| Status | Meaning |
+|--------|--------|
+| `connected` | Cloud authorized and connected successfully |
+| `needs_password` | Cloud unavailable / no SN / timeout — Agent asks user for password |
+| `auth_rejected` | User denied authorization in app — cannot connect |
+| `cloud_pwd_failed` | Cloud authorized but password mismatch — device may have changed password |
 
 **Cloud auth signing:** Each request includes `requestId`, `timestamp`, and `scSign` (HMAC-based signature using `clawID + sn + timestamp`). The `clawID` is auto-generated and persisted for the agent session.
 

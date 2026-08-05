@@ -74,54 +74,54 @@ connect_device(camera_name="客厅摄像头")
 
 ```text
 Step 1 — Connect without password:
-  connect_device(camera_name="discovered_192_168_1_100")
-  → success=false, status="needs_password", needs_password=true
-  → error: "设备 discovered_192_168_1_100(192.168.1.100) 需要密码才能访问，"
-           "请提供摄像头的管理密码（默认用户名一般为 admin）。"
+  connect_device(camera_name="discovered_192_168_1_100", sn_code="SN123456")
+  → tool internally triggers cloud authorization
+  → waiting for user to confirm on APP (blocks up to 10 min)
+  → success=true: cloud authorized, auto-connected, credentials persisted
+  → status="needs_password": cloud service unreachable, inform user
+  → status="auth_rejected": user denied authorization, cannot connect
+  → status="cloud_pwd_failed": cloud password mismatch, ask user for correct password
 
-Step 2 — Ask the user for the camera password:
-  (conversationally — the Agent prompts the user, never reads stdin)
+Step 2a — Cloud authorized (success=true):
+  No further action needed. Credentials auto-persisted to config.yaml.
+  Future sessions will auto-connect via Phase 0.
 
-Step 3 — Re-connect with the password:
+Step 2b — Cloud unavailable (needs_password):
+  (conversationally — the Agent informs user that cloud service is unreachable)
   connect_device(
     camera_name="discovered_192_168_1_100",
     password=<user_input>,
     ip="192.168.1.100",     # from Phase 1 discovery result (DiscoveredDevice.ip)
     rtsp_port=554            # from DiscoveredDevice.rtsp_port
   )
-
-Step 4 — On success:
-  register_camera(
-    name="客厅摄像头",
-    ip="192.168.1.100",
-    username="admin",
-    password=<user_input>,
-    device_class="password_required"
-  )
-  # NOTE: omit `port` — connect_device already probed & persisted the verified
-  #       ONVIF port (Skyworth: 2000, NOT the web port 80); never pass a guess.
   → future sessions will auto-connect via Phase 0
+
+Step 2c — Cloud password mismatch (cloud_pwd_failed):
+  (conversationally — the Agent informs user that cloud password doesn't match,
+   device may have changed password)
+  connect_device(
+    camera_name="discovered_192_168_1_100",
+    password=<user_input>,
+    ip="192.168.1.100",
+    rtsp_port=554
+  )
+  → future sessions will auto-connect via Phase 0
+
+Step 2d — Authorization rejected (auth_rejected):
+  (conversationally — inform user that authorization was denied, cannot connect)
+  No further action available unless user provides password directly.
 ```
 
-### Cloud-authorized camera (pending_auth)
+### Cloud-authorized camera (handled internally)
+
+Cloud authorization is now fully handled inside `connect_device`. The Agent does **not** need to call any separate cloud auth tool. The `big_connect` and `poll_auth_status` tools have been deprecated as external MCP tools.
 
 ```text
-Step 1 — Connect without password:
-  connect_device(camera_name="discovered_192_168_1_100")
-  → success=false, status="pending_auth"
-  → error: "设备需要云端授权..."
-
-Step 2 — One-call authorization (recommended):
-  big_connect(name="discovered_192_168_1_100")
-  → blocks up to 10 minutes while polling cloud server
-  → success=true, status="authorized", device_pwd auto-written to config.yaml
-  → then call connect_device() to complete connection
-
-  Alternative — Manual polling:
-  poll_auth_status(camera_name="discovered_192_168_1_100")
-  → status="PENDING" → wait 5s, call again
-  → status="AUTHORIZED" → call connect_device() to complete connection
-  → status="REJECTED" → inform user
+# Cloud auth flow is automatic:
+connect_device(camera_name="discovered_192_168_1_100", sn_code="SN123456")
+→ internally: POST cloud auth request → poll every 5s for up to 10 min
+→ if authorized: auto-connect with cloud password, credentials persisted
+→ if rejected/timeout/error: return appropriate status for Agent to handle
 ```
 
 ---

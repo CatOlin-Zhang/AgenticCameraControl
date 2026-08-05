@@ -39,6 +39,7 @@ from .discovery import (
     SkChannelInfo,
     discover_sky_devices,
     send_tcp_command,
+    probe_device_sn,
     SK_TCP_PORT,
     SUBTYPE_NAMES,
 )
@@ -744,7 +745,7 @@ def _search_ws_discovery_devices(timeout: float) -> SearchResult:
         except Exception:
             pass
 
-    # ── Step 3: 免密 RTSP 探测分类 ──
+    # ── Step 3: 免密 RTSP 探测分类 + 创维私有协议 SN 补探测 ──
     devices = []
     for ip, info in sorted(found.items()):
         access = _probe_stream_access(ip, 554, "/stream1")
@@ -752,11 +753,14 @@ def _search_ws_discovery_devices(timeout: float) -> SearchResult:
             DeviceClass.DIRECT_CONNECT if access == "open"
             else DeviceClass.PASSWORD_REQUIRED
         )
+        # 通过创维私有协议补探测 SN（WS-Discovery 不提供 SN）
+        sn = _probe_sn_via_sky(ip, timeout=2.0)
         devices.append(DiscoveredDevice(
             ip=ip,
             onvif_port=info["onvif_port"],
             rtsp_port=554,
             device_class=device_class,
+            sn_code=sn,
             model=info["model"],
             manufacturer=info["brand"],
             discovery_method="ws_discovery",
@@ -861,6 +865,139 @@ def _parse_ws_probe_match(data: bytes) -> Optional[dict]:
     return {"onvif_port": onvif_port, "xaddrs": xaddrs, "brand": brand, "model": model}
 
 
+def _probe_sn_via_sky(ip: str, timeout: float = 3.0) -> str:
+    """通过创维私有协议单播探测设备 SN（WS-Discovery 补探测用）。
+
+    封装 discovery.py 的 probe_device_sn()，异常安全，失败返回空字符串。
+    """
+    try:
+        return probe_device_sn(ip=ip, timeout=timeout)
+    except Exception:
+        return ""
+
+
+def _cloud_auth_and_connect(
+    camera_name: str,
+    ip: str,
+    port: int,
+    sn_code: str,
+    rtsp_port: int,
+    rtsp_path: str,
+    username: str,
+    cached: Optional[CameraConfig] = None,
+) -> ConnectResult:
+    """内部函数：云端授权 + 自动连接。由 connect_device 在 pending_auth 场景调用。
+
+    流程：
+      1. 检查 SN → 2. POST 云端授权请求 → 3. 轮询等待结果（5s 间隔，最长 10 分钟）
+      4. 授权通过 → 用云端密码连接 → 注册凭据
+    """
+    # 1. 检查 SN 是否可用
+    if not sn_code:
+        return ConnectResult(
+            success=False, status="needs_password",
+            needs_password=True,
+            error_message=(
+                f"设备 {camera_name}({ip}) 无 SN，无法发起云端授权。"
+                f"请直接输入密码后调用 connect_device。"
+            ),
+        )
+
+    # 2. 向云端发起授权请求
+    cr = request_cloud_auth(sn_code)
+    if not cr.success:
+        # 云端不可达 / 网络错误 → 降级为本地流程
+        return ConnectResult(
+            success=False, status="needs_password",
+            needs_password=True,
+            error_message=(
+                f"云端授权服务不可用（{cr.error_message}）。"
+                f"请直接输入设备 {camera_name}({ip}) 的密码。"
+            ),
+        )
+
+    # 3. 先注册设备信息到 config.yaml（云端轮询需要 SN 查设备）
+    register_camera(
+        name=camera_name, ip=ip, port=port,
+        username=username, password="",
+        rtsp_port=rtsp_port, rtsp_path=rtsp_path,
+        device_class="password_required",
+        sn_code=sn_code,
+        connection_type=cached.connection_type if cached else "onvif",
+    )
+
+    # 4. 轮询等待授权结果（5s 间隔，最长 10 分钟 = 120 次）
+    poll_interval = 5
+    max_polls = 120
+    for _ in range(max_polls):
+        time.sleep(poll_interval)
+        result = poll_auth_status(camera_name)
+
+        if result.status == AuthStatus.AUTHORIZED:
+            # 5. 用云端下发的密码尝试连接
+            conn = _try_connect_with_password(
+                camera_name, ip, port, rtsp_port, rtsp_path,
+                username, result.device_pwd,
+            )
+            if conn.success:
+                # 连接成功 → 持久化凭据（含 SN）
+                register_camera(
+                    name=camera_name, ip=ip,
+                    port=conn.onvif_port or port,
+                    username=username, password=result.device_pwd,
+                    rtsp_port=rtsp_port, rtsp_path=rtsp_path,
+                    device_class="password_required",
+                    sn_code=sn_code,
+                    connection_type=cached.connection_type if cached else "onvif",
+                )
+                # 探测补光能力（失败不阻断）
+                _probe_and_save_illumination(
+                    camera_name, ip,
+                    conn.onvif_port or port,
+                    username, result.device_pwd, cached,
+                )
+                return conn
+            else:
+                # 云端密码连接失败 → 设备可能改过密码
+                return ConnectResult(
+                    success=False, status="cloud_pwd_failed",
+                    needs_password=True,
+                    error_message=(
+                        f"云端下发的密码连接设备 {camera_name}({ip}) 失败，"
+                        f"设备可能修改过密码。请输入正确密码。"
+                    ),
+                )
+
+        elif result.status == AuthStatus.REJECTED:
+            return ConnectResult(
+                success=False, status="auth_rejected",
+                error_message=(
+                    f"用户拒绝了设备 {camera_name}({ip}) 的云端授权请求，无法连接。"
+                ),
+            )
+
+        elif result.status == AuthStatus.ERROR:
+            return ConnectResult(
+                success=False, status="needs_password",
+                needs_password=True,
+                error_message=(
+                    f"云端授权出错（{result.message}）。"
+                    f"请直接输入设备 {camera_name}({ip}) 的密码。"
+                ),
+            )
+        # PENDING: 继续轮询
+
+    # 超时
+    return ConnectResult(
+        success=False, status="needs_password",
+        needs_password=True,
+        error_message=(
+            f"云端授权等待超时（10 分钟），用户未确认。"
+            f"请直接输入设备 {camera_name}({ip}) 的密码。"
+        ),
+    )
+
+
 def connect_device(
     camera_name: str,
     password: Optional[str] = None,
@@ -869,6 +1006,7 @@ def connect_device(
     rtsp_port: Optional[int] = None,
     rtsp_path: str = "/stream1",
     username: str = "admin",
+    sn_code: str = "",
 ) -> ConnectResult:
     """
     设备连接。流程：
@@ -876,7 +1014,11 @@ def connect_device(
     1. 如果 config.yaml 有缓存凭据 → 自动使用缓存密码连接（重试 3 次）
        多次重试仍失败 → 清除 config.yaml 中的注册信息，返回 needs_password
     2. 如果传入了 password → 使用提供的密码连接（单次尝试，不清除缓存）
-    3. 如果无密码且 device_class == "password_required" → 返回 needs_password，提示用户输入密码
+    3. 如果无密码且 device_class == "password_required" → 内部发起云端授权
+       云端同意 → 用云端密码自动连接并注册
+       云端拒绝 → 返回 auth_rejected
+       云端不可用 → 返回 needs_password，让用户直接输入
+       云端密码连接失败 → 返回 cloud_pwd_failed，让用户输入
     4. 如果无密码且非 password_required → 尝试免密拉流探测
     5. Agent 获取到密码后再次调用 connect_device(camera_name, password=xxx)
 
@@ -890,12 +1032,13 @@ def connect_device(
         rtsp_port:   RTSP 端口（默认 554）
         rtsp_path:   RTSP 路径（默认 /stream1）
         username:    登录用户名（默认 admin）
+        sn_code:     设备 SN（发现阶段获取，云端授权必需）
 
     Returns:
         ConnectResult:
             - success: 连接是否成功
             - auth_method: "password" 或 "direct"
-            - status: "connected" / "needs_password" / "failed"
+            - status: "connected" / "needs_password" / "auth_rejected" / "cloud_pwd_failed" / "failed"
             - needs_password: True 表示需要密码
             - error_message: 失败原因
     """
@@ -903,6 +1046,8 @@ def connect_device(
     cached = _find_cached_camera(camera_name)
 
     # 确定连接参数（缓存优先，参数兜底）
+    # SN 来源优先级：缓存 > 参数传入
+    effective_sn = (cached.sn_code if cached and cached.sn_code else "") or sn_code
     if cached and cached.ip:
         dev_ip = cached.ip
         dev_port = cached.port
@@ -952,7 +1097,7 @@ def connect_device(
                     username=dev_username, password=dev_pwd,
                     rtsp_port=dev_rtsp_port, rtsp_path=dev_rtsp_path,
                     device_class=dev_class or "password_required",
-                    sn_code=cached.sn_code if cached else "",
+                    sn_code=effective_sn or (cached.sn_code if cached else ""),
                     connection_type=cached.connection_type if cached else "onvif",
                 )
             # 连接成功后探测补光能力（失败不阻断）
@@ -982,16 +1127,12 @@ def connect_device(
             error_message=f"密码认证失败: {last_result.error_message}，请确认密码后重试",
         )
 
-    # ── Step 3: 无密码 → password_required 设备返回 pending_auth，引导云端授权 ──
+    # ── Step 3: 无密码 + password_required → 内部发起云端授权 ──
     if dev_class == "password_required":
-        return ConnectResult(
-            success=False,
-            status="pending_auth",
-            error_message=(
-                f"设备 {camera_name}({dev_ip}) 需要授权才能访问。"
-                f"请调用 big_connect(camera_name='{camera_name}') 发起云端授权，"
-                f"或提供密码后重新调用 connect_device。"
-            ),
+        return _cloud_auth_and_connect(
+            camera_name, dev_ip, dev_port, effective_sn,
+            dev_rtsp_port, dev_rtsp_path, dev_username,
+            cached=cached,
         )
 
     # ── Step 4: 非 password_required → 尝试免密拉流探测 ──
@@ -1039,15 +1180,11 @@ def connect_device(
         )
 
     if access == "auth_required":
-        # 需要密码 → 返回 pending_auth，引导云端授权
-        return ConnectResult(
-            success=False,
-            status="pending_auth",
-            error_message=(
-                f"设备 {camera_name}({dev_ip}) 需要授权才能访问。"
-                f"请调用 big_connect(camera_name='{camera_name}') 发起云端授权，"
-                f"或提供密码后重新调用 connect_device。"
-            ),
+        # 需要密码 → 内部发起云端授权
+        return _cloud_auth_and_connect(
+            camera_name, dev_ip, dev_port, effective_sn,
+            dev_rtsp_port, dev_rtsp_path, dev_username,
+            cached=cached,
         )
 
     # 设备不可达
