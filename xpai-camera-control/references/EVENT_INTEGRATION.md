@@ -2,7 +2,7 @@
 
 > **Audience:** Skill authors building upper-layer scenarios on top of this skill, external forwarders / agent-side module authors
 > **Consumption method:** Pure disk reads (no MCP dependency, no IPC) — any language / framework can integrate
-> **Skill package version:** 0.5.0 (schema 1.0)
+> **Skill package version:** 0.6.0 (schema 1.0)
 
 This skill writes alarm events as structured records to a local text file for consumption by other skills or external modules. This is the **only public contract** for external collaboration — internal protocols, RTSP addresses, credentials, and connection state are never exposed.
 

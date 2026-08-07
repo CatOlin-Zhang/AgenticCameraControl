@@ -4,7 +4,7 @@ description: Discover, connect, and control Skyworth cameras on the local networ
 license: MIT
 compatibility: Requires Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. Cameras must be on the same LAN for discovery.
 metadata:
-  version: "0.5.0"
+  version: "0.6.0"
 ---
 
 # Camera Control Skill
@@ -18,7 +18,6 @@ Trigger this skill when the user:
 - Asks to watch/guard a camera or check for motion, human, tamper, or other alarm events
 - Wants to adjust illumination mode (IR light, white light, night vision, auto-switch)
 - Mentions ONVIF, RTSP, IP camera, webcam, or specific camera brands
-- Wants to set up this skill as an MCP server for use with MCP-compatible clients
 
 ## Running Mode: MCP Server
 
@@ -45,7 +44,7 @@ python scripts/mcp_server.py
 }
 ```
 
-The MCP server exposes **15 tools** covering 6 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and return fields.
+The MCP server exposes **20 tools** covering 8 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and return fields.
 
 ### MCP-Only Interaction (Hard Rule)
 
@@ -95,10 +94,10 @@ For each discovered camera, call `connect_device()` to connect. **The specific c
 After a successful connection, perform streaming operations:
 - `capture_video_screenshot()` — captures a single frame from the RTSP stream and saves it as JPEG (uses OpenCV, auto-discards initial buffered frames for a clean capture)
 - `get_audio_video_stream()` — retrieves the RTSP stream URL and validates stream availability, returns codec/resolution/fps metadata
-- `toggle_recording()` — starts/stops local MP4 recording from the RTSP stream via OpenCV VideoWriter
+- `toggle_recording()` — starts/stops local MP4 recording from the RTSP stream via ffmpeg remux (`-c:v copy`)
 - `manage_storage_status()` — queries disk usage and configures storage path/format/policy
 
-Screenshot files are saved to `snapshots/` directory by default; recordings go to `recordings/`.
+Screenshot files are saved to `snapshots/` directory by default; recordings go to `vido/`.
 
 **Result delivery (when user wants to "see" a camera):**
 After capturing a screenshot and fetching the stream URL, the Agent **MUST** deliver both results to the user:
@@ -130,12 +129,15 @@ The following tools extend the skill's functionality beyond the core workflow. T
 |------|-------------|-------------|----------|
 | `manage_camera_events` | Alarm event receiving (motion, human, vehicle, tamper, …) with linked snapshots. Actions: `start` / `stop` / `poll` / `wait`. | Camera connected via `connect_device()` | [commands/events.md](references/commands/events.md) |
 | `manage_illumination` | Query & adjust camera illumination (15 parameters: daynight/filllight mode, brightness, timer, sensitivity). Dual-protocol: Skyworth private (TCP 9010) + ONVIF fallback. Actions: `get` / `set`. | Camera connected; capability auto-probed at connect time and cached in `config.yaml` (`illumination_modes`) | [commands/illumination.md](references/commands/illumination.md) |
+| `manage_image_settings` | Query & adjust image parameters (brightness, contrast, saturation, sharpness, flip, whitebalance, wdr, face/plate mode). Dual-channel: Skyworth private (TCP 9010) preferred, ONVIF Imaging fallback. Actions: `get` / `set`. | Camera connected | [commands/image_settings.md](references/commands/image_settings.md) |
+| `query_tracking_capabilities` | Query detection & tracking capabilities (human/vehicle/area) with current values and parameter ranges. | Camera connected | [commands/tracking.md](references/commands/tracking.md) |
+| `set_tracking` | Enable/disable detection & tracking features (human tracking, vehicle tracking, area detection). | Camera connected; modifies hardware settings | [commands/tracking.md](references/commands/tracking.md) |
 
-> **Note:** `manage_camera_events(action="start")` spawns a background listener thread — **requires explicit user confirmation** before calling. `manage_illumination(action="set")` modifies a hardware setting — also requires user confirmation. Cloud authorization is handled internally by `connect_device` (blocking call, may wait up to 10 minutes).
+> **Note:** `manage_camera_events(action="start")` spawns a background listener thread — **requires explicit user confirmation** before calling. `manage_illumination(action="set")` and `set_tracking` modify hardware settings — also require user confirmation. Cloud authorization is handled internally by `connect_device` (blocking call, may wait up to 10 minutes).
 
 ## Toolkit Modules
 
-6 modules exposed as MCP tools via `scripts/mcp_server.py`. For per-tool parameter signatures, return fields, and safety constraints: [commands/](references/commands/) — [device_mgmt.md](references/commands/device_mgmt.md) · [stream.md](references/commands/stream.md) · [ptz.md](references/commands/ptz.md) · [events.md](references/commands/events.md) · [illumination.md](references/commands/illumination.md).
+8 modules exposed as MCP tools via `scripts/mcp_server.py`. For per-tool parameter signatures, return fields, and safety constraints: [commands/](references/commands/) — [device_mgmt.md](references/commands/device_mgmt.md) · [stream.md](references/commands/stream.md) · [ptz.md](references/commands/ptz.md) · [events.md](references/commands/events.md) · [illumination.md](references/commands/illumination.md) · [image_settings.md](references/commands/image_settings.md) · [tracking.md](references/commands/tracking.md).
 
 | Module | Key Functions | Reference |
 |--------|--------------|----------|
@@ -144,8 +146,8 @@ The following tools extend the skill's functionality beyond the core workflow. T
 | `ptz` | `control_ptz`, `get_ptz_parameters`, `calibrate_ptz`, `stop_ptz` | [commands/ptz.md](references/commands/ptz.md) |
 | `events` | `manage_camera_events` (action: `start` / `stop` / `poll` / `wait`) | [commands/events.md](references/commands/events.md) |
 | `illumination` | `manage_illumination` (action: `get` / `set`) | [commands/illumination.md](references/commands/illumination.md) |
-
-Internal implementation modules (Skyworth private protocol discovery, TCP command channel, illumination probe) are **not exposed** — all their functionality is accessed through the MCP tools above.
+| `image_settings` | `manage_image_settings` (action: `get` / `set`) | [commands/image_settings.md](references/commands/image_settings.md) |
+| `tracking` | `query_tracking_capabilities`, `set_tracking` | [commands/tracking.md](references/commands/tracking.md) |
 
 ## Security Constraints
 
@@ -251,7 +253,7 @@ Camera configurations are saved in the skill's root directory under `config.yaml
 
 ## References
 
-- [references/commands/](references/commands/) — Per-tool parameter signatures, return fields, and safety constraints (split by module: device_mgmt / stream / ptz / events / illumination)
+- [references/commands/](references/commands/) — Per-tool parameter signatures, return fields, and safety constraints (split by module: device_mgmt / stream / ptz / events / illumination / image_settings / tracking)
 - [references/WORKFLOW.md](references/WORKFLOW.md) — Complete tool-call sequences for core workflow (Phase 0–4), including [auth flows](references/WORKFLOW.md#phase-2--connect--authorize-detailed-tool-calls) and [PTZ degraded examples](references/WORKFLOW.md#phase-4--ptz-control-detailed-tool-calls)
 - [references/ARCHITECTURE.md](references/ARCHITECTURE.md) — [Connection & auth flow](references/ARCHITECTURE.md#connection--authorization-flow), [device discovery protocols](references/ARCHITECTURE.md#device-discovery), [PTZ dual-protocol architecture](references/ARCHITECTURE.md#ptz-dual-protocol-architecture), [event monitoring architecture](references/ARCHITECTURE.md#event-monitoring-architecture-guardian-mode-foundation), [illumination dual-protocol architecture](references/ARCHITECTURE.md#illumination-mode-control-architecture), [known issues](references/ARCHITECTURE.md#known-issues--implementation-notes)
 - [references/CONFIG.md](references/CONFIG.md) — [config.yaml full schema](references/CONFIG.md#full-schema) and [example configs](references/CONFIG.md#example-configs)

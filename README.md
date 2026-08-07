@@ -8,7 +8,7 @@
 
 局域网 IP 摄像头的智能控制系统。支持 ONVIF 协议摄像头和 USB 摄像头的自动发现、连接、视频流拉取、云台控制、设备管理等功能。
 
-核心模块 `xpai-camera-control` 可作为 MCP (Model Context Protocol) Server 运行，将 17 个摄像头控制工具暴露给 AI Agent 使用。
+核心模块 `xpai-camera-control` 可作为 MCP (Model Context Protocol) Server 运行，将 20 个摄像头控制工具暴露给 AI Agent 使用。
 
 ### 功能概览
 
@@ -20,6 +20,8 @@
 | **云台控制** | 8 方向移动、物理极限保护、云台校准 |
 | **事件监听** | 报警事件订阅（移动/人形/遮挡等）、事件联动抓拍、本地事件存储 |
 | **补光控制** | 日夜模式切换、补光灯模式/亮度/定时器/灵敏度调节（创维私有协议 + ONVIF 回退） |
+| **图像设置** | 亮度/对比度/饱和度/锐度/翻转/白平衡/宽动态等参数调节（创维私有协议优先 + ONVIF 回退） |
+| **侦测追踪** | 人形追踪/车辆追踪/区域检测能力查询与开关控制（创维私有协议） |
 
 ### 快速开始
 
@@ -60,7 +62,9 @@ AgenticCameraControl/
 │   │   │   ├── stream.py         # 音视频流与存储
 │   │   │   ├── ptz.py            # 云台控制
 │   │   │   ├── events.py         # 报警事件接收与本地存储
-│   │   │   └── illumination.py   # 补光/夜视模式控制
+│   │   │   ├── illumination.py   # 补光/夜视模式控制
+│   │   ├── image_settings.py # 图像参数设置
+│   │   └── tracking.py       # 侦测追踪控制
 │   ├── references/               # 技术参考文档
 │   │   └── commands/             # 各模块工具签名与参数说明
 │   ├── SKILL.md                  # Agent 技能描述文件
@@ -78,7 +82,7 @@ AgenticCameraControl/
 
 ### 工具模块
 
-6 个模块，共 17 个 MCP 工具：
+8 个模块，共 20 个 MCP 工具：
 
 | 模块 | 说明 | 参考文档 |
 |------|------|----------|
@@ -88,7 +92,9 @@ AgenticCameraControl/
 | `ptz.py` | 云台方向控制/校准/停止 | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md) |
 | `events.py` | 报警事件订阅、联动抓拍、事件存储与消费 | [commands/events.md](xpai-camera-control/references/commands/events.md) |
 | `illumination.py` | 补光/夜视模式查询与控制（双协议） | [commands/illumination.md](xpai-camera-control/references/commands/illumination.md) |
-| `device_mgmt.py` (云端授权) | 云端授权状态轮询、一站式授权连接 | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md) |
+| `image_settings.py` | 图像参数查询与设置（双通道） | [commands/image_settings.md](xpai-camera-control/references/commands/image_settings.md) |
+| `tracking.py` | 侦测追踪能力查询与开关控制 | [commands/tracking.md](xpai-camera-control/references/commands/tracking.md) |
+| `device_mgmt.py` (云端授权) | 已内部化，由 `connect_device` 自动处理 | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md) |
 
 ### 安全边界
 
@@ -98,7 +104,7 @@ AgenticCameraControl/
 |------|------|
 | 请求-响应模式 | 工具默认为同步请求-响应；唯一例外是事件监听后台线程，仅在用户显式开启后运行，且行为限于报警订阅与白名单路径写入，可随时关闭 |
 | 仅局域网通信 | 所有网络流量限于局域网内，无外网通信 |
-| 文件写入受限 | 仅写入 `config.yaml`、`snapshots/`、`recordings/`、`events/` |
+| 文件写入受限 | 仅写入 `config.yaml`、`snapshots/`、`vido/`、`events/` |
 | 无系统修改 | 不修改注册表、环境变量、系统服务 |
 | 无进程派生 | 不启动子进程或外部程序 |
 
@@ -118,7 +124,7 @@ AgenticCameraControl/
 
 An intelligent control system for IP cameras on local networks. Supports auto-discovery, connection, video streaming, PTZ control, and device management for ONVIF-compliant cameras and USB webcams.
 
-The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Server, exposing 17 camera control tools to AI Agents.
+The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Server, exposing 20 camera control tools to AI Agents.
 
 ### Features
 
@@ -130,6 +136,8 @@ The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Se
 | **PTZ Control** | 8-directional movement, physical limit guard, calibration |
 | **Event Monitoring** | Alarm event subscription (motion/human/tamper, etc.), snapshot linkage on event, local event store |
 | **Illumination Control** | Day/night mode switching, fill-light mode/brightness/timer/sensitivity adjustment (Skyworth private protocol + ONVIF fallback) |
+| **Image Settings** | Brightness/contrast/saturation/sharpness/flip/whitebalance/WDR adjustment (Skyworth private preferred + ONVIF Imaging fallback) |
+| **Detection & Tracking** | Human tracking, vehicle tracking, area detection capability query and toggle (Skyworth private protocol) |
 
 ### Quick Start
 
@@ -170,7 +178,9 @@ AgenticCameraControl/
 │   │   │   ├── stream.py         # Audio/video streaming & storage
 │   │   │   ├── ptz.py            # PTZ control
 │   │   │   ├── events.py         # Alarm event receiving & local store
-│   │   │   └── illumination.py   # Illumination / night-vision control
+│   │   │   ├── illumination.py   # Illumination / night-vision control
+│   │   ├── image_settings.py # Image parameter settings
+│   │   └── tracking.py       # Detection & tracking control
 │   ├── references/               # Technical reference docs
 │   │   └── commands/             # Per-module tool signatures & parameters
 │   ├── SKILL.md                  # Agent skill description file
@@ -188,7 +198,7 @@ AgenticCameraControl/
 
 ### Toolkit Modules
 
-6 modules, 17 MCP tools in total:
+8 modules, 20 MCP tools in total:
 
 | Module | Description | Reference |
 |--------|-------------|-----------|
@@ -198,7 +208,9 @@ AgenticCameraControl/
 | `ptz.py` | PTZ directional control / calibration / stop | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md) |
 | `events.py` | Alarm event subscription, snapshot linkage, event store & consumption | [commands/events.md](xpai-camera-control/references/commands/events.md) |
 | `illumination.py` | Illumination / night-vision mode query & control (dual-protocol) | [commands/illumination.md](xpai-camera-control/references/commands/illumination.md) |
-| `device_mgmt.py` (Cloud Auth) | Cloud auth status polling, one-call authorization flow | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md) |
+| `image_settings.py` | Image parameter query & adjustment (dual-channel) | [commands/image_settings.md](xpai-camera-control/references/commands/image_settings.md) |
+| `tracking.py` | Detection & tracking capability query and toggle | [commands/tracking.md](xpai-camera-control/references/commands/tracking.md) |
+| `device_mgmt.py` (Cloud Auth) | Internalized — handled automatically by `connect_device` | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md) |
 
 ### Security Boundary
 
@@ -208,7 +220,7 @@ This skill package operates within strict security constraints to ensure no unex
 |-----------|-------------|
 | Request-response by default | Tools are synchronous request-response. The only exception is the event listener background thread, which runs only after explicit user enablement, is limited to alarm subscription plus whitelist-path writes, and can be stopped at any time. |
 | LAN-only communication | All network traffic stays within the local network. No internet communication. |
-| Restricted file writes | Only writes to `config.yaml`, `snapshots/`, `recordings/`, and `events/` |
+| Restricted file writes | Only writes to `config.yaml`, `snapshots/`, `vido/`, and `events/` |
 | No system modifications | No registry changes, environment variable modifications, or system service installations. |
 | No process spawning | No subprocesses or external programs are launched. |
 

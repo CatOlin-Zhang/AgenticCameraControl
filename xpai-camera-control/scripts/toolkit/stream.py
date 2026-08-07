@@ -455,6 +455,37 @@ _storage_config: Dict[str, dict] = {}     # camera_name -> {"path": str, "format
 _VALID_RTSP_TRANSPORTS = frozenset({"tcp", "udp"})
 
 
+def _find_ffmpeg() -> Optional[str]:
+    """查找 ffmpeg 二进制：系统 PATH 优先，imageio-ffmpeg 包兜底。"""
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and os.path.isfile(exe):
+            return exe
+    except ImportError:
+        pass
+    return None
+
+
+def _find_ffprobe() -> Optional[str]:
+    """查找 ffprobe 二进制：系统 PATH 优先，imageio-ffmpeg 同目录兜底。"""
+    exe = shutil.which("ffprobe")
+    if exe:
+        return exe
+    # imageio-ffmpeg 的 ffprobe 与 ffmpeg 在同一 bin 目录
+    ffmpeg_exe = _find_ffmpeg()
+    if ffmpeg_exe:
+        probe = os.path.join(os.path.dirname(ffmpeg_exe), "ffprobe")
+        if os.name == "nt":
+            probe += ".exe"
+        if os.path.isfile(probe):
+            return probe
+    return None
+
+
 def _resolve_transport_plan(rtsp_transport: Optional[Any]) -> List[str]:
     """根据入参解析出重试顺序。
 
@@ -479,13 +510,14 @@ def _resolve_transport_plan(rtsp_transport: Optional[Any]) -> List[str]:
 
 def _probe_dimensions(rtsp_url: str, transport_plan: List[str], timeout: int = 15) -> Tuple[int, int]:
     """ffprobe 拉一次流元数据。失败不报错，返回 (0, 0)。"""
-    if not shutil.which("ffprobe"):
+    ffprobe_exe = _find_ffprobe()
+    if not ffprobe_exe:
         return 0, 0
     for transport in transport_plan:
         try:
             probe = subprocess.run(
                 [
-                    "ffprobe",
+                    ffprobe_exe,
                     "-rtsp_transport", transport,
                     "-timeout", "10",
                     "-v", "quiet",
@@ -525,7 +557,7 @@ def toggle_recording(
     Args:
         camera_name:    摄像头名称
         action:         RecordingAction.START 开始 / STOP 停止 / STATUS 查询
-        save_path:      录像保存目录（默认 recordings/）
+        save_path:      录像保存目录（默认 vido/）
         rtsp_transport: "tcp"/"udp" 单次，或可迭代对象表示重试顺序，None=默认 [tcp, udp]
         duration:       录像时长（秒），仅在 START 时有效；设置后后台定时器自动停止
 
@@ -626,10 +658,11 @@ def toggle_recording(
             _recording_transport = ""
 
         # 检查 ffmpeg 是否可用
-        if not shutil.which("ffmpeg"):
+        ffmpeg_exe = _find_ffmpeg()
+        if not ffmpeg_exe:
             return RecordingResult(
                 success=False, is_recording=False,
-                error_message="ffmpeg 未安装，无法录像",
+                error_message="ffmpeg 未安装（需要 imageio-ffmpeg 或系统安装），无法录像",
             )
 
         # 查找摄像头配置
@@ -658,7 +691,7 @@ def toggle_recording(
 
         # 确定保存目录
         recording_dir = save_path or str(
-            Path(__file__).resolve().parent.parent.parent / "recordings"
+            Path(__file__).resolve().parent.parent.parent / "vido"
         )
         try:
             os.makedirs(recording_dir, exist_ok=True)
@@ -701,7 +734,7 @@ def toggle_recording(
         for transport in ([working_transport] + [t for t in transport_plan if t != working_transport]):
             # 构造 ffmpeg 命令
             ffmpeg_cmd = [
-                "ffmpeg", "-y",
+                ffmpeg_exe, "-y",
                 "-rtsp_transport", transport,
                 "-timeout", "10",
                 "-i", rtsp_url,
@@ -853,7 +886,7 @@ def manage_storage_status(
 
     # ── 确保有默认配置 ──
     if camera_name not in _storage_config:
-        default_dir = os.path.join(os.path.dirname(__file__), "..", "..", "recordings")
+        default_dir = os.path.join(os.path.dirname(__file__), "..", "..", "vido")
         _storage_config[camera_name] = {
             "path": default_dir,
             "format": "mp4",

@@ -10,10 +10,10 @@
 
 ### Cloud Authorization（云端授权 — 已实现基础能力）
 
-> **Status:** 云端授权基础流程已实现。`poll_auth_status` 和 `big_connect` 已作为 MCP 工具暴露，支持与云端服务器的签名通信（HTTP + scSign）。以下为未实现的优化项。
+> **Status:** 云端授权基础流程已实现。v0.6.0 已将 `poll_auth_status` 和 `big_connect` 降级为 `connect_device` 内部函数，云端授权流程完全封装在连接工具内部。以下为未实现的优化项。
 
 - [x] **云端授权服务器对接** — ✅ v0.5.0 已实现。`poll_auth_status`（单次查询）和 `big_connect`（一站式授权）已作为 MCP 工具暴露，支持签名请求、自动密码持久化
-- [ ] **授权流程内部化** — 云端授权作为 `connect_device` 的内部环节（密码认证失败 → 自动发起云端授权 → 轮询状态 → 获取密码），不作为独立 MCP 工具暴露给 Agent；现有 `poll_auth_status` / `big_connect` 两个 MCP 工具降级为内部函数
+- [x] **授权流程内部化** — ✅ v0.6.0 已实现。云端授权作为 `connect_device` 的内部环节，`poll_auth_status` / `big_connect` 已降级为内部函数，Agent 无需感知
 - [x] **授权状态轮询** — ✅ `big_connect` 内部已实现 5s×120=600s 轮询循环
 - [ ] **本地授权兼容降级** — 云端不可达时自动降级到本地 `local_auth_server`（如已启动），两者均不可达时返回 `needs_password` 提示用户手动输入
 
@@ -39,7 +39,7 @@ Agent 首次收到监控请求时，执行一次能力探测决策树，选取�
 
 ### MCP Tool Surface Optimization（MCP 工具面优化）
 
-> **Status:** 评估完成，待实施。当前 17 个 MCP 工具，目标通过参数裁剪、描述精简和子流程内部化降低 Agent 上下文开销。
+> **Status:** 评估完成，待实施。当前 20 个 MCP 工具，目标通过参数裁剪、描述精简和子流程内部化降低 Agent 上下文开销。
 
 #### Phase A — Schema 瘦身（零行为变更）
 
@@ -50,7 +50,7 @@ Agent 首次收到监控请求时，执行一次能力探测决策树，选取�
 
 #### Phase B — 子流程内部化（行为变更）
 
-- [ ] **授权流程内部化** — `request_cloud_auth` + `poll_auth_status` 降级为 `connect_device` 内部环节；`connect_device` 返回 `pending_auth` 时 Agent 只需告知用户打开授权链接并重新调用，内部完成轮询循环（5s×24=120s）；MCP 工具从 17 降至 15
+- [x] **授权流程内部化** — ✅ v0.6.0 已实现。`request_cloud_auth` + `poll_auth_status` 已降级为 `connect_device` 内部环节
 - [ ] **注册自动化** — `register_camera` 降级为 `connect_device` 的内部副作用（连接成功后自动持久化凭据到 config.yaml）；MCP 工具从 15 降至 14
 - [ ] **设备列表合并** — `get_registered_cameras` 功能合并到 `search_devices`（无参调用时先返回已注册列表，再补充分发现结果）；MCP 工具从 14 降至 13
 
@@ -75,7 +75,7 @@ Agent 首次收到监控请求时，执行一次能力探测决策树，选取�
 > **Status:** 评估完成，暂缓实施。当前 `error_message` 自然语言 + `status` + `degraded` 三位一体已覆盖 90% 场景，大模型 Agent 可直接理解转述。当小模型/多 Agent 协作成为主力场景时再启动。
 
 - **现有错误传递机制：**
-- `success: bool` + `error_message: str` — 全部 17 个工具
+- `success: bool` + `error_message: str` — 全部 20 个工具
 - `status: str`（`pending_auth` / `needs_password` / `failed`）— `connect_device`
 - `degraded: bool` + `degrade_reason: str` — `control_ptz`
 

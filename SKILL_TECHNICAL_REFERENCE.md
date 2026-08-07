@@ -1,6 +1,6 @@
 # xpai-camera-control 技能包工具清单与调用关系
 
-> 版本: 0.5.0 | 传输协议: MCP stdio | 生成日期: 2026-08-03
+> 版本: 0.6.0 | 传输协议: MCP stdio | 生成日期: 2026-08-07
 
 ---
 
@@ -8,12 +8,14 @@
 
 | 分类 | MCP 外部工具 | 内部函数（不暴露给 Agent） |
 |------|:---:|:---:|
-| 设备管理 (device_mgmt) | 7 | 6 |
-| 音视频流 (stream) | 4 | 0 |
+| 设备管理 (device_mgmt) | 5 | 8 |
+| 音视频流 (stream) | 6 | 0 |
 | 云台控制 (ptz) | 4 | 1 |
 | 事件监听 (events) | 1 | 5 |
 | 补光控制 (illumination) | 1 | 6 |
-| **合计** | **17** | **18+** |
+| 图像设置 (image_settings) | 1 | 3 |
+| 侦测追踪 (tracking) | 2 | 3 |
+| **合计** | **20** | **26+** |
 
 > 注: `discovery.py` 中的 `send_tcp_command`、`discover_sky_devices` 等为内部函数，由 device_mgmt / ptz / illumination 等模块间接调用，不注册为 MCP 工具。
 
@@ -27,33 +29,28 @@
 |---|--------|------|----------|
 | 1 | `get_registered_cameras` | 从 config.yaml 加载所有已注册摄像头配置 | 无 |
 | 2 | `register_camera` | 将摄像头凭据持久化到 config.yaml | name(必填), ip, port, username, password, rtsp_port, rtsp_path, device_class, sn_code, pkdk 等 |
-| 3 | `search_devices` | 搜索局域网摄像头（WS-Discovery / 创维私有 / USB） | method(ws_discovery\|sky_discovery\|usb), timeout |
-| 4 | `connect_device` | 连接摄像头（自动缓存凭据、探测 ONVIF 端口） | camera_name(必填), password, ip, port, rtsp_port, rtsp_path, username |
+| 3 | `search_devices` | 搜索局域网摄像头（WS-Discovery / 创维私有 / USB） | timeout |
+| 4 | `connect_device` | 连接摄像头（自动缓存凭据、探测 ONVIF 端口、内部云端授权） | camera_name(必填), password, ip, port, rtsp_port, rtsp_path, username, sn_code |
 | 5 | `disconnect_device` | 断开连接并释放资源 | camera_name(必填) |
-
-### 2.1b 云端授权 — `device_mgmt.py`
-
-| # | 工具名 | 功能 | 关键参数 |
-|---|--------|------|----------|
-| 6 | `poll_auth_status` | 轮询云端授权状态，单次查询 | camera_name(必填) |
-| 7 | `big_connect` | 一站式云端授权：发起请求 + 轮询结果（最长 10 分钟）+ 自动连接 | name(可选，空时自动选择) |
 
 ### 2.2 音视频流 — `stream.py`
 
 | # | 工具名 | 功能 | 关键参数 |
 |---|--------|------|----------|
-| 8 | `get_audio_video_stream` | 获取实时视频流 URL 及元数据 | camera_name(必填), sub_stream |
-| 9 | `capture_video_screenshot` | 截取当前画面保存为 JPEG | camera_name(必填), save_path |
-| 10 | `toggle_recording` | 启动/停止本地录像 (MP4) | camera_name(必填), action(start\|stop), save_path |
-| 11 | `manage_storage_status` | 查询/设置存储路径、格式与策略 | camera_name(必填), action(query\|set), path, format, policy |
+| 6 | `get_audio_video_stream` | 获取实时视频流 URL 及元数据 | camera_name(必填), sub_stream |
+| 7 | `capture_video_screenshot` | 截取当前画面保存为 JPEG | camera_name(必填), save_path |
+| 8 | `toggle_recording` | 启动/停止/查询本地录像 (MP4, ffmpeg remux) | camera_name(必填), action(start\|stop\|status), save_path, duration |
+| 9 | `manage_storage_status` | 查询/设置存储路径、格式与策略 | camera_name(必填), action(query\|set), path, format, policy |
+| 10 | `start_webrtc_stream` | 启动 go2rtc WebRTC 实时预览 | camera_name(必填), sub_stream, port |
+| 11 | `stop_webrtc_stream` | 停止 go2rtc WebRTC 转流 | 无 |
 
 ### 2.3 云台控制 — `ptz.py`
 
 | # | 工具名 | 功能 | 关键参数 |
 |---|--------|------|----------|
-| 12 | `control_ptz` | 步进式控制云台方向（8方向，内置物理极限守护） | camera_name(必填), direction, speed, duration_seconds |
+| 12 | `control_ptz` | 步进式控制云台方向（8方向+变焦，内置物理极限守护） | camera_name(必填), direction, speed, duration_seconds, degrees |
 | 13 | `get_ptz_parameters` | 获取云台当前位置、范围和运动状态 | camera_name(必填) |
-| 14 | `calibrate_ptz` | 执行云台物理校准（回初始位标定零位，10–30s） | camera_name(必填) |
+| 14 | `calibrate_ptz` | 执行云台物理校准（回初始位标定零位，10–30s） | camera_name(必填), action(set_home\|go_home) |
 | 15 | `stop_ptz` | 立即停止云台所有移动 | camera_name(必填) |
 
 ### 2.4 事件监听 — `events.py`
@@ -66,7 +63,20 @@
 
 | # | 工具名 | 功能 | 关键参数 |
 |---|--------|------|----------|
-| 17 | `manage_illumination` | 统一补光入口（action 切换查询/设置，双协议） | action(get\|set), camera_name, daynightmode, filllightmode, duration, brightnessmode, brightness, begintime, endtime, repeatdays, enable, irmode, irbrightness, whiteonvalue, whiteoffvalue, ironvalue, iroffvalue |
+| 17 | `manage_illumination` | 统一补光入口（action 切换查询/设置，双协议） | action(get\|set), camera_name, daynightmode, filllightmode, duration, brightnessmode, brightness, irmode, irbrightness, begintime, endtime, repeatdays, enable, whiteonvalue, whiteoffvalue, ironvalue, iroffvalue |
+
+### 2.6 图像设置 — `image_settings.py`
+
+| # | 工具名 | 功能 | 关键参数 |
+|---|--------|------|----------|
+| 18 | `manage_image_settings` | 图像参数统一入口（get/set，双通道） | action(get\|set), camera_name, brightness, contrast, saturation, sharpness, flip, whitebalance, wdr, face_mode, plate_mode, restore_default |
+
+### 2.7 侦测追踪 — `tracking.py`
+
+| # | 工具名 | 功能 | 关键参数 |
+|---|--------|------|----------|
+| 19 | `query_tracking_capabilities` | 查询侦测追踪能力及当前配置值 | camera_name(必填), detect_type(human\|vehicle\|area\|all) |
+| 20 | `set_tracking` | 开启/关闭侦测追踪功能 | camera_name(必填), detect_type(human\|vehicle\|area), enable, tracking, sensitivity_level |
 
 ---
 
@@ -89,12 +99,15 @@
 
 | 函数名 | 功能 | 调用者 |
 |--------|------|--------|
+| `request_cloud_auth` | 发起云端授权请求（内部函数，v0.6.0 降级） | `connect_device` 内部自动调用 |
+| `poll_auth_status` | 轮询云端授权状态（内部函数，v0.6.0 降级） | `connect_device` 内部自动调用 |
+| `big_connect` | 一站式云端授权（内部函数，v0.6.0 降级） | `connect_device` 内部自动调用 |
 | `_build_rtsp_url` | 构造完整 RTSP URL（自动注入凭据） | `get_audio_video_stream`、`capture_video_screenshot` |
 | `_onvif_digest_auth_header` | 生成 ONVIF WS-UsernameToken SOAP Header | `_onvif_post_with_auth` |
 | `_onvif_post_with_auth` | POST SOAP 到 ONVIF endpoint（自动注入鉴权） | 事件监听 ONVIF 订阅/拉取、illumination ONVIF 回退 |
 | `_probe_onvif_port` | 探测设备真实 ONVIF 服务端口 | `connect_device`、`start_event_monitor` |
 | `_probe_stream_access` | 探测 RTSP 流是否可访问 | `connect_device`、`search_devices`(WS) |
-| `_find_cached_camera` | 从 config.yaml 查找指定摄像头配置 | `connect_device`、流/录像/事件/补光工具 |
+| `_find_cached_camera` | 从 config.yaml 查找指定摄像头配置 | `connect_device`、流/录像/事件/补光/图像/追踪工具 |
 | `_probe_and_save_illumination` | 连接后探测并持久化补光能力 | `connect_device` |
 
 ### 3.4 Events 模块
@@ -117,6 +130,22 @@
 | `_sk_set_filllight` | 设置补光参数 (SK_SETTING_SET_FILLLIGHT) | `manage_illumination`(set) |
 | `_send_sk_filllight` | 通过 TCP 通道发送补光命令 | `_sk_get/set_filllight*` |
 | `_get_device_connection` | 获取设备连接信息 | `_send_sk_filllight` |
+
+### 3.6 Image Settings 模块
+
+| 函数名 | 功能 | 调用者 |
+|--------|------|--------|
+| `_sk_get_image_option` | 查询图像参数能力 (SK HTTP) | `manage_image_settings`(get) |
+| `_sk_get_image` | 查询当前图像设置 (SK HTTP) | `manage_image_settings`(get/set) |
+| `_sk_set_image` | 设置图像参数 (SK HTTP) | `manage_image_settings`(set) |
+
+### 3.7 Tracking 模块
+
+| 函数名 | 功能 | 调用者 |
+|--------|------|--------|
+| `_sk_get_detect_option` | 查询侦测追踪能力 (SK HTTP) | `manage_tracking`(get) |
+| `_sk_get_detect` | 查询当前侦测设置 (SK HTTP) | `manage_tracking`(get/set) |
+| `_sk_set_detect` | 设置侦测追踪参数 (SK HTTP) | `manage_tracking`(set) |
 
 
 ## 四、调用关系图
@@ -151,17 +180,11 @@
 │  │                        ├─→ _probe_stream_access              │   │
 │  │                        ├─→ _probe_and_save_illumination      │   │
 │  │                        │     └─→ probe_illumination_capability│  │
+│  │                        ├─→ request_cloud_auth (内部)       │   │
+│  │                        │     └─→ poll_auth_status (内部轮询) │   │
 │  │                        └─→ register_camera (自动缓存)        │   │
 │  │                                                              │   │
 │  │  [MCP] disconnect_device ──→ _connected_devices.pop()        │   │
-│  │                                                              │   │
-│  │  [MCP] poll_auth_status ──→ get_registered_cameras           │   │
-│  │                               ──→ get_or_create_claw_id      │   │
-│  │                               ──→ HTTP GET checkAuth         │   │
-│  │                               ──→ register_camera (授权通过时) │   │
-│  │  [MCP] big_connect ─┬─→ _resolve_connect_target              │   │
-│  │                     ├─→ request_cloud_auth (POST 发起授权)   │   │
-│  │                     └─→ poll_auth_status (轮询 5s×120)      │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                     │
 │  ┌─── stream ───────────────────────────────────────────────────┐   │
@@ -170,9 +193,10 @@
 │  │                                 ──→ cv2.VideoCapture          │   │
 │  │  [MCP] capture_video_screenshot ──→ _build_rtsp_url          │   │
 │  │                                   ──→ cv2.VideoCapture/Write  │   │
-│  │  [MCP] toggle_recording ──→ get_audio_video_stream (内部复用) │   │
-│  │                           ──→ cv2.VideoWriter                 │   │
+│  │  [MCP] toggle_recording ──→ ffmpeg 子进程 (-c:v copy remux)  │   │
 │  │  [MCP] manage_storage_status ──→ 直接操作文件系统             │   │
+│  │  [MCP] start_webrtc_stream ──→ go2rtc 子进程                  │   │
+│  │  [MCP] stop_webrtc_stream ──→ 终止 go2rtc 进程              │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                     │
 │  ┌─── ptz ──────────────────────────────────────────────────────┐   │
@@ -232,6 +256,22 @@
 │  │    ├─ 尝试 TCP: send_tcp_command (SK_SETTING_GET_FILLLIGHT_OPTION)│
 │  │    └─ 回退 ONVIF: _imaging_post (GetMoveOptions)             │   │
 │  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  ┌─── image_settings ─────────────────────────────────────────┐   │
+│  │  [MCP] manage_image_settings                                │   │
+│  │    ├─ 路由: SK HTTP 私有协议 (TCP 9010) 优先           │   │
+│  │    │     ├─ _sk_get_image_option → capabilities             │   │
+│  │    │     ├─ _sk_get_image → current_settings                │   │
+│  │    │     └─ _sk_set_image (GET→merge→SET)                  │   │
+│  │    └─ 路由: ONVIF Imaging Service 回退                 │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  ┌─── tracking ───────────────────────────────────────────────┐   │
+│  │  [MCP] query_tracking_capabilities                          │   │
+│  │    └─ _sk_get_detect_option → 侦测能力 + 当前值            │   │
+│  │  [MCP] set_tracking                                         │   │
+│  │    └─ _sk_set_detect (enable/tracking/sensitivity)          │   │
+│  └──────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
 
 ```
@@ -249,6 +289,10 @@ events      ──imports──→ device_mgmt (_connected_devices, _find_cached
 events      ──imports──→ stream      (capture_video_screenshot — 联动快照)
 illumination──imports──→ discovery   (send_tcp_command, SK_TCP_PORT)
 illumination──imports──→ device_mgmt (_connected_devices, _find_cached_camera, _onvif_post_with_auth)
+image_settings──imports→ discovery   (send_tcp_command, SK_TCP_PORT)
+image_settings──imports→ device_mgmt (_connected_devices, _find_cached_camera, _onvif_post_with_auth)
+tracking    ──imports──→ discovery   (send_tcp_command, SK_TCP_PORT)
+tracking    ──imports──→ device_mgmt (_connected_devices, _find_cached_camera)
 ```
 
 ---
@@ -266,6 +310,9 @@ illumination──imports──→ device_mgmt (_connected_devices, _find_cached
 | `_move_to_position` | ❌ 不支持 | `SK_SETTING_SET_PTZ cmd=move` |
 | `manage_camera_events` | `CreatePullPointSubscription` + `PullMessages` | RTSP interleaved channel 0x65 报警 JSON |
 | `manage_illumination` | `GetMoveOptions` / `GetImagingSettings` / `SetImagingSettings` (回退) | `SK_SETTING_GET_FILLLIGHT_OPTION` / `GET_FILLLIGHT` / `SET_FILLLIGHT` (主路径, always-try-TCP) |
+| `manage_image_settings` | `GetImagingSettings` / `SetImagingSettings` (回退) | `SK_SETTING_GET_IMAGE_OPTION` / `GET_IMAGE` / `SET_IMAGE` (主路径, always-try-TCP) |
+| `query_tracking_capabilities` | ❌ 不支持 | `SK_SETTING_GET_DETECT_OPTION` / `GET_DETECT` (SK HTTP) |
+| `set_tracking` | ❌ 不支持 | `SK_SETTING_SET_DETECT` (SK HTTP) |
 
 ---
 
@@ -278,3 +325,5 @@ illumination──imports──→ device_mgmt (_connected_devices, _find_cached
 | `connect_device` | MCP 工具 | 密码认证失败时提示用户输入正确密码 |
 | `manage_camera_events` (start) | MCP 工具 | 后台线程仅用户显式确认后启动；行为限于报警订阅 + 白名单路径写入 |
 | `manage_illumination` (set) | MCP 工具 | 硬件参数修改，需用户确认；set 操作自动 GET→merge→SET，不覆盖未指定参数 |
+| `manage_image_settings` (set) | MCP 工具 | 硬件参数修改，需用户确认；读-校验-合并-写-回读 |
+| `set_tracking` | MCP 工具 | 硬件设置修改，需用户确认；修改侦测追踪功能开关 |

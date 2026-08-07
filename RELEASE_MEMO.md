@@ -1,6 +1,46 @@
 # xpai-camera-control 发布备忘录
 
-> **当前版本：0.5.0** | 传输协议: MCP stdio | MCP 工具数: 17
+> **当前版本：0.6.0** | 传输协议: MCP stdio | MCP 工具数: 20
+
+---
+
+## v0.6.0 变更记录（2026-08-07）
+
+### 新增：图像参数设置模块 (`image_settings.py`)
+
+| 变更 | 说明 |
+|---|---|
+| 新 MCP 工具 `manage_image_settings` | 图像参数统一入口，action 切换 get/set，支持 brightness/contrast/saturation/sharpness/flip/whitebalance/wdr/face_mode/plate_mode |
+| 双通道策略 | SK HTTP 私有协议 (TCP 9010) 优先 → ONVIF Imaging Service 回退 |
+
+### 新增：侦测追踪控制模块 (`tracking.py`)
+
+| 变更 | 说明 |
+|---|---|
+| 新 MCP 工具 `query_tracking_capabilities` | 查询侦测追踪能力（人形/车辆/区域）及当前配置值 |
+| 新 MCP 工具 `set_tracking` | 开启/关闭侦测追踪功能，支持 enable/tracking/sensitivity_level |
+
+### 变更：云端授权内部化
+
+| 变更 | 说明 |
+|---|---|
+| `poll_auth_status` 降级为内部函数 | 云端授权流程完全封装在 `connect_device` 内部，Agent 无需感知 |
+| `big_connect` 降级为内部函数 | 一站式授权由 `connect_device` 自动调用，不再作为独立 MCP 工具 |
+
+### 变更：录像存储路径
+
+| 变更 | 说明 |
+|---|---|
+| 默认录像目录 `recordings/` → `vido/` | 使用相对路径，目录不存在时自动创建 |
+
+### 文档更新
+
+| 文件 | 变更 |
+|---|---|
+| `SKILL.md` | 版本升至 0.6.0，工具数更新为 20，新增 image_settings + tracking 模块文档 |
+| `SKILL_TECHNICAL_REFERENCE.md` | 新增 §2.6–2.7、§3.6–3.7，调用关系图更新，云端授权降为内部 |
+| `README.md` | 功能概览、项目结构、工具模块表更新（中英文） |
+| `TODOlist.md` | 授权内部化标记为已完成，工具计数更新为 20 |
 
 ---
 

@@ -35,7 +35,7 @@ TOOLS = [
     # ── Device Management ──
     Tool(
         name="get_registered_cameras",
-        description="加载所有已注册摄像头配置。会话开始时必须先调用。",
+        description="从 config.yaml 加载所有已注册摄像头的配置信息（含凭据）。不扫描网络，仅读取本地保存的记录。会话开始时首先调用，获取已注册摄像头列表。",
         inputSchema={
             "type": "object",
             "properties": {},
@@ -44,7 +44,7 @@ TOOLS = [
     ),
     Tool(
         name="register_camera",
-        description="持久化摄像头凭据到配置文件，供下次自动连接。",
+        description="将摄像头凭据写入 config.yaml 持久化，供后续 connect_device 自动加载。通常由 connect_device 内部自动调用，无需手动使用。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -66,7 +66,7 @@ TOOLS = [
     ),
     Tool(
         name="search_devices",
-        description="搜索局域网内的摄像头。自动选择最佳发现协议，返回统一结果。",
+        description="扫描局域网发现可用摄像头（WS-Discovery / 创维私有协议 / USB）。返回新发现的设备列表，与 get_registered_cameras（读取本地已保存配置）不同。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -80,7 +80,7 @@ TOOLS = [
     ),
     Tool(
         name="connect_device",
-        description="连接摄像头。自动加载缓存凭据；无缓存时探测是否需要密码。需要密码的设备自动发起云端授权（内部流程，无需额外工具）：云端同意则自动连接；云端不可用则返回 needs_password 让用户直接输入；云端拒绝返回 auth_rejected；云端密码不匹配返回 cloud_pwd_failed。",
+        description="连接摄像头。自动加载缓存凭据并重试；无缓存或失败时自动处理云端授权。返回 status 指示下一步：success=已连接；needs_password=请用户提供密码后重新调用；auth_rejected=云端拒绝；cloud_pwd_failed=云端密码不匹配，请用户输入正确密码。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -108,14 +108,10 @@ TOOLS = [
         },
     ),
 
-    # ── Cloud Auth (云端授权) ──
-    # 注意: poll_auth_status / big_connect 已从 MCP 工具降为内部函数；
-    # 云端授权流程完全封装在 connect_device 内部，Agent 无需感知。
-
     # ── Stream ──
     Tool(
         name="get_audio_video_stream",
-        description="获取实时视频流 URL，返回编码格式、分辨率、帧率等元数据。",
+        description="获取摄像头的 RTSP 实时视频流 URL 及元数据（编码格式、分辨率、帧率）。仅返回流地址，不抓取画面。截图用 capture_video_screenshot，录像用 toggle_recording。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -131,7 +127,7 @@ TOOLS = [
     ),
     Tool(
         name="capture_video_screenshot",
-        description="截取当前视频流画面并保存为 JPEG。",
+        description="从视频流中截取一帧画面保存为 JPEG 图片（单帧快照）。录像请用 toggle_recording。默认保存到 snapshots/ 目录。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -143,7 +139,7 @@ TOOLS = [
     ),
     Tool(
         name="toggle_recording",
-        description="启动、停止或查询本地录像。使用 ffmpeg -c:v copy 纯 remux 方式拉 RTSP 流写入 MP4（不解码不重编码，画质 = 原始流）。支持 RTSP transport 自动降级（tcp → udp）。duration 参数可设置后台自动停止，无需手动调 stop。",
+        description="启动、停止或查询本地 MP4 录像。action=start 开始录像（可选 duration 秒数自动停止）；action=stop 停止并返回文件路径和时长；action=status 查询当前录像状态。默认保存到 vido/ 目录。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -153,7 +149,7 @@ TOOLS = [
                     "enum": ["start", "stop", "status"],
                     "description": "start = 开始录像 / stop = 停止录像 / status = 查询录像状态",
                 },
-                "save_path": {"type": "string", "description": "录像保存目录（默认 recordings/）"},
+                "save_path": {"type": "string", "description": "录像保存目录（默认 vido/）"},
                 "duration": {
                     "type": "number",
                     "description": "录像时长（秒），仅 start 时有效；设置后后台自动停止，无需手动调 stop",
@@ -164,7 +160,7 @@ TOOLS = [
     ),
     Tool(
         name="manage_storage_status",
-        description="查询存储状态或设置存储路径、格式与策略。",
+        description="查询录像/截图的磁盘占用与可用空间，或设置存储路径、文件格式(mp4/avi/jpg)与存储策略(overwrite/stop_when_full/circular)。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -194,7 +190,7 @@ TOOLS = [
     # ── PTZ ──
     Tool(
         name="control_ptz",
-        description="控制云台移动（SK 私有协议，三模式）。时间模式：direction + duration_seconds，发送方向命令后 sleep 指定秒数再停止；角度模式：direction + degrees，按 1秒=34度 换算为时间，走三段式执行（对角方向分步：先左右再上下）；变焦模式：direction=zoom_in/zoom_out。三种模式 duration_seconds 与 degrees 二选一。",
+        description="控制云台转动方向或变焦。支持 8 方向(up/down/left/right/upleft/upright/downleft/downright)和变焦(zoom_in/zoom_out)。转动量通过 duration_seconds(秒)或 degrees(角度)二选一指定。内置物理极限保护，到达边界时自动提前停止。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -223,7 +219,7 @@ TOOLS = [
     ),
     Tool(
         name="get_ptz_parameters",
-        description="获取当前云台位置、范围和运动状态。",
+        description="读取云台当前位置坐标、运动范围和状态（只读查询）。修改云台位置请用 control_ptz。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -234,7 +230,7 @@ TOOLS = [
     ),
     Tool(
         name="calibrate_ptz",
-        description="云台校准与归位（SK 协议）。set_home：固件级物理校准（约 10-30 秒），校准后读取坐标并存储为 Home 位；go_home：精确移动到已存储的 Home 位（无 Home 位时自动先执行 set_home）。",
+        description="云台物理校准与归位。set_home=执行固件级校准并存储初始位（约 10-30 秒）；go_home=精确移动到已存储的初始位。与 control_ptz（普通方向转动）不同，这是硬件校准操作。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -252,7 +248,7 @@ TOOLS = [
     # 注意: move_to_position 已降级为内部函数 (_move_to_position)，不作为 MCP 工具暴露。
     Tool(
         name="stop_ptz",
-        description="立即停止云台所有移动。",
+        description="立即紧急停止云台所有正在进行的移动。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -262,16 +258,10 @@ TOOLS = [
         },
     ),
 
-    # ── Discovery (创维私有协议) ──
-    # 注意: discover_sky_devices 已从 MCP 工具降为内部函数；
-    # Agent 统一使用 search_devices() 进行设备发现。
-    # send_tcp_command 为内部函数，不作为 MCP 工具暴露。
-    # 私有协议通信由 connect_device / control_ptz 等高层工具内部调用。
-
     # ── Events (IPC 事件接收) ──
     Tool(
         name="manage_camera_events",
-        description="摄像头告警事件统一入口，action 切换模式：start=启动监听（后台线程，需用户确认；双协议+去重+自动快照+落盘）；stop=停止监听；poll=读取未消费事件并推进游标（跨会话可用）；wait=长轮询阻塞等待新事件（单次上限 60 秒，持续守护时循环调用）。",
+        description="摄像头告警事件管理。action=start 启动后台告警监听（需用户确认，含移动/人形/车辆等检测 + 自动快照）；action=stop 停止监听；action=poll 读取已积累的事件；action=wait 阻塞等待新事件到达（单次最长 60 秒）。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -313,8 +303,7 @@ TOOLS = [
     # ── WebRTC 实时预览 ──
     Tool(
         name="start_webrtc_stream",
-        description="启动 WebRTC 实时预览（go2rtc），将 RTSP 流转为浏览器可直接播放的 WebRTC。"
-                    "未安装 go2rtc 时返回错误和下载指引，Agent 提示用户确认后再次调用。",
+        description="启动 WebRTC 实时预览，将 RTSP 流转为浏览器可直接播放的 WebRTC 流，返回 HTTP 访问地址。与 get_audio_video_stream（仅返回 RTSP URL）不同，此工具提供浏览器可视化预览。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -335,7 +324,7 @@ TOOLS = [
     ),
     Tool(
         name="stop_webrtc_stream",
-        description="停止 WebRTC 实时预览，关闭 go2rtc 进程。",
+        description="停止 WebRTC 实时预览，关闭转流进程。",
         inputSchema={
             "type": "object",
             "properties": {},
@@ -345,7 +334,7 @@ TOOLS = [
     # ── Illumination (补光模式控制) ──
     Tool(
         name="manage_illumination",
-        description="摄像头补光模式统一入口。get=查询当前设置和参数范围（含中文标签）；set=设置补光参数（仅指定需修改的参数，其余保持不变；枚举参数接受整数或字符串别名如 daynightmode='auto'）。通过 SK HTTP 动态 Token 私有协议(9010)通信。",
+        description="查询或设置摄像头补光与夜视模式。控制日夜切换(daynightmode)、补光灯(filllightmode)、白光灯/红外灯亮度、定时开关灯等。与 manage_image_settings（控制画面参数如亮度对比度）不同，本工具控制物理补光硬件。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -421,10 +410,7 @@ TOOLS = [
     # ── Image Settings (图像参数设置) ──
     Tool(
         name="manage_image_settings",
-        description="摄像头图像参数统一入口。get=查询可设置参数及当前值（含中文标签和取值范围）；"
-                    "set=设置图像参数（仅传需修改的参数，其余保持不变；读-校验-合并-写-回读）。"
-                    "支持参数：brightness/contrast/saturation/sharpness/flip/whitebalance/wdr/face_mode/plate_mode。"
-                    "双通道：SK HTTP 私有协议优先，固件不支持时自动回退 ONVIF Imaging Service。",
+        description="查询或设置摄像头画面参数：亮度(brightness)、对比度(contrast)、饱和度(saturation)、锐度(sharpness)、画面翻转(flip)、白平衡(whitebalance)、宽动态(wdr)、人脸优化(face_mode)、车牌优化(plate_mode)。与 manage_illumination（控制物理补光灯/夜视模式）不同，本工具调节画面成像参数。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -485,8 +471,7 @@ TOOLS = [
     # ── Tracking (侦测追踪控制) ──
     Tool(
         name="query_tracking_capabilities",
-        description="查询摄像头的侦测追踪能力（人形追踪/车辆追踪/区域检测）及当前配置值。"
-                    "返回每种侦测的可设置参数列表、取值范围和当前值（含中文标签）。",
+        description="查询摄像头的智能侦测与追踪能力（人形追踪/车辆追踪/区域检测），返回各侦测类型的可用参数和当前设置值。只读查询，修改设置请用 set_tracking。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -505,8 +490,7 @@ TOOLS = [
     ),
     Tool(
         name="set_tracking",
-        description="开启或关闭摄像头的追踪功能（人形追踪/车辆追踪/区域检测）。"
-                    "修改硬件设置，需用户确认。SET 为全量下发，仅传需修改的参数，其余保持不变。",
+        description="开启或关闭摄像头的智能侦测与追踪功能（人形追踪/车辆追踪/区域检测）。修改硬件设置，需用户确认。仅传需修改的参数，未传的参数保持不变。查询能力请用 query_tracking_capabilities。",
         inputSchema={
             "type": "object",
             "properties": {
