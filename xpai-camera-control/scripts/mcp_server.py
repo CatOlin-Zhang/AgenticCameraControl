@@ -143,17 +143,21 @@ TOOLS = [
     ),
     Tool(
         name="toggle_recording",
-        description="启动或停止本地录像，录制为 MP4 文件。",
+        description="启动、停止或查询本地录像。使用 ffmpeg -c:v copy 纯 remux 方式拉 RTSP 流写入 MP4（不解码不重编码，画质 = 原始流）。支持 RTSP transport 自动降级（tcp → udp）。duration 参数可设置后台自动停止，无需手动调 stop。",
         inputSchema={
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "摄像头名称"},
                 "action": {
                     "type": "string",
-                    "enum": ["start", "stop"],
-                    "description": "start / stop",
+                    "enum": ["start", "stop", "status"],
+                    "description": "start = 开始录像 / stop = 停止录像 / status = 查询录像状态",
                 },
-                "save_path": {"type": "string", "description": "录像保存目录"},
+                "save_path": {"type": "string", "description": "录像保存目录（默认 recordings/）"},
+                "duration": {
+                    "type": "number",
+                    "description": "录像时长（秒），仅 start 时有效；设置后后台自动停止，无需手动调 stop",
+                },
             },
             "required": ["camera_name", "action"],
         },
@@ -190,25 +194,28 @@ TOOLS = [
     # ── PTZ ──
     Tool(
         name="control_ptz",
-        description="控制云台转动方向，支持 8 个方向。移动指定秒数后自动停止。内置物理极限守护：到达极限时自动提前停止或拦截指令，结果中 degraded=True 时必须将 degrade_reason 显式告知用户。",
+        description="控制云台移动（SK 私有协议，三模式）。时间模式：direction + duration_seconds，发送方向命令后 sleep 指定秒数再停止；角度模式：direction + degrees，按 1秒=34度 换算为时间，走三段式执行（对角方向分步：先左右再上下）；变焦模式：direction=zoom_in/zoom_out。三种模式 duration_seconds 与 degrees 二选一。",
         inputSchema={
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "摄像头名称"},
                 "direction": {
                     "type": "string",
-                    "enum": ["up", "down", "left", "right", "upleft", "upright", "downleft", "downright"],
-                    "description": "转动方向",
+                    "enum": ["up", "down", "left", "right", "upleft", "upright", "downleft", "downright", "zoom_in", "zoom_out"],
+                    "description": "移动方向（8方向 + 变焦）",
                 },
                 "speed": {
                     "type": "number",
-                    "description": "速度 0.0–1.0",
+                    "description": "速度 0.0–1.0（当前 SK 方向命令不支持调速，仅影响返回值估算）",
                     "default": 0.5,
                 },
                 "duration_seconds": {
                     "type": "number",
-                    "description": "转动时长（秒）",
-                    "default": 1.0,
+                    "description": "转动时长（秒，时间模式；与 degrees 二选一，都不传时默认 1.0）",
+                },
+                "degrees": {
+                    "type": "number",
+                    "description": "转动角度（角度模式，按 1秒=34度 换算为时间执行；与 duration_seconds 二选一）",
                 },
             },
             "required": ["camera_name", "direction"],
@@ -227,11 +234,17 @@ TOOLS = [
     ),
     Tool(
         name="calibrate_ptz",
-        description="执行云台物理校准，回到初始位并重新标定零位。耗时约 10–30 秒。",
+        description="云台校准与归位（SK 协议）。set_home：固件级物理校准（约 10-30 秒），校准后读取坐标并存储为 Home 位；go_home：精确移动到已存储的 Home 位（无 Home 位时自动先执行 set_home）。",
         inputSchema={
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "摄像头名称"},
+                "action": {
+                    "type": "string",
+                    "enum": ["set_home", "go_home"],
+                    "description": "set_home=校准并存储初始位 / go_home=回到存储的初始位",
+                    "default": "set_home",
+                },
             },
             "required": ["camera_name"],
         },
@@ -294,6 +307,38 @@ TOOLS = [
                 },
             },
             "required": ["action"],
+        },
+    ),
+
+    # ── WebRTC 实时预览 ──
+    Tool(
+        name="start_webrtc_stream",
+        description="启动 WebRTC 实时预览（go2rtc），将 RTSP 流转为浏览器可直接播放的 WebRTC。"
+                    "未安装 go2rtc 时返回错误和下载指引，Agent 提示用户确认后再次调用。",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "camera_name": {"type": "string", "description": "摄像头名称"},
+                "sub_stream": {
+                    "type": "boolean",
+                    "description": "使用子码流（低画质）",
+                    "default": False,
+                },
+                "port": {
+                    "type": "integer",
+                    "description": "Web UI 端口",
+                    "default": 1984,
+                },
+            },
+            "required": ["camera_name"],
+        },
+    ),
+    Tool(
+        name="stop_webrtc_stream",
+        description="停止 WebRTC 实时预览，关闭 go2rtc 进程。",
+        inputSchema={
+            "type": "object",
+            "properties": {},
         },
     ),
 
@@ -372,6 +417,123 @@ TOOLS = [
             "required": ["action", "camera_name"],
         },
     ),
+
+    # ── Image Settings (图像参数设置) ──
+    Tool(
+        name="manage_image_settings",
+        description="摄像头图像参数统一入口。get=查询可设置参数及当前值（含中文标签和取值范围）；"
+                    "set=设置图像参数（仅传需修改的参数，其余保持不变；读-校验-合并-写-回读）。"
+                    "支持参数：brightness/contrast/saturation/sharpness/flip/whitebalance/wdr/face_mode/plate_mode。"
+                    "双通道：SK HTTP 私有协议优先，固件不支持时自动回退 ONVIF Imaging Service。",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["get", "set"],
+                    "description": "工作模式",
+                },
+                "camera_name": {
+                    "type": "string",
+                    "description": "摄像头名称",
+                },
+                "brightness": {
+                    "type": "integer",
+                    "description": "亮度",
+                },
+                "contrast": {
+                    "type": "integer",
+                    "description": "对比度",
+                },
+                "saturation": {
+                    "type": "integer",
+                    "description": "饱和度",
+                },
+                "sharpness": {
+                    "type": "integer",
+                    "description": "锐度",
+                },
+                "flip": {
+                    "type": "integer",
+                    "description": "翻转 0正常/1对角/2水平/3垂直",
+                },
+                "whitebalance": {
+                    "type": "integer",
+                    "description": "白平衡 0自动/1白光灯/2白炽灯/3自然光/4暖光灯",
+                },
+                "wdr": {
+                    "type": "boolean",
+                    "description": "宽动态",
+                },
+                "face_mode": {
+                    "type": "boolean",
+                    "description": "看清人脸",
+                },
+                "plate_mode": {
+                    "type": "boolean",
+                    "description": "看清车牌",
+                },
+                "restore_default": {
+                    "type": "boolean",
+                    "description": "恢复默认参数",
+                },
+            },
+            "required": ["action", "camera_name"],
+        },
+    ),
+
+    # ── Tracking (侦测追踪控制) ──
+    Tool(
+        name="query_tracking_capabilities",
+        description="查询摄像头的侦测追踪能力（人形追踪/车辆追踪/区域检测）及当前配置值。"
+                    "返回每种侦测的可设置参数列表、取值范围和当前值（含中文标签）。",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "camera_name": {
+                    "type": "string",
+                    "description": "摄像头名称",
+                },
+                "detect_type": {
+                    "type": "string",
+                    "description": "侦测类型: human(人形)/vehicle(车辆)/area(区域)/all(全部)",
+                    "default": "all",
+                },
+            },
+            "required": ["camera_name"],
+        },
+    ),
+    Tool(
+        name="set_tracking",
+        description="开启或关闭摄像头的追踪功能（人形追踪/车辆追踪/区域检测）。"
+                    "修改硬件设置，需用户确认。SET 为全量下发，仅传需修改的参数，其余保持不变。",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "camera_name": {
+                    "type": "string",
+                    "description": "摄像头名称",
+                },
+                "detect_type": {
+                    "type": "string",
+                    "description": "侦测类型: human(人形追踪)/vehicle(车辆追踪)/area(区域检测)",
+                },
+                "enable": {
+                    "type": "boolean",
+                    "description": "是否开启该侦测功能",
+                },
+                "tracking": {
+                    "type": "boolean",
+                    "description": "是否开启追踪（仅 human/vehicle 有效）",
+                },
+                "sensitivity_level": {
+                    "type": "integer",
+                    "description": "灵敏度等级 0-3 (0关闭/1低/2中/3高)",
+                },
+            },
+            "required": ["camera_name", "detect_type"],
+        },
+    ),
 ]
 
 
@@ -403,6 +565,8 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     from scripts.toolkit.ptz import PTZDirection
     from scripts.toolkit.events import EventAction
     from scripts.toolkit.illumination import IlluminationAction
+    from scripts.toolkit.image_settings import ImageAction
+    from scripts.toolkit.tracking import TrackingAction
 
     # ── Device Management ──
     if name == "get_registered_cameras":
@@ -453,11 +617,30 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
         args["action"] = EventAction(args["action"])
         return _serialize(tk.manage_camera_events(**args))
 
+    # ── WebRTC ──
+    elif name == "start_webrtc_stream":
+        return _serialize(tk.start_webrtc_stream(**args))
+    elif name == "stop_webrtc_stream":
+        return _serialize(tk.stop_webrtc_stream())
+
     # ── Illumination ──
     elif name == "manage_illumination":
         args = dict(args)
         args["action"] = IlluminationAction(args["action"])
         return _serialize(tk.manage_illumination(**args))
+
+    # ── Image Settings ──
+    elif name == "manage_image_settings":
+        args = dict(args)
+        if "action" in args:
+            args["action"] = ImageAction(args["action"])
+        return _serialize(tk.manage_image_settings(**args))
+
+    # ── Tracking (侦测追踪) ──
+    elif name == "query_tracking_capabilities":
+        return _serialize(tk.manage_tracking(action="get", **args))
+    elif name == "set_tracking":
+        return _serialize(tk.manage_tracking(action="set", **args))
 
     else:
         raise ValueError(f"Unknown tool: {name}")
@@ -467,7 +650,7 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
 #  Server Setup
 # ═══════════════════════════════════════════════
 
-server = Server("xpai-camera-control", version="0.5.0")
+server = Server("xpai-camera-control", version="0.6.0")
 
 
 @server.list_tools()
