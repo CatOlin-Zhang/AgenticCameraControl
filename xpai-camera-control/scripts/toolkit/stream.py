@@ -6,11 +6,22 @@ Toolkit 1: 音视频流与存储
   - capture_video_screenshot 截取当前画面并保存
   - toggle_recording        启动或停止录像
   - manage_storage_status   查询/设置存储状态、路径与策略
+  - start_webrtc_stream     启动 go2rtc WebRTC 实时预览
+  - stop_webrtc_stream      停止 go2rtc WebRTC 转流
 """
+import os
+import signal
+import sys
+import threading
+import time
+from pathlib import Path
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
-from typing import Dict, Optional, Any
-
+from typing import Dict, List, Optional, Any, Tuple
+import json
+import shutil
+import subprocess
 
 # ──────────────────────────────────────────────
 #  数据结构
@@ -19,6 +30,7 @@ from typing import Dict, Optional, Any
 class RecordingAction(str, Enum):
     START = "start"
     STOP = "stop"
+    STATUS = "status"
 
 
 class StorageAction(str, Enum):
@@ -55,6 +67,7 @@ class RecordingResult:
     is_recording: bool = False                   # 当前是否在录像
     file_path: str = ""                          # 录像文件路径（停止时返回）
     duration_seconds: float = 0.0                # 已录制时长（停止时返回）
+    auto_stop: bool = False                      # 是否设置了自动停止定时器
     error_message: str = ""                      # 失败原因
 
 
@@ -421,30 +434,100 @@ def capture_video_screenshot(
 
 
 # ──────────────────────────────────────────────
-#  录像状态管理（模块内部）
+#  录像模块级状态
 # ──────────────────────────────────────────────
 
-_active_recordings: Dict[str, dict] = {}  # camera_name -> {"cap": VideoCapture, "writer": VideoWriter, "file_path": str, "temp_path": str, "start_time": float}
+_recording_process: Optional[subprocess.Popen] = None   # ffmpeg 子进程
+_recording_start_time: Optional[float] = None           # time.time()
+_recording_file_path: str = ""                          # 当前录像文件路径
+_recording_transport: str = ""                          # 实际使用的 transport
+_recording_timer: Optional[threading.Timer] = None      # 自动停止定时器
+
+# ffmpeg -c:v copy remux 模式下，从 Popen 到实际写入第一帧的延迟（RTSP 握手 + 等待关键帧）
+# 实测约 1.0~2.0s，取 1.5s 作补偿
+_RECORDING_STARTUP_COMPENSATION = 1.5
+
 _storage_config: Dict[str, dict] = {}     # camera_name -> {"path": str, "format": str, "policy": str}
+
+
+# ── RTSP transport 降级 ──
+
+_VALID_RTSP_TRANSPORTS = frozenset({"tcp", "udp"})
+
+
+def _resolve_transport_plan(rtsp_transport: Optional[Any]) -> List[str]:
+    """根据入参解析出重试顺序。
+
+    Args:
+        rtsp_transport: None → ["tcp", "udp"] (默认双试);
+                        "tcp" / "udp" → 单次;
+                        可迭代对象 → 按顺序重试。
+    """
+    if rtsp_transport is None:
+        return ["tcp", "udp"]
+    if isinstance(rtsp_transport, str):
+        plan = [rtsp_transport]
+    else:
+        plan = list(rtsp_transport)
+    if not plan:
+        raise ValueError("rtsp_transport 不能为空")
+    bad = [t for t in plan if t not in _VALID_RTSP_TRANSPORTS]
+    if bad:
+        raise ValueError(f"不支持的 rtsp_transport: {bad}，可选 {sorted(_VALID_RTSP_TRANSPORTS)}")
+    return plan
+
+
+def _probe_dimensions(rtsp_url: str, transport_plan: List[str], timeout: int = 15) -> Tuple[int, int]:
+    """ffprobe 拉一次流元数据。失败不报错，返回 (0, 0)。"""
+    if not shutil.which("ffprobe"):
+        return 0, 0
+    for transport in transport_plan:
+        try:
+            probe = subprocess.run(
+                [
+                    "ffprobe",
+                    "-rtsp_transport", transport,
+                    "-timeout", "10",
+                    "-v", "quiet",
+                    "-print_format", "json",
+                    "-show_entries", "stream=width,height",
+                    "-select_streams", "v:0",
+                    rtsp_url,
+                ],
+                capture_output=True, text=True, timeout=timeout,
+            )
+            probe_data = json.loads(probe.stdout)
+            streams = probe_data.get("streams", [])
+            if streams:
+                return int(streams[0].get("width", 0)), int(streams[0].get("height", 0))
+        except Exception:
+            continue
+    return 0, 0
 
 
 def toggle_recording(
     camera_name: str,
     action: RecordingAction,
     save_path: Optional[str] = None,
+    rtsp_transport: Optional[Any] = None,
+    duration: Optional[float] = None,
 ) -> RecordingResult:
     """
-    启动或停止本地录像。
+    启动、停止或查询本地录像状态。
 
-    开始录像时创建 VideoWriter 将视频流录制到本地文件；
-    停止录像时关闭 VideoWriter 并返回录像文件路径。
+    使用 ffmpeg 子进程拉 RTSP 流，以 -c:v copy 纯 remux 方式写入 MP4 文件
+    （不解码不重编码，画质 = 原始流）。
+    start 时启动子进程，stop 时发送 SIGINT 让 ffmpeg 优雅封包。
 
-    安全约束: 显式提示 + 代码校验（校验设备已连接、存储空间充足）
+    RTSP transport 降级：复用截图模块的 _resolve_transport_plan() 做 tcp→udp 降级，
+    启动后校验进程存活 + 文件有数据，失败则自动切换 transport 重试。
 
     Args:
-        camera_name: 摄像头名称（自动填充）
-        action:      RecordingAction.START 开始录像 / RecordingAction.STOP 停止录像
-        save_path:   录像保存目录（默认 recordings/）
+        camera_name:    摄像头名称
+        action:         RecordingAction.START 开始 / STOP 停止 / STATUS 查询
+        save_path:      录像保存目录（默认 recordings/）
+        rtsp_transport: "tcp"/"udp" 单次，或可迭代对象表示重试顺序，None=默认 [tcp, udp]
+        duration:       录像时长（秒），仅在 START 时有效；设置后后台定时器自动停止
 
     Returns:
         RecordingResult:
@@ -452,134 +535,279 @@ def toggle_recording(
             - is_recording: 当前是否在录像
             - file_path: 录像文件路径（停止时返回）
             - duration_seconds: 已录制时长（停止时返回）
+            - auto_stop: 是否设置了自动停止定时器
             - error_message: 失败时的错误描述
     """
-    import os
-    import time
+    global _recording_process, _recording_start_time, _recording_file_path, _recording_transport, _recording_timer
 
-    if action == RecordingAction.STOP:
-        if camera_name not in _active_recordings:
+    # ── STATUS 查询 ──
+    if action == RecordingAction.STATUS:
+        if _recording_process is not None and _recording_process.poll() is None:
+            elapsed = time.time() - (_recording_start_time or time.time())
             return RecordingResult(
-                success=True,
-                is_recording=False,
-                error_message="当前没有进行中的录像",
+                success=True, is_recording=True,
+                file_path=_recording_file_path,
+                duration_seconds=round(elapsed, 2),
+                auto_stop=_recording_timer is not None,
             )
-        rec = _active_recordings.pop(camera_name)
+        return RecordingResult(
+            success=True, is_recording=False,
+            error_message="当前没有正在进行的录像",
+        )
+
+    # ── STOP 流程 ──
+    if action == RecordingAction.STOP:
+        if _recording_process is None:
+            return RecordingResult(
+                success=False, is_recording=False,
+                error_message="当前没有正在进行的录像",
+            )
+
+        # 取消自动停止定时器（如果存在）
+        if _recording_timer is not None:
+            _recording_timer.cancel()
+            _recording_timer = None
+
+        proc = _recording_process
+        start_time = _recording_start_time or time.time()
+        file_path = _recording_file_path
+
+        # 发送 SIGINT 让 ffmpeg 优雅关闭（封包 moov atom）
         try:
-            rec["writer"].release()
-            rec["cap"].release()
-        except Exception:
-            pass
+            proc.send_signal(signal.SIGINT)
+        except OSError:
+            pass  # 进程可能已退出
 
-        # 将临时录像文件移动到目标路径
-        temp_path = rec.get("temp_path", "")
-        final_path = rec["file_path"]
-        if temp_path and os.path.exists(temp_path):
-            import shutil
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
             try:
-                shutil.move(temp_path, final_path)
+                proc.kill()
+                proc.wait(timeout=3)
             except Exception:
-                # 移动失败则直接使用临时文件路径
-                final_path = temp_path
+                pass
 
-        duration = time.time() - rec["start_time"]
+        elapsed = time.time() - start_time
+
+        # 清理全局状态
+        _recording_process = None
+        _recording_start_time = None
+        _recording_file_path = ""
+        _recording_transport = ""
+        _recording_timer = None
+
+        # 验证输出文件
+        if not os.path.isfile(file_path) or os.path.getsize(file_path) == 0:
+            return RecordingResult(
+                success=False, is_recording=False,
+                duration_seconds=round(elapsed, 2),
+                error_message="录像文件为空或不存在，录像可能未成功启动",
+            )
+
         return RecordingResult(
-            success=True,
-            is_recording=False,
-            file_path=final_path,
-            duration_seconds=round(duration, 1),
+            success=True, is_recording=False,
+            file_path=file_path,
+            duration_seconds=round(elapsed, 2),
         )
 
-    # ── START ──
-    if camera_name in _active_recordings:
-        return RecordingResult(
-            success=False,
-            is_recording=True,
-            error_message="该设备已在录像中，请先停止",
+    # ── START 流程 ──
+    if action == RecordingAction.START:
+        # 检查是否已在录像
+        if _recording_process is not None and _recording_process.poll() is None:
+            return RecordingResult(
+                success=False, is_recording=True,
+                error_message=f"录像正在进行中（文件: {_recording_file_path}），请先停止再开始新录像",
+            )
+        # 清理残留状态（进程已意外退出的情况）
+        if _recording_process is not None:
+            _recording_process = None
+            _recording_start_time = None
+            _recording_file_path = ""
+            _recording_transport = ""
+
+        # 检查 ffmpeg 是否可用
+        if not shutil.which("ffmpeg"):
+            return RecordingResult(
+                success=False, is_recording=False,
+                error_message="ffmpeg 未安装，无法录像",
+            )
+
+        # 查找摄像头配置
+        from .device_mgmt import _connected_devices, _find_cached_camera, _build_rtsp_url
+        conn_info = _connected_devices.get(camera_name)
+        cached = _find_cached_camera(camera_name)
+        if not conn_info and not cached:
+            return RecordingResult(
+                success=False, is_recording=False,
+                error_message=f"摄像头 '{camera_name}' 未注册",
+            )
+
+        # 构造 RTSP URL
+        if cached:
+            rtsp_url = _build_rtsp_url(
+                cached.ip, cached.rtsp_port, cached.rtsp_path,
+                cached.username, cached.password,
+            )
+        else:
+            ip = conn_info.get("ip", "")
+            rtsp_port = conn_info.get("rtsp_port", 554)
+            rtsp_path = conn_info.get("rtsp_path", "/stream1")
+            username = conn_info.get("username", "")
+            password = conn_info.get("password", "")
+            rtsp_url = _build_rtsp_url(ip, rtsp_port, rtsp_path, username, password)
+
+        # 确定保存目录
+        recording_dir = save_path or str(
+            Path(__file__).resolve().parent.parent.parent / "recordings"
         )
+        try:
+            os.makedirs(recording_dir, exist_ok=True)
+        except OSError as e:
+            return RecordingResult(
+                success=False, is_recording=False,
+                error_message=f"创建录像目录失败: {e}",
+            )
 
-    # 确定保存路径
-    if save_path is None:
-        record_dir = os.path.join(os.path.dirname(__file__), "..", "..", "recordings")
-    else:
-        record_dir = save_path
+        # 生成文件名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_path = os.path.join(recording_dir, f"recording_{timestamp}.mp4")
 
-    os.makedirs(record_dir, exist_ok=True)
+        # RTSP transport 降级
+        try:
+            transport_plan = _resolve_transport_plan(rtsp_transport)
+        except ValueError as e:
+            return RecordingResult(
+                success=False, is_recording=False,
+                error_message=str(e),
+            )
 
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{camera_name}_{timestamp}.mp4"
-    file_path = os.path.join(record_dir, filename)
+        # 用 ffprobe 探测可用 transport（避免用错误的 transport 启动录像）
+        working_transport = ""
+        for transport in transport_plan:
+            dims = _probe_dimensions(rtsp_url, [transport], timeout=10)
+            if dims != (0, 0):
+                working_transport = transport
+                break
 
-    # 获取流
-    stream_result = get_audio_video_stream(camera_name, sub_stream=False)
-    if not stream_result.success:
-        stream_result = get_audio_video_stream(camera_name, sub_stream=True)
-    if not stream_result.success:
+        if not working_transport:
+            working_transport = transport_plan[0]
+
+        # 计算 ffmpeg -t 兜底时长（用户 duration + 启动补偿 + 5s 安全余量）
+        ffmpeg_timeout = None
+        if duration is not None and duration > 0:
+            ffmpeg_timeout = duration + _RECORDING_STARTUP_COMPENSATION + 5.0
+
+        last_error = ""
+        for transport in ([working_transport] + [t for t in transport_plan if t != working_transport]):
+            # 构造 ffmpeg 命令
+            ffmpeg_cmd = [
+                "ffmpeg", "-y",
+                "-rtsp_transport", transport,
+                "-timeout", "10",
+                "-i", rtsp_url,
+                "-c:v", "copy",
+                "-an",
+                "-movflags", "+faststart",
+            ]
+            if ffmpeg_timeout is not None:
+                ffmpeg_cmd += ["-t", str(ffmpeg_timeout)]
+            ffmpeg_cmd.append(file_path)
+
+            try:
+                proc = subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            except FileNotFoundError:
+                return RecordingResult(
+                    success=False, is_recording=False,
+                    error_message="ffmpeg 未安装",
+                )
+
+            # Popen 启动后立即记录开始时间
+            _recording_start_time = time.time()
+
+            # 启动后校验：等 2 秒检查进程存活 + 文件有数据
+            time.sleep(2)
+            if proc.poll() is not None:
+                _, stderr = proc.communicate()
+                last_error = (stderr.decode(errors="replace") or "")[-300:]
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                continue
+
+            if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+                _recording_process = proc
+                _recording_file_path = file_path
+                _recording_transport = transport
+                print(f"[recording] 录像已启动: {file_path} (transport={transport})",
+                      file=sys.stderr)
+
+                # 设置自动停止定时器
+                if duration is not None and duration > 0:
+                    compensated = duration + _RECORDING_STARTUP_COMPENSATION
+                    _recording_timer = threading.Timer(
+                        compensated,
+                        lambda: toggle_recording(camera_name, RecordingAction.STOP)
+                    )
+                    _recording_timer.daemon = True
+                    _recording_timer.start()
+                    print(f"[recording] 已设置自动停止定时器: {compensated:.1f}s 后自动停止"
+                          f"（含 {_RECORDING_STARTUP_COMPENSATION}s 启动补偿）",
+                          file=sys.stderr)
+
+                return RecordingResult(
+                    success=True, is_recording=True,
+                    file_path=file_path,
+                    auto_stop=duration is not None and duration > 0,
+                )
+
+            # 文件无数据但进程还活着——可能是等待关键帧，再等一下
+            time.sleep(2)
+            if proc.poll() is None and os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+                _recording_process = proc
+                _recording_file_path = file_path
+                _recording_transport = transport
+                print(f"[recording] 录像已启动（等待关键帧）: {file_path} (transport={transport})",
+                      file=sys.stderr)
+
+                if duration is not None and duration > 0:
+                    compensated = duration + _RECORDING_STARTUP_COMPENSATION
+                    _recording_timer = threading.Timer(
+                        compensated,
+                        lambda: toggle_recording(camera_name, RecordingAction.STOP)
+                    )
+                    _recording_timer.daemon = True
+                    _recording_timer.start()
+                    print(f"[recording] 已设置自动停止定时器: {compensated:.1f}s 后自动停止"
+                          f"（含 {_RECORDING_STARTUP_COMPENSATION}s 启动补偿）",
+                          file=sys.stderr)
+
+                return RecordingResult(
+                    success=True, is_recording=True,
+                    file_path=file_path,
+                    auto_stop=duration is not None and duration > 0,
+                )
+
+            # transport 失败，终止进程并尝试下一个
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                proc.kill()
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            last_error = f"transport={transport} 启动后无数据输出"
+
         return RecordingResult(
-            success=False,
-            is_recording=False,
-            error_message=f"无法获取视频流: {stream_result.error_message}",
+            success=False, is_recording=False,
+            error_message=f"录像启动失败（已尝试 transport: {transport_plan}）: {last_error}",
         )
-
-    # 打开视频流
-    try:
-        import cv2
-    except ImportError:
-        return RecordingResult(
-            success=False,
-            is_recording=False,
-            error_message="缺少 opencv-python",
-        )
-
-    rtsp_url = stream_result.stream_url
-    if rtsp_url.startswith("usb://"):
-        dev_idx = int(rtsp_url.replace("usb://", ""))
-        cap = cv2.VideoCapture(dev_idx, cv2.CAP_DSHOW)
-    else:
-        cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-
-    if not cap.isOpened():
-        cap.release()
-        return RecordingResult(
-            success=False,
-            is_recording=False,
-            error_message="无法打开视频流",
-        )
-
-    # 创建 VideoWriter
-    # 注意: cv2.VideoWriter 在 Windows 上对含非 ASCII 字符的路径会失败，
-    # 先写入临时文件（ASCII 路径），停止录像时再移动到目标路径。
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1920
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1080
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-
-    import tempfile
-    temp_fd, temp_path = tempfile.mkstemp(suffix='.mp4', prefix='rec_')
-    os.close(temp_fd)  # 关闭文件句柄，交给 VideoWriter 使用
-    writer = cv2.VideoWriter(temp_path, fourcc, fps, (width, height))
-
-    if not writer.isOpened():
-        cap.release()
-        os.unlink(temp_path)
-        return RecordingResult(
-            success=False,
-            is_recording=False,
-            error_message="无法创建录像文件",
-        )
-
-    _active_recordings[camera_name] = {
-        "cap": cap,
-        "writer": writer,
-        "file_path": file_path,
-        "temp_path": temp_path,
-        "start_time": time.time(),
-    }
 
     return RecordingResult(
-        success=True,
-        is_recording=True,
-        file_path=file_path,
+        success=False, is_recording=False,
+        error_message=f"未知的 action: {action}",
     )
 
 
@@ -713,3 +941,250 @@ def manage_storage_status(
         format=cfg["format"],
         policy=cfg["policy"],
     )
+
+
+# ═══════════════════════════════════════════════
+#  WebRTC 实时预览 (go2rtc)
+# ═══════════════════════════════════════════════
+
+_GO2RTC_RELEASE_BASE = "https://github.com/AlexxIT/go2rtc/releases/latest/download"
+
+import os as _os
+import sys as _sys
+
+# 按平台选择二进制名
+_GO2RTC_BIN_NAME = {
+    "linux": "go2rtc_linux_amd64",
+    "win32": "go2rtc_win64.zip",
+    "darwin": "go2rtc_mac_amd64",
+}.get(_sys.platform, "go2rtc_linux_amd64")
+
+_GO2RTC_RELEASE = f"{_GO2RTC_RELEASE_BASE}/{_GO2RTC_BIN_NAME}"
+
+# 多源下载列表（按优先级排列，国内镜像在前）
+_GO2RTC_DOWNLOAD_URLS = [
+    f"https://mirror.ghproxy.com/{_GO2RTC_RELEASE}",
+    f"https://ghfast.top/{_GO2RTC_RELEASE}",
+    _GO2RTC_RELEASE,
+]
+
+_GO2RTC_IS_WIN = _sys.platform == "win32"
+_GO2RTC_SKILL_DIR = _os.path.dirname(
+    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+)
+
+_go2rtc_process: Optional[Any] = None
+
+
+@dataclass
+class WebRTCResult:
+    """WebRTC 转流返回结构"""
+    success: bool = False
+    web_url: str = ""
+    rtsp_url: str = ""
+    error_message: str = ""
+
+
+def _ensure_go2rtc() -> str:
+    """
+    检查 go2rtc 是否已安装（跨平台：Linux / Windows / macOS）。
+
+    检查顺序：
+      1. PATH 中查找 go2rtc
+      2. 技能根目录下查找 go2rtc / go2rtc.exe
+
+    Returns:
+        str: go2rtc 二进制绝对路径，未找到返回空字符串。
+    """
+    import shutil
+    path = shutil.which("go2rtc")
+    if path:
+        return path
+    bin_name = "go2rtc.exe" if _GO2RTC_IS_WIN else "go2rtc"
+    local_path = _os.path.join(_GO2RTC_SKILL_DIR, bin_name)
+    if _os.path.isfile(local_path):
+        return local_path
+    return ""
+
+
+def _download_go2rtc() -> str:
+    """
+    从多个源下载 go2rtc 二进制到技能根目录（跨平台，国内镜像优先）。
+
+    Returns:
+        str: 下载成功返回二进制路径，全部失败返回空字符串。
+    """
+    import shutil
+    import urllib.request
+    import zipfile
+
+    dest_name = "go2rtc.exe" if _GO2RTC_IS_WIN else "go2rtc"
+    dest = _os.path.join(_GO2RTC_SKILL_DIR, dest_name)
+    tmp = _os.path.join(_GO2RTC_SKILL_DIR, f"_go2rtc_dl_{_GO2RTC_BIN_NAME}")
+
+    for url in _GO2RTC_DOWNLOAD_URLS:
+        print(f"[go2rtc] 尝试下载: {url[:80]}...")
+        try:
+            urllib.request.urlretrieve(url, tmp)
+            if not _os.path.isfile(tmp) or _os.path.getsize(tmp) < 1024:
+                print("[go2rtc] 下载文件异常（过小或 HTML 错误页），尝试下一个源")
+                if _os.path.exists(tmp):
+                    _os.remove(tmp)
+                continue
+            if _GO2RTC_IS_WIN and tmp.endswith(".zip"):
+                with zipfile.ZipFile(tmp, "r") as zf:
+                    exe_name = next(
+                        (n for n in zf.namelist() if "go2rtc" in n and n.endswith(".exe")),
+                        None,
+                    )
+                    if exe_name:
+                        zf.extract(exe_name, _GO2RTC_SKILL_DIR)
+                        extracted = _os.path.join(_GO2RTC_SKILL_DIR, exe_name)
+                        if extracted != dest:
+                            shutil.move(extracted, dest)
+                        _os.remove(tmp)
+                        print(f"[go2rtc] 下载并解压成功: {dest}")
+                        return dest
+                    else:
+                        print("[go2rtc] zip 中未找到 go2rtc.exe，尝试下一个源")
+                        _os.remove(tmp)
+                        continue
+            else:
+                shutil.move(tmp, dest)
+                _os.chmod(dest, 0o755)
+                print(f"[go2rtc] 下载成功: {dest}")
+                return dest
+        except Exception as e:
+            print(f"[go2rtc] 下载失败: {e}，尝试下一个源")
+            if _os.path.exists(tmp):
+                _os.remove(tmp)
+
+    print("[go2rtc] 所有下载源均失败")
+    return ""
+
+
+def start_webrtc_stream(
+    camera_name: str,
+    sub_stream: bool = False,
+    go2rtc_path: Optional[str] = None,
+    port: int = 1984,
+) -> WebRTCResult:
+    """
+    启动 go2rtc 将摄像头 RTSP 流转为 WebRTC，浏览器打开 web_url 即可实时观看。
+
+    流程：
+      1. 检查 go2rtc 是否已安装
+      2. 未安装 → 返回错误 + 下载地址让 Agent 引导用户手动安装
+      3. 从 config.yaml 构造 RTSP URL
+      4. 生成 go2rtc.yaml 配置文件
+      5. subprocess.Popen 启动 go2rtc
+      6. 返回 WebRTCResult(web_url="http://localhost:<port>")
+
+    Args:
+        camera_name:  摄像头名称
+        sub_stream:   True 使用子流，False 使用主流
+        go2rtc_path:  go2rtc 二进制路径（None 时自动检测）
+        port:         Web UI 端口（默认 1984）
+
+    Returns:
+        WebRTCResult:
+            - success: 是否成功启动
+            - web_url: 浏览器访问地址
+            - rtsp_url: 使用的 RTSP URL
+            - error_message: 失败原因
+    """
+    import subprocess
+
+    global _go2rtc_process
+
+    # 如果已有进程在运行，先停止
+    if _go2rtc_process is not None:
+        stop_webrtc_stream()
+
+    # Step 1: 检查 go2rtc
+    binary = go2rtc_path or _ensure_go2rtc()
+    if not binary:
+        return WebRTCResult(
+            success=False,
+            error_message=(
+                f"未检测到 go2rtc（WebRTC 转流工具，约 15MB）。"
+                f"请手动下载安装: {_GO2RTC_RELEASE}，"
+                f"安装到 {_GO2RTC_SKILL_DIR} 或加入 PATH 后重试。"
+            ),
+        )
+
+    # Step 2: 从 config.yaml 构造 RTSP URL
+    from . import device_mgmt as dm
+    cameras = dm.get_registered_cameras()
+    target = next((c for c in cameras if c.name == camera_name), None)
+    if target is None:
+        return WebRTCResult(success=False, error_message=f"未找到摄像头: {camera_name}")
+
+    rtsp_path = target.rtsp_sub_path if sub_stream else target.rtsp_path
+    rtsp_url = dm._build_rtsp_url(
+        target.ip, target.rtsp_port, rtsp_path, target.username, target.password,
+    )
+
+    # Step 3: 生成 go2rtc.yaml
+    import yaml
+
+    config_path = _os.path.join(_GO2RTC_SKILL_DIR, "go2rtc.yaml")
+    stream_name = camera_name.replace(" ", "_")
+    go2rtc_config = {
+        "streams": {stream_name: rtsp_url},
+        "api": {"listen": f":{port}"},
+    }
+    with open(config_path, "w") as f:
+        yaml.dump(go2rtc_config, f, default_flow_style=False, allow_unicode=True)
+
+    # Step 4: 启动 go2rtc
+    try:
+        popen_kwargs = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+        }
+        if _GO2RTC_IS_WIN:
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+        _go2rtc_process = subprocess.Popen(
+            [binary, "-config", config_path],
+            **popen_kwargs,
+        )
+    except Exception as e:
+        return WebRTCResult(
+            success=False,
+            rtsp_url=rtsp_url,
+            error_message=f"go2rtc 启动失败: {e}",
+        )
+
+    web_url = f"http://localhost:{port}"
+    print(f"[go2rtc] 已启动，浏览器打开 {web_url} 观看摄像头 '{camera_name}'",
+          file=_sys.stderr)
+    return WebRTCResult(success=True, web_url=web_url, rtsp_url=rtsp_url)
+
+
+def stop_webrtc_stream() -> bool:
+    """
+    停止 go2rtc 转流进程。
+
+    Returns:
+        bool: True 表示成功停止（或本来就没有运行中的进程）
+    """
+    global _go2rtc_process
+
+    if _go2rtc_process is None:
+        return True
+
+    try:
+        _go2rtc_process.terminate()
+        _go2rtc_process.wait(timeout=5)
+    except Exception:
+        try:
+            _go2rtc_process.kill()
+        except Exception:
+            pass
+    finally:
+        _go2rtc_process = None
+
+    print("[go2rtc] 已停止", file=_sys.stderr)
+    return True
