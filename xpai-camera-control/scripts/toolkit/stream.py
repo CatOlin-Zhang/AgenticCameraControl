@@ -455,35 +455,19 @@ _storage_config: Dict[str, dict] = {}     # camera_name -> {"path": str, "format
 _VALID_RTSP_TRANSPORTS = frozenset({"tcp", "udp"})
 
 
-def _find_ffmpeg() -> Optional[str]:
-    """查找 ffmpeg 二进制：系统 PATH 优先，imageio-ffmpeg 包兜底。"""
-    exe = shutil.which("ffmpeg")
-    if exe:
-        return exe
-    try:
-        import imageio_ffmpeg
-        exe = imageio_ffmpeg.get_ffmpeg_exe()
-        if exe and os.path.isfile(exe):
-            return exe
-    except ImportError:
-        pass
+def _resolve_binary(name: str) -> Optional[str]:
+    """先查 PATH，再查 FFMPEG_DIR 环境变量指定的目录。返回可执行文件完整路径或 None。"""
+    path = shutil.which(name)
+    if path:
+        return path
+    ffmpeg_dir = os.environ.get("FFMPEG_DIR", "")
+    if ffmpeg_dir:
+        candidate = os.path.join(ffmpeg_dir, name + (".exe" if os.name == "nt" else ""))
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
     return None
 
 
-def _find_ffprobe() -> Optional[str]:
-    """查找 ffprobe 二进制：系统 PATH 优先，imageio-ffmpeg 同目录兜底。"""
-    exe = shutil.which("ffprobe")
-    if exe:
-        return exe
-    # imageio-ffmpeg 的 ffprobe 与 ffmpeg 在同一 bin 目录
-    ffmpeg_exe = _find_ffmpeg()
-    if ffmpeg_exe:
-        probe = os.path.join(os.path.dirname(ffmpeg_exe), "ffprobe")
-        if os.name == "nt":
-            probe += ".exe"
-        if os.path.isfile(probe):
-            return probe
-    return None
 
 
 def _resolve_transport_plan(rtsp_transport: Optional[Any]) -> List[str]:
@@ -510,14 +494,14 @@ def _resolve_transport_plan(rtsp_transport: Optional[Any]) -> List[str]:
 
 def _probe_dimensions(rtsp_url: str, transport_plan: List[str], timeout: int = 15) -> Tuple[int, int]:
     """ffprobe 拉一次流元数据。失败不报错，返回 (0, 0)。"""
-    ffprobe_exe = _find_ffprobe()
-    if not ffprobe_exe:
+    ffprobe_path = _resolve_binary("ffprobe")
+    if not ffprobe_path:
         return 0, 0
     for transport in transport_plan:
         try:
             probe = subprocess.run(
                 [
-                    ffprobe_exe,
+                    ffprobe_path,
                     "-rtsp_transport", transport,
                     "-timeout", "10",
                     "-v", "quiet",
@@ -658,11 +642,11 @@ def toggle_recording(
             _recording_transport = ""
 
         # 检查 ffmpeg 是否可用
-        ffmpeg_exe = _find_ffmpeg()
-        if not ffmpeg_exe:
+        ffmpeg_path = _resolve_binary("ffmpeg")
+        if not ffmpeg_path:
             return RecordingResult(
                 success=False, is_recording=False,
-                error_message="ffmpeg 未安装（需要 imageio-ffmpeg 或系统安装），无法录像",
+                error_message="ffmpeg 未安装，无法录像",
             )
 
         # 查找摄像头配置
@@ -734,7 +718,7 @@ def toggle_recording(
         for transport in ([working_transport] + [t for t in transport_plan if t != working_transport]):
             # 构造 ffmpeg 命令
             ffmpeg_cmd = [
-                ffmpeg_exe, "-y",
+                ffmpeg_path, "-y",
                 "-rtsp_transport", transport,
                 "-timeout", "10",
                 "-i", rtsp_url,

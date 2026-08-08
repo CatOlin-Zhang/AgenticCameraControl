@@ -1689,7 +1689,7 @@ def request_cloud_auth(sn: str) -> CloudAuthRequestResult:
             error_message=f"云端响应非 JSON: {resp.text[:200]}",
         )
 
-    if payload.get("code") == 200 and payload.get("data") is True:
+    if payload.get("code") == 200 :
         return CloudAuthRequestResult(success=True, claw_id=claw_id)
 
     return CloudAuthRequestResult(
@@ -1848,6 +1848,7 @@ def poll_auth_status(
             message="等待用户确认",
             auth_status_code=auth_code,
         )
+
 
 
 def disconnect_device(
