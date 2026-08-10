@@ -159,6 +159,7 @@ The following tools extend the skill's functionality beyond the core workflow. T
 
 ## Gotchas
 
+- **TCP 9010 private-protocol port flaps intermittently (DEVICE_UNREACHABLE) even though the device is online.** → **Action:** for illumination / image / tracking tools, retry the same call up to 3 times at 2-3 s intervals; do not conclude offline or reconnect. Report only after all retries fail (tracking has no ONVIF fallback).
 - **ONVIF port is not always 80.** → **Action:** always use `onvif_port` from `search_devices()` / config.yaml; never hardcode port 80. Skyworth cameras use port 2000 for ONVIF.
 - **`GetStreamUri` returns bare RTSP URLs without credentials.** → **Action:** always use the `stream_url` returned by `get_audio_video_stream()` — the toolkit auto-injects credentials. Never manually construct RTSP URLs.
 - **Chinese characters in Windows paths cause `cv2.imwrite()` to silently fail.** → **Action:** no manual workaround needed — the toolkit handles this internally. If you pass a custom `save_path`, prefer ASCII-only paths.
@@ -221,7 +222,8 @@ The following tools extend the skill's functionality beyond the core workflow. T
 | `stream unavailable` / RTSP failure | Check camera is online, verify network connectivity |
 | `storage full` | Suggest cleanup via `manage_storage_status()` or change storage policy |
 | `not support illumination` | Device doesn't support illumination mode control — inform user |
-| MCP tools not available | Register MCP server in client config — do NOT write workaround scripts |
+| `MCP tools not available` | Register MCP server in client config — do NOT write workaround scripts |
+| `DEVICE_UNREACHABLE` (from TCP 9010 / SK HTTP, on illumination / image / tracking tools, ONVIF connection healthy) | Transient port flapping — retry the same call with unchanged parameters after 2-3 seconds, up to 3 attempts. Report only after all retries fail. Do **not** reconnect or rediscover |
 
 ## Error Handling Policy
 
@@ -234,6 +236,7 @@ When any MCP tool call fails, crashes, **or the MCP tools are unavailable in the
    - **Why it failed** — root cause from the `error_message` field and context
    - **How to fix it** — concrete actionable steps the user can take
 4. **Wait for the user's decision.** Do not proceed with retries, fallbacks, or alternative approaches until the user confirms.
+5.**Exception - transient private-protocol port flapping:** `DEVICE_UNREACHABLE` errors returned by the Skyworth private protocol (TCP port 9010) on the illumination / image-settings / tracking tools (`manage_illumination`, `manage_image_settings`, `query_tracking_capabilities`, `set_tracking`) are known transient failures while the device remains online. For this specific error, the Agent performs bounded automatic retries (up to 3 attempts, 2-3 seconds apart) **without** waiting for user confirmation, per the Gotchas entry below. Only report to the user after all retries are exhausted.
 
 
 ## Configuration
