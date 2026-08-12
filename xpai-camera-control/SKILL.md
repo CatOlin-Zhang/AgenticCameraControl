@@ -1,6 +1,6 @@
 ---
 name: xpai-camera-control
-description: Discover, connect, and control Skyworth cameras on the local network. Capabilities include device detection, streaming, snapshot capture, PTZ pan/tilt control, alarm event monitoring, illumination mode control, and device management. Runs as an MCP Server. Use when the user wants to discover cameras, view a camera feed, capture snapshots, control PTZ, watch for motion/alarm events, adjust illumination mode, manage camera settings, or mentions ONVIF, RTSP, IP camera, webcam, or Skyworth cameras.
+description: Discover, connect, and control Skyworth cameras on the local network. Capabilities include device detection, streaming, WebRTC browser preview, snapshot capture, PTZ pan/tilt control, alarm event monitoring, illumination mode control, image parameter adjustment, detection & tracking, and device management. Runs as an MCP Server. Use when the user wants to discover cameras, view a camera feed, capture snapshots, control PTZ, watch for motion/alarm events, adjust illumination mode, adjust image parameters, enable detection or tracking, manage camera settings, or mentions ONVIF, RTSP, IP camera, webcam, or Skyworth cameras.
 license: MIT
 compatibility: Requires Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. Cameras must be on the same LAN for discovery.
 metadata:
@@ -17,6 +17,9 @@ Trigger this skill when the user:
 - Requests pan, tilt, camera movement, or PTZ calibration
 - Asks to watch/guard a camera or check for motion, human, tamper, or other alarm events
 - Wants to adjust illumination mode (IR light, white light, night vision, auto-switch)
+- Wants to adjust image parameters (brightness, contrast, saturation, sharpness, flip, white balance, WDR)
+- Wants to view camera feed in a browser via WebRTC live preview
+- Wants to enable/disable detection or tracking features (human tracking, vehicle tracking, area detection)
 - Mentions ONVIF, RTSP, IP camera, webcam, or specific camera brands
 
 ## Running Mode: MCP Server
@@ -44,7 +47,7 @@ python scripts/mcp_server.py
 }
 ```
 
-The MCP server exposes **20 tools** covering 8 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and return fields.
+The MCP server exposes **22 tools** covering 8 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and return fields.
 
 ### MCP-Only Interaction (Hard Rule)
 
@@ -73,6 +76,16 @@ When Phase 0 cache is unavailable, call `search_devices()` to discover cameras o
 - Results are returned as a unified `DiscoveredDevice` list — Skyworth-specific metadata (SN, channels, MAC, etc.) is included under `sky_*` prefixed fields when available
 - Each result includes a `discovery_method` field indicating which protocol found the device
 
+**Camera Naming:** When `search_devices()` returns multiple cameras, the Agent **MUST**:
+
+1. **List all discovered cameras** — present each device with its key identifiers (IP, model, SN) in a numbered list so the user can distinguish them
+2. **Prompt for user-defined names** — ask the user if they want to assign friendly names (e.g. "客厅摄像头", "前门", "车库") before connecting. Pass the chosen name as the `name` parameter to `connect_device()` or `register_camera()`
+3. **Or auto-name via multimodal model** — if the Agent has vision capabilities, it can connect each camera first, call `capture_video_screenshot()` to capture a frame, analyze the scene content, and generate a descriptive name automatically (e.g. a camera showing a doorway → "前门摄像头"). Then call `register_camera(name=auto_name, ip=camera_ip, ...)` to rename — `register_camera` matches by IP and replaces the old entry in-place, no duplicates
+
+> **Renaming:** `register_camera` uses a three-tier match: **name → IP → SN**. Calling it with a new name but the same IP or SN as an existing entry will rename that entry in-place. This means users can rename cameras at any time — during initial setup, after connecting, or in a later session.
+
+> **Note:** If the user skips naming, the toolkit assigns a default name based on the device model or IP. Friendly names make subsequent operations much clearer (e.g. "客厅摄像头向左转" vs "192.168.1.105 设备向左转").
+
 ### Phase 2 — Connect & Authorize
 
 For each discovered camera, call `connect_device()` to connect. **The specific connection process is handled internally by the tool**. The Agent's responsibilities are as follows:
@@ -96,6 +109,7 @@ After a successful connection, perform streaming operations:
 - `get_audio_video_stream()` — retrieves the RTSP stream URL and validates stream availability, returns codec/resolution/fps metadata
 - `toggle_recording()` — starts/stops local MP4 recording from the RTSP stream via ffmpeg remux (`-c:v copy`)
 - `manage_storage_status()` — queries disk usage and configures storage path/format/policy
+- `start_webrtc_stream()` / `stop_webrtc_stream()` — converts RTSP to WebRTC for browser-based live preview, returns HTTP access URL
 
 Screenshot files are saved to `snapshots/` directory by default; recordings go to `vido/`.
 
@@ -103,23 +117,24 @@ Screenshot files are saved to `snapshots/` directory by default; recordings go t
 After capturing a screenshot and fetching the stream URL, the Agent **MUST** deliver both results to the user:
 1. **Show the screenshot** — display the image from `file_path` to the user (e.g. via markdown image syntax `![screenshot](file_path)`)
 2. **Provide the RTSP URL** — output the `stream_url` from `get_audio_video_stream()` so the user can open it in a media player (VLC, ffplay, PotPlayer, etc.) for live viewing
+3. **Or start WebRTC preview** — call `start_webrtc_stream()` for browser-based live viewing when the user prefers a visual player over a raw RTSP URL
 
 ### Phase 4 — PTZ Control
 
 PTZ control uses a **dual-protocol strategy**: ONVIF is tried first, automatically falling back to the Skyworth private protocol (`SK_SETTING_SET_PTZ` via TCP port 9010) when ONVIF is unavailable.
 
-| Capability | Tools | Protocol |
-|------------|-------|----------|
-| Directional movement (8 directions) | `control_ptz` | ONVIF → private fallback |
-| Get position & ranges | `get_ptz_parameters` | ONVIF → private fallback |
-| Stop all movement | `stop_ptz` | ONVIF → private fallback |
-| Physical calibration | `calibrate_ptz` | Private protocol only |
+| Capability                          | Tools | Protocol |
+|-------------------------------------|-------|----------|
+| Directional movement (4 directions) | `control_ptz` | ONVIF → private fallback |
+| Get position & ranges               | `get_ptz_parameters` | ONVIF → private fallback |
+| Stop all movement                   | `stop_ptz` | ONVIF → private fallback |
+| Physical calibration                | `calibrate_ptz` | Private protocol only |
 
-`control_ptz` auto-stops after `duration_seconds` (default 1s). Direction parameter supports both English (`up`/`down`/`left`/`right`/`upleft`/`upright`/`downleft`/`downright`) and Chinese aliases (上/下/左/右/左上/右上/左下/右下).
+`control_ptz` auto-stops after `duration_seconds` (default 1s). Direction parameter supports both English (`up`/`down`/`left`/`right`) and Chinese aliases (上/下/左/右).
 
 **Physical Limit Guard:** `control_ptz` validates the command against the PTZ's actual physical travel range at the tool layer — the agent does not need to pre-validate durations. If the head is already at the limit, the command is intercepted before being sent; if the limit is reached mid-movement (e.g. "turn right 5s" but only 3s of travel remains), the tool stops early and replaces the request with the feasible movement. In both cases the result carries `degraded=True` and a human-readable `degrade_reason`. **The Agent MUST explicitly relay `degrade_reason` to the user whenever `degraded=True`** — never report a degraded move as if it completed as requested.
 
-Detailed tool-call sequences for all 8 directions, degraded-result examples, and calibration: [WORKFLOW.md — Phase 4 PTZ Control](references/WORKFLOW.md#phase-4--ptz-control-detailed-tool-calls).
+Detailed tool-call sequences for all 4 directions, degraded-result examples, and calibration: [WORKFLOW.md — Phase 4 PTZ Control](references/WORKFLOW.md#phase-4--ptz-control-detailed-tool-calls).
 
 ## Extended Capabilities
 
@@ -129,9 +144,9 @@ The following tools extend the skill's functionality beyond the core workflow. T
 |------|-------------|-------------|----------|
 | `manage_camera_events` | Alarm event receiving (motion, human, vehicle, tamper, …) with linked snapshots. Actions: `start` / `stop` / `poll` / `wait`. | Camera connected via `connect_device()` | [commands/events.md](references/commands/events.md) |
 | `manage_illumination` | Query & adjust camera illumination (15 parameters: daynight/filllight mode, brightness, timer, sensitivity). Dual-protocol: Skyworth private (TCP 9010) + ONVIF fallback. Actions: `get` / `set`. | Camera connected; capability auto-probed at connect time and cached in `config.yaml` (`illumination_modes`) | [commands/illumination.md](references/commands/illumination.md) |
-| `manage_image_settings` | Query & adjust image parameters (brightness, contrast, saturation, sharpness, flip, whitebalance, wdr, face/plate mode). Dual-channel: Skyworth private (TCP 9010) preferred, ONVIF Imaging fallback. Actions: `get` / `set`. | Camera connected | [commands/image_settings.md](references/commands/image_settings.md) |
-| `query_tracking_capabilities` | Query detection & tracking capabilities (human/vehicle/area) with current values and parameter ranges. | Camera connected | [commands/tracking.md](references/commands/tracking.md) |
-| `set_tracking` | Enable/disable detection & tracking features (human tracking, vehicle tracking, area detection). | Camera connected; modifies hardware settings | [commands/tracking.md](references/commands/tracking.md) |
+| `manage_image_settings` | Query & adjust image parameters (brightness, contrast, saturation, sharpness, flip, whitebalance, wdr, face/plate mode). Dual-channel: Skyworth private (TCP 9010) preferred, ONVIF Imaging fallback. Actions: `get` / `set`. | Camera connected | — |
+| `query_tracking_capabilities` | Query detection & tracking capabilities (human/vehicle/area) with current values and parameter ranges. | Camera connected | — |
+| `set_tracking` | Enable/disable detection & tracking features (human tracking, vehicle tracking, area detection). | Camera connected; modifies hardware settings | — |
 
 > **Note:** `manage_camera_events(action="start")` spawns a background listener thread — **requires explicit user confirmation** before calling. `manage_illumination(action="set")` and `set_tracking` modify hardware settings — also require user confirmation. Cloud authorization is handled internally by `connect_device` (blocking call, may wait up to 10 minutes).
 
@@ -142,7 +157,7 @@ The following tools extend the skill's functionality beyond the core workflow. T
 | Module | Key Functions | Reference |
 |--------|--------------|----------|
 | `device_mgmt` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device` | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
-| `stream` | `capture_video_screenshot`, `get_audio_video_stream`, `toggle_recording`, `manage_storage_status` | [commands/stream.md](references/commands/stream.md) |
+| `stream` | `capture_video_screenshot`, `get_audio_video_stream`, `toggle_recording`, `manage_storage_status`, `start_webrtc_stream`, `stop_webrtc_stream` | [commands/stream.md](references/commands/stream.md) |
 | `ptz` | `control_ptz`, `get_ptz_parameters`, `calibrate_ptz`, `stop_ptz` | [commands/ptz.md](references/commands/ptz.md) |
 | `events` | `manage_camera_events` (action: `start` / `stop` / `poll` / `wait`) | [commands/events.md](references/commands/events.md) |
 | `illumination` | `manage_illumination` (action: `get` / `set`) | [commands/illumination.md](references/commands/illumination.md) |
@@ -153,7 +168,7 @@ The following tools extend the skill's functionality beyond the core workflow. T
 
 | Constraint | Rule | Applies To |
 |------------|------|-----------|
-| **Explicit Prompt** | Inform the user of the operation content before execution and wait for confirmation | PTZ, streaming, screenshots, event monitor start, illumination mode change |
+| **Explicit Prompt** | Inform the user of the operation content before execution and wait for confirmation | PTZ, streaming, screenshots, event monitor start, illumination mode change, image settings change, tracking config change |
 | **Code Validation** | Validate parameters, device status, and connection availability | Recording, storage configuration |
 | **Background Thread Boundary** | The only background threads in this skill are the per-camera event listeners; they start **only** after explicit user enablement via `manage_camera_events(action="start")`, and their behavior is limited to alarm subscription plus writes into the `snapshots/` and `events/` whitelist paths. Auto-resume after a process restart re-arms **only** listeners the user enabled and never stopped (persisted intent) — it never starts new listeners on its own | Event monitoring |
 
@@ -238,7 +253,6 @@ When any MCP tool call fails, crashes, **or the MCP tools are unavailable in the
 4. **Wait for the user's decision.** Do not proceed with retries, fallbacks, or alternative approaches until the user confirms.
 5.**Exception - transient private-protocol port flapping:** `DEVICE_UNREACHABLE` errors returned by the Skyworth private protocol (TCP port 9010) on the illumination / image-settings / tracking tools (`manage_illumination`, `manage_image_settings`, `query_tracking_capabilities`, `set_tracking`) are known transient failures while the device remains online. For this specific error, the Agent performs bounded automatic retries (up to 3 attempts, 2-3 seconds apart) **without** waiting for user confirmation, per the Gotchas entry below. Only report to the user after all retries are exhausted.
 
-
 ## Configuration
 
 Camera configurations are saved in the skill's root directory under `config.yaml`. After a successful connection, the credentials are automatically written to config.yaml and are reused in subsequent conversations. Complete schema can be found in [references/CONFIG.md](references/CONFIG.md).
@@ -251,8 +265,6 @@ Camera configurations are saved in the skill's root directory under `config.yaml
 - ONVIF authentication uses WS-UsernameToken (PasswordDigest) — credentials are auto-injected into RTSP URLs internally
 - Screenshot/recording requires `opencv-python` (included in requirements.txt)
 - MCP server mode uses stdio transport only
-
-
 
 ## References
 

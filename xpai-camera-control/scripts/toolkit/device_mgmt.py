@@ -565,13 +565,28 @@ def register_camera(
     if illumination_modes:
         new_entry["illumination_modes"] = illumination_modes
 
-    # 更新或追加
+    # 更新或追加（按 name → ip → sn 三级匹配，支持重命名）
     found = False
+    # 1) 按 name 匹配 — 同名更新
     for i, cam in enumerate(cameras):
         if cam.get("name") == name:
             cameras[i] = new_entry
             found = True
             break
+    # 2) 按 ip 匹配 — 同一 IP 不同名称 → 重命名
+    if not found and ip:
+        for i, cam in enumerate(cameras):
+            if cam.get("ip") == ip:
+                cameras[i] = new_entry
+                found = True
+                break
+    # 3) 按 sn_code 匹配 — 同一 SN 不同名称 → 重命名
+    if not found and sn_code:
+        for i, cam in enumerate(cameras):
+            if cam.get("sn_code") == sn_code or cam.get("sn") == sn_code:
+                cameras[i] = new_entry
+                found = True
+                break
     if not found:
         cameras.append(new_entry)
 
