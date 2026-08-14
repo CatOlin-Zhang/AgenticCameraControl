@@ -47,7 +47,7 @@ python scripts/mcp_server.py
 }
 ```
 
-The MCP server exposes **22 tools** covering 8 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and return fields.
+The MCP server exposes **20 tools** covering 8 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and return fields.
 
 ### MCP-Only Interaction (Hard Rule)
 
