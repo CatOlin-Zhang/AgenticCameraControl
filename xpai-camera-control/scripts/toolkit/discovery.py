@@ -387,8 +387,16 @@ def discover_sky_devices(
             if device is None:
                 continue
 
-            # 使用响应中的 IP（比 UDP 源地址更准确）
-            device_ip = device.ip if device.ip else src_ip
+            # 对比设备上报 IP 与 UDP 源地址
+            reported_ip = device.ip
+            if reported_ip and reported_ip == src_ip:
+                # 两者一致 → 采用
+                device_ip = reported_ip
+            else:
+                # 不一致或设备未上报 → 优先使用 UDP 源地址（更可靠）
+                if reported_ip and reported_ip != src_ip:
+                    print(f"      [!] 设备上报IP({reported_ip})与源地址({src_ip})不一致，采用源地址")
+                device_ip = src_ip
             device.ip = device_ip
 
             if device_ip in discovered:

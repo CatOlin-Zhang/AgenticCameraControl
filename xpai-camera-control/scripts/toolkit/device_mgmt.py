@@ -201,8 +201,8 @@ CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 #  云端授权常量
 # ──────────────────────────────────────────────
 
-_CLOUD_AUTH_URL = "https://app.skyworthtest.top/skyworthAiModel/agent/skill/v1/deviceAuthReq"  # 云端设备授权请求接口
-_CLOUD_AUTH_CHECK_URL = "https://app.skyworthtest.top/skyworthAiModel/agent/skill/v1/checkAuth"  # 云端检测授权状态接口
+_CLOUD_AUTH_URL = "https://device.skyworthdigitaliot.com/skyworthAiModel/agent/skill/v1/deviceAuthReq"  # 云端设备授权请求接口
+_CLOUD_AUTH_CHECK_URL = "https://device.skyworthdigitaliot.com/skyworthAiModel/agent/skill/v1/checkAuth"  # 云端检测授权状态接口
 _CLOUD_AUTH_POLL_URL = ""  # 云端授权状态轮询地址，留空则使用 _CLOUD_AUTH_CHECK_URL
 
 
@@ -889,7 +889,7 @@ def _cloud_auth_and_connect(
     """内部函数：云端授权 + 自动连接。由 connect_device 在 pending_auth 场景调用。
 
     流程：
-      1. 检查 SN → 2. POST 云端授权请求 → 3. 轮询等待结果（5s 间隔，最长 10 分钟）
+      1. 检查 SN → 2. POST 云端授权请求 → 3. 轮询等待结果（5s 间隔，最长 5 分钟）
       4. 授权通过 → 用云端密码连接 → 注册凭据
     """
     # 1. 检查 SN 是否可用
@@ -926,9 +926,9 @@ def _cloud_auth_and_connect(
         connection_type=cached.connection_type if cached else "onvif",
     )
 
-    # 4. 轮询等待授权结果（5s 间隔，最长 10 分钟 = 120 次）
+    # 4. 轮询等待授权结果（5s 间隔，最长 5 分钟 = 60 次）
     poll_interval = 5
-    max_polls = 120
+    max_polls = 60
     for _ in range(max_polls):
         time.sleep(poll_interval)
         result = poll_auth_status(camera_name)
@@ -992,7 +992,7 @@ def _cloud_auth_and_connect(
         success=False, status="needs_password",
         needs_password=True,
         error_message=(
-            f"云端授权等待超时（10 分钟），用户未确认。"
+            f"云端授权等待超时（5 分钟），用户未确认。"
             f"请直接输入设备 {camera_name}({ip}) 的密码。"
         ),
     )
@@ -1705,7 +1705,7 @@ def poll_auth_status(
     """
     检测智能体与设备的授权状态（对接 /agent/skill/v1/checkAuth）。
 
-    单次调用做一次查询。Agent 应反复调用（建议间隔 5 秒，最长等待 600 秒 / 10 分钟）：
+    单次调用做一次查询。Agent 应反复调用（建议间隔 5 秒，最长等待 300 秒 / 5 分钟）：
     - status == AUTHORIZED → devicePwd 已自动写回 config.yaml，可直接调 connect_device
     - status == REJECTED   → 用户在 APP 端拒绝了授权，流程终止
     - status == PENDING    → 用户尚未确认，继续轮询
