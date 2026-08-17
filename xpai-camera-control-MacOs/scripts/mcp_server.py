@@ -17,13 +17,8 @@ import asyncio
 import argparse
 from typing import Any, Dict
 
-# Ensure the project root is on sys.path so `scripts.xxx` imports work
-_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
-from scripts._paths import get_skill_root
-_skill_root = str(get_skill_root())
+# Ensure the parent directory is on the path
+_skill_root = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 if _skill_root not in sys.path:
     sys.path.insert(0, _skill_root)
 
@@ -49,7 +44,7 @@ TOOLS = [
     ),
     Tool(
         name="register_camera",
-        description="将摄像头凭据写入 config.yaml 持久化，供后续 connect_device 自动加载。支持重命名：当传入新名称但 IP 或 SN 与已有条目匹配时，自动替换旧名称。通常由 connect_device 内部自动调用，无需手动使用。",
+        description="将摄像头凭据写入 config.yaml 持久化，供后续 connect_device 自动加载。通常由 connect_device 内部自动调用，无需手动使用。",
         inputSchema={
             "type": "object",
             "properties": {

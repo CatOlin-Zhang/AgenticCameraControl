@@ -1,0 +1,5 @@
+# 事件落盘目录（Guardian Mode）
+# camera_events.txt — 事件存储（schema 1.0，每行一条 JSON，单一真相源）
+# events_cursor.json  — 消费游标
+camera_events.txt
+events_cursor.json
