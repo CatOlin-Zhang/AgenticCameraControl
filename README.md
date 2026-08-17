@@ -8,7 +8,7 @@
 
 局域网 IP 摄像头的智能控制系统。支持 ONVIF 协议摄像头和 USB 摄像头的自动发现、连接、视频流拉取、云台控制、设备管理等功能。
 
-核心模块 `xpai-camera-control` 可作为 MCP (Model Context Protocol) Server 运行，将 20 个摄像头控制工具暴露给 AI Agent 使用。
+核心模块 `xpai-camera-control` 可作为 MCP (Model Context Protocol) Server 运行，将 22 个摄像头控制工具暴露给 AI Agent 使用。
 
 ### 功能概览
 
@@ -17,6 +17,7 @@
 | **设备发现** | 局域网自动搜索摄像头，支持 WS-Discovery、创维私有协议、USB 扫描 |
 | **设备连接** | 自动探测认证方式，凭据缓存与自动重连 |
 | **视频流** | RTSP 流地址获取、截图、录像、存储管理 |
+| **WebRTC 预览** | RTSP 流转 WebRTC 浏览器实时预览，返回 HTTP 访问地址 |
 | **云台控制** | 8 方向移动、物理极限保护、云台校准 |
 | **事件监听** | 报警事件订阅（移动/人形/遮挡等）、事件联动抓拍、本地事件存储 |
 | **补光控制** | 日夜模式切换、补光灯模式/亮度/定时器/灵敏度调节（创维私有协议 + ONVIF 回退） |
@@ -63,8 +64,8 @@ AgenticCameraControl/
 │   │   │   ├── ptz.py            # 云台控制
 │   │   │   ├── events.py         # 报警事件接收与本地存储
 │   │   │   ├── illumination.py   # 补光/夜视模式控制
-│   │   ├── image_settings.py # 图像参数设置
-│   │   └── tracking.py       # 侦测追踪控制
+│   │   │   ├── image_settings.py # 图像参数设置
+│   │   │   └── tracking.py       # 侦测追踪控制
 │   ├── references/               # 技术参考文档
 │   │   └── commands/             # 各模块工具签名与参数说明
 │   ├── SKILL.md                  # Agent 技能描述文件
@@ -82,13 +83,14 @@ AgenticCameraControl/
 
 ### 工具模块
 
-8 个模块，共 20 个 MCP 工具：
+8 个功能扇区，共 22 个 MCP 工具：
 
-| 模块 | 说明 | 参考文档 |
+| 扇区 | 说明 | 参考文档 |
 |------|------|----------|
 | `device_mgmt.py` | 设备注册、搜索、连接、断开 | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md) |
 | `discovery.py` | 局域网设备发现（内部模块） | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md) |
 | `stream.py` | 视频流、截图、录像、存储 | [commands/stream.md](xpai-camera-control/references/commands/stream.md) |
+| `stream.py` (WebRTC) | WebRTC 实时预览（RTSP 流转浏览器可视化） | [commands/stream.md](xpai-camera-control/references/commands/stream.md) |
 | `ptz.py` | 云台方向控制/校准/停止 | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md) |
 | `events.py` | 报警事件订阅、联动抓拍、事件存储与消费 | [commands/events.md](xpai-camera-control/references/commands/events.md) |
 | `illumination.py` | 补光/夜视模式查询与控制（双协议） | [commands/illumination.md](xpai-camera-control/references/commands/illumination.md) |
@@ -124,7 +126,7 @@ AgenticCameraControl/
 
 An intelligent control system for IP cameras on local networks. Supports auto-discovery, connection, video streaming, PTZ control, and device management for ONVIF-compliant cameras and USB webcams.
 
-The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Server, exposing 20 camera control tools to AI Agents.
+The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Server, exposing 22 camera control tools to AI Agents.
 
 ### Features
 
@@ -133,6 +135,7 @@ The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Se
 | **Discovery** | Auto-search cameras on LAN, supports WS-Discovery, Skyworth private protocol, and USB scanning |
 | **Connection** | Auto-detect auth method, credential caching and auto-reconnect |
 | **Streaming** | RTSP stream URL retrieval, screenshots, recording, storage management |
+| **WebRTC Preview** | RTSP-to-WebRTC browser live preview, returns HTTP access URL |
 | **PTZ Control** | 8-directional movement, physical limit guard, calibration |
 | **Event Monitoring** | Alarm event subscription (motion/human/tamper, etc.), snapshot linkage on event, local event store |
 | **Illumination Control** | Day/night mode switching, fill-light mode/brightness/timer/sensitivity adjustment (Skyworth private protocol + ONVIF fallback) |
@@ -179,8 +182,8 @@ AgenticCameraControl/
 │   │   │   ├── ptz.py            # PTZ control
 │   │   │   ├── events.py         # Alarm event receiving & local store
 │   │   │   ├── illumination.py   # Illumination / night-vision control
-│   │   ├── image_settings.py # Image parameter settings
-│   │   └── tracking.py       # Detection & tracking control
+│   │   │   ├── image_settings.py # Image parameter settings
+│   │   │   └── tracking.py       # Detection & tracking control
 │   ├── references/               # Technical reference docs
 │   │   └── commands/             # Per-module tool signatures & parameters
 │   ├── SKILL.md                  # Agent skill description file
@@ -198,13 +201,14 @@ AgenticCameraControl/
 
 ### Toolkit Modules
 
-8 modules, 20 MCP tools in total:
+8 functional sectors, 22 MCP tools in total:
 
-| Module | Description | Reference |
-|--------|-------------|-----------|
+| Sector | Description | Reference |
+|--------|-------------|----------|
 | `device_mgmt.py` | Device registration, search, connection, disconnection | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md) |
 | `discovery.py` | LAN device discovery (internal module) | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md) |
 | `stream.py` | Video streaming, screenshots, recording, storage | [commands/stream.md](xpai-camera-control/references/commands/stream.md) |
+| `stream.py` (WebRTC) | WebRTC live preview (RTSP-to-browser visualization) | [commands/stream.md](xpai-camera-control/references/commands/stream.md) |
 | `ptz.py` | PTZ directional control / calibration / stop | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md) |
 | `events.py` | Alarm event subscription, snapshot linkage, event store & consumption | [commands/events.md](xpai-camera-control/references/commands/events.md) |
 | `illumination.py` | Illumination / night-vision mode query & control (dual-protocol) | [commands/illumination.md](xpai-camera-control/references/commands/illumination.md) |

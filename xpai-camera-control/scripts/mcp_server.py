@@ -49,7 +49,7 @@ TOOLS = [
     ),
     Tool(
         name="register_camera",
-        description="将摄像头凭据写入 config.yaml 持久化，供后续 connect_device 自动加载。通常由 connect_device 内部自动调用，无需手动使用。",
+        description="将摄像头凭据写入 config.yaml 持久化，供后续 connect_device 自动加载。支持重命名：当传入新名称但 IP 或 SN 与已有条目匹配时，自动替换旧名称。通常由 connect_device 内部自动调用，无需手动使用。",
         inputSchema={
             "type": "object",
             "properties": {
