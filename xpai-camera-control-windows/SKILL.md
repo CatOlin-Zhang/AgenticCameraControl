@@ -79,12 +79,12 @@ When Phase 0 cache is unavailable, call `search_devices()` to discover cameras o
 **Camera Naming:** When `search_devices()` returns multiple cameras, the Agent **MUST**:
 
 1. **List all discovered cameras** — present each device with its key identifiers (IP, model, SN) in a numbered list so the user can distinguish them
-2. **Prompt for user-defined names** — ask the user if they want to assign friendly names (e.g. "客厅摄像头", "前门", "车库") before connecting. Pass the chosen name as the `name` parameter to `connect_device()` or `register_camera()`
-3. **Or auto-name via multimodal model** — if the Agent has vision capabilities, it can connect each camera first, call `capture_video_screenshot()` to capture a frame, analyze the scene content, and generate a descriptive name automatically (e.g. a camera showing a doorway → "前门摄像头"). Then call `register_camera(name=auto_name, ip=camera_ip, ...)` to rename — `register_camera` matches by IP and replaces the old entry in-place, no duplicates
+2. **Prompt for user-defined names** — ask the user if they want to assign friendly names (e.g. "living room camera", "front door", "garage") before connecting. Pass the chosen name as the `name` parameter to `connect_device()` or `register_camera()`
+3. **Or auto-name via multimodal model** — if the Agent has vision capabilities, it can connect each camera first, call `capture_video_screenshot()` to capture a frame, analyze the scene content, and generate a descriptive name automatically (e.g. a camera showing a doorway → "front door cam"). Then call `register_camera(name=auto_name, ip=camera_ip, ...)` to rename — `register_camera` matches by IP and replaces the old entry in-place, no duplicates
 
 > **Renaming:** `register_camera` uses a three-tier match: **name → IP → SN**. Calling it with a new name but the same IP or SN as an existing entry will rename that entry in-place. This means users can rename cameras at any time — during initial setup, after connecting, or in a later session.
 
-> **Note:** If the user skips naming, the toolkit assigns a default name based on the device model or IP. Friendly names make subsequent operations much clearer (e.g. "客厅摄像头向左转" vs "192.168.1.105 设备向左转").
+> **Note:** If the user skips naming, the toolkit assigns a default name based on the device model or IP. Friendly names make subsequent operations much clearer (e.g. "The living room camera turns left" vs "192.168.1.105 device turns left").
 
 ### Phase 2 — Connect & Authorize
 
