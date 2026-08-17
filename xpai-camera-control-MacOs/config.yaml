@@ -1,0 +1,19 @@
+claw_id: claw-000C296F9083-20260814104054027
+cameras:
+- connection_type: onvif
+  device_class: password_required
+  ip: 192.168.1.104
+  name: 客厅摄像头
+  onvif_port: 2000
+  password: ''
+  pkdk: ''
+  port: 2000
+  registered_at: '2026-08-14T02:40:54.467660+00:00'
+  rtsp_path: /stream1
+  rtsp_path_main: /stream1
+  rtsp_path_sub: /stream2
+  rtsp_port: 554
+  rtsp_sub_path: /stream2
+  sn: 0340013000126140004893
+  sn_code: 0340013000126140004893
+  username: admin

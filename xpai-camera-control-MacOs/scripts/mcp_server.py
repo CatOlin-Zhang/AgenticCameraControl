@@ -17,13 +17,8 @@ import asyncio
 import argparse
 from typing import Any, Dict
 
-# Ensure the project root is on sys.path so `scripts.xxx` imports work
-_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
-from scripts._paths import get_skill_root
-_skill_root = str(get_skill_root())
+# Ensure the parent directory is on the path
+_skill_root = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 if _skill_root not in sys.path:
     sys.path.insert(0, _skill_root)
 
