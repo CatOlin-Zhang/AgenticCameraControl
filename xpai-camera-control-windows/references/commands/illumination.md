@@ -12,17 +12,9 @@ Camera illumination mode query and adjustment — exposed as the single MCP tool
 
 Illumination control follows a **dual-protocol strategy** (same pattern as PTZ):
 
-### Primary — Skyworth Private Protocol (TCP 9010)
+### Primary — Skyworth Private Protocol (TCP channel)
 
-For Skyworth cameras, three TCP commands provide full illumination control:
-
-| Command | Purpose |
-|---------|---------|
-| `SK_SETTING_GET_FILLLIGHT_OPTION` | Query device capability (parameter ranges and descriptions) |
-| `SK_SETTING_GET_FILLLIGHT` | Read all current illumination settings |
-| `SK_SETTING_SET_FILLLIGHT` | Write illumination parameters |
-
-> **Response naming convention:** The device appends `_R` to the `cmd_name` in responses. For example, request `SK_SETTING_GET_FILLLIGHT_OPTION` receives response `SK_SETTING_GET_FILLLIGHT_OPTION_R`. The `msg_id` is echoed back unchanged for request-response correlation. Response success is indicated by `code: "C0000"` and `msg: "SUCESS"`.
+For Skyworth cameras, the private protocol provides full illumination control via vendor-specific TCP commands (capability query, read settings, write settings — handled internally by the tool).
 
 This protocol exposes **15 controllable parameters** across two dimensions:
 
@@ -67,11 +59,11 @@ This protocol exposes **15 controllable parameters** across two dimensions:
 | `repeatdays` | string | — | Repeat days (e.g. `"sun,mon,tue,wed,thu,fri,sat,"`) |
 | `enable` | int | 0–1 | Timer enable: 0=off, 1=on |
 
-**Set behavior:** the device requires the **full parameter set** when writing. The tool handles this internally — it first reads current settings via `SK_SETTING_GET_FILLLIGHT`, merges only the user-specified parameters, then sends the complete set via `SK_SETTING_SET_FILLLIGHT`. The Agent only needs to pass the parameters it wants to change.
+**Set behavior:** the device requires the **full parameter set** when writing. The tool handles this internally — it first reads current settings, merges only the user-specified parameters, then sends the complete set. The Agent only needs to pass the parameters it wants to change.
 
 ### Fallback — ONVIF Imaging Service (ver20)
 
-For non-Skyworth devices (no TCP 9010 connection), the tool falls back to ONVIF:
+For non-Skyworth devices (no TCP connection available), the tool falls back to ONVIF:
 
 1. `GetMoveOptions` → detect supported illumination modes
 2. `GetImagingSettings` → read current `IlluminationConfiguration.Mode`

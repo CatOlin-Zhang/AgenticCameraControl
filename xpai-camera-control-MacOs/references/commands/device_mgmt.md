@@ -41,7 +41,7 @@ Read all camera entries from `config.yaml` and return their configurations.
 | `rtsp_sub_path` | string | Sub stream RTSP path |
 | `device_class` | string | `"password_required"` or `"direct_connect"` |
 | `sn_code` | string | Device serial number |
-| `pkdk` | string | Device public key identifier |
+| `pkdk` | string | Device identity token |
 | `device_index` | int | OpenCV device index (USB only) |
 | `device_model` | string | USB device model name |
 | `product_version` | string | USB product version |
@@ -140,9 +140,9 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
 | `status` | string | `"connected"` / `"needs_password"` / `"pending_auth"` / `"failed"` |
 | `error_message` | string | Failure reason or status detail (empty on success) |
 | `needs_password` | bool | `true` = Agent must prompt user for password and re-call with `password` arg |
-| `onvif_port` | int | Verified ONVIF port (0 = not verified; Skyworth: 2000) |
+| `onvif_port` | int | Verified ONVIF port (0 = not verified; auto-probed by `connect_device`) |
 
-**ONVIF port verification:** before ONVIF auth, candidate ports (hint → 2000/80/8000/8899) are probed with unauthenticated `GetSystemDateAndTime`. Only ports returning a SOAP Envelope are accepted. Verified ports are written back to config.yaml automatically.
+**ONVIF port verification:** before ONVIF auth, candidate ports are probed with unauthenticated `GetSystemDateAndTime`. Only ports returning a SOAP Envelope are accepted. Verified ports are written back to config.yaml automatically.
 
 **Illumination capability probing:** after a successful connection (both password-auth and direct-connect paths), `connect_device()` automatically probes the ONVIF Imaging Service for supported illumination modes via `probe_illumination_capability()`. The result is persisted to `config.yaml` as `illumination_modes`. The probe is non-blocking — failures are silently ignored so they never delay the connection flow. If `illumination_modes` is already cached in config.yaml from a previous session, re-probing is skipped.
 
@@ -154,7 +154,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
 4. If not `password_required` → probe RTSP stream:
    - `200 OK` → direct-connect (`auth_method="direct"`)
    - `401 Unauthorized` → return `needs_password=True`
-5. If device requires cloud authorization (SN-based auth) → return `status="pending_auth"` → Agent should call `big_connect()` or loop `poll_auth_status()`
+5. If device requires cloud authorization (SN-based auth) → return `status="pending_auth"` → cloud auth is handled internally by `connect_device` on subsequent calls with `sn_code`
 
 #### Return JSON examples by scenario
 
@@ -166,7 +166,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
   "status": "connected",
   "error_message": "",
   "needs_password": false,
-  "onvif_port": 2000
+  "onvif_port": 8000
 }
 ```
 
@@ -216,7 +216,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
   "status": "failed",
   "error_message": "密码认证失败: ONVIF 认证失败: 用户名或密码错误，请确认密码后重试",
   "needs_password": true,
-  "onvif_port": 2000
+  "onvif_port": 8000
 }
 ```
 
@@ -226,12 +226,12 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
   "success": false,
   "auth_method": "",
   "status": "pending_auth",
-  "error_message": "设备需要云端授权，请在 APP 端确认授权后调用 big_connect 或 poll_auth_status 轮询结果",
+  "error_message": "设备需要云端授权，请提供 sn_code 后重新调用 connect_device 触发云端授权流程",
   "needs_password": false,
   "onvif_port": 0
 }
 ```
-→ Agent: call `big_connect(camera_name)` for one-call flow, or loop `poll_auth_status(camera_name)`.
+→ Agent: re-call `connect_device(camera_name, sn_code="SN...")` to trigger cloud auth internally.
 
 ---
 
@@ -257,14 +257,15 @@ Disconnect a camera and release all resources (ONVIF connection, session state).
 
 ### `poll_auth_status(camera_name) -> AuthStatusResult`
 
-Poll the cloud authorization status for a device. Called after `connect_device` returns `pending_auth`. Agent should loop with ~5s intervals (max 600s / 10 minutes).
+> **Deprecated as external MCP tool.** Cloud authorization is now fully handled internally by `connect_device` when called with `sn_code`. This section is retained for reference only.
+
+Poll the cloud authorization status for a device.
 
 | Aspect | Detail |
 |--------|--------|
 | **Safety** | None (read-only query) |
 | **Returns** | `AuthStatusResult` (see field table below) |
-| **Parameters** | `camera_name`: camera identifier or SN code (looks up device SN from config.yaml) |
-| **When to call** | After `connect_device` returns `status="pending_auth"`, or as part of manual polling loop |
+| **Parameters** | `camera_name`: camera identifier or SN code |
 
 **AuthStatusResult return fields:**
 
@@ -273,27 +274,26 @@ Poll the cloud authorization status for a device. Called after `connect_device` 
 | `status` | string | Authorization status: `PENDING` / `AUTHORIZED` / `REJECTED` / `ERROR` |
 | `camera_name` | string | Camera identifier |
 | `message` | string | Human-readable status description |
-| `auth_status_code` | int | Raw cloud authStatus code (0=pending, 1=authorized, 2=rejected) |
-| `device_pwd` | string | Device password returned on authorization (empty otherwise) |
 
 **Agent behavior:**
-- `AUTHORIZED` → devicePwd has been auto-written to config.yaml; call `connect_device()` to complete connection
+- `AUTHORIZED` → credentials auto-persisted to config.yaml; call `connect_device()` to complete connection
 - `REJECTED` → user declined authorization in the app; inform user
-- `PENDING` → continue polling (5s interval)
+- `PENDING` → continue polling
 - `ERROR` → report error to user
 
 ---
 
 ### `big_connect(name="") -> AuthOrchestrateResult`
 
-One-call cloud authorization flow: initiates authorization request + polls status (up to 10 minutes) + auto-connects on success. The device password is automatically written to config.yaml upon authorization.
+> **Deprecated as external MCP tool.** Cloud authorization is now fully handled internally by `connect_device` when called with `sn_code`. This section is retained for reference only.
+
+One-call cloud authorization flow: initiates authorization request + polls status + auto-connects on success. Credentials are automatically written to config.yaml upon authorization.
 
 | Aspect | Detail |
 |--------|--------|
-| **Safety** | None (blocking call, may wait up to 10 minutes) |
+| **Safety** | None (blocking call, waits for user confirmation) |
 | **Returns** | `AuthOrchestrateResult` (see field table below) |
-| **Parameters** | `name`: camera name (optional; empty = auto-select if only one device, or return `needs_selection` if multiple) |
-| **When to call** | After `connect_device` returns `pending_auth`, as a one-call alternative to manual polling |
+| **Parameters** | `name`: camera name (optional; empty = auto-select if only one device) |
 
 **AuthOrchestrateResult return fields:**
 
@@ -303,15 +303,7 @@ One-call cloud authorization flow: initiates authorization request + polls statu
 | `status` | string | `authorized` / `rejected` / `timeout` / `error` / `no_devices` / `needs_selection` / `no_sn` / `cloud_error` |
 | `camera_name` | string | Camera identifier |
 | `sn` | string | Device serial number |
-| `claw_id` | string | Agent session identifier |
-| `device_pwd` | string | Device password (on authorization) |
 | `error_message` | string | Failure reason (empty on success) |
 | `available_cameras` | list | Camera list (only when `status="needs_selection"`) |
-
-**Internal flow (transparent to Agent):**
-1. Resolve target camera from config.yaml
-2. POST `/deviceAuthReq` with `{claw_id, sn, device_ip, device_model}`
-3. Poll GET `/checkAuth` every 5s (up to 120 polls = 10 min)
-4. On authorization: auto-write devicePwd to config.yaml via `register_camera()`
 
 ---

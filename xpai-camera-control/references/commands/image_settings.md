@@ -12,17 +12,9 @@ Camera image parameter query and adjustment — exposed as the single MCP tool `
 
 Image settings follow a **dual-protocol strategy** (same pattern as Illumination / PTZ):
 
-### Primary — Skyworth Private Protocol (TCP 9010)
+### Primary — Skyworth Private Protocol (TCP channel)
 
-For Skyworth cameras, three TCP commands provide full image control:
-
-| Command | Purpose |
-|---------|---------|
-| `SK_SETTING_GET_IMAGE_OPTION` | Query device capability (parameter ranges and descriptions) |
-| `SK_SETTING_GET_IMAGE` | Read all current image parameters |
-| `SK_SETTING_SET_IMAGE` | Write image parameters (full-payload delivery) |
-
-> **Response naming convention:** Same as illumination — device appends `_R` to `cmd_name`, success is `code: "C0000"`.
+For Skyworth cameras, the private protocol provides full image control via vendor-specific TCP commands (capability query, read settings, write settings — handled internally by the tool).
 
 This protocol exposes **9 controllable parameters**:
 
@@ -56,11 +48,11 @@ This protocol exposes **9 controllable parameters**:
 |-----------|------|-------------|
 | `restore_default` | bool | When `true`, sets the protocol `default` field to 1, resetting all image parameters to factory defaults |
 
-**Set behavior:** the device requires the **full parameter set** when writing (`SK_SETTING_SET_IMAGE`). The tool handles this internally — it first reads current settings via `SK_SETTING_GET_IMAGE`, merges only the user-specified parameters, then sends the complete set. The Agent only needs to pass the parameters it wants to change.
+**Set behavior:** the device requires the **full parameter set** when writing. The tool handles this internally — it first reads current settings, merges only the user-specified parameters, then sends the complete set. The Agent only needs to pass the parameters it wants to change.
 
 ### Fallback — ONVIF Imaging Service (ver20)
 
-For non-Skyworth devices (or firmware like ZCR461 that does not implement SK image commands), the tool falls back to ONVIF:
+For non-Skyworth devices (or firmware that does not implement the private image commands), the tool falls back to ONVIF:
 
 1. `GetImagingSettings` → read current `Brightness`/`Contrast`/`ColorSaturation`/`Sharpness`
 2. `GetOptions` → read parameter min/max ranges

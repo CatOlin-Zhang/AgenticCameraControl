@@ -23,7 +23,7 @@ cameras:
 
     # ONVIF-specific (dual-format fields for cross-scheme compatibility)
     ip: string                # Camera IP address
-    port: int                 # ONVIF service port (0 = unknown/unverified; auto-probed & written back by connect_device — Skyworth: 2000)
+    port: int                 # ONVIF service port (0 = unknown/unverified; auto-probed & written back by connect_device)
     onvif_port: int           # Alias for port (password auth scheme compatibility)
     username: string          # Login username (default: "admin")
     password: string          # Login password
@@ -36,7 +36,7 @@ cameras:
     # Device identity (populated by discovery or manual entry)
     sn_code: string           # Device serial number
     sn: string                # Alias for sn_code (password auth scheme compatibility)
-    pkdk: string              # Device public key identifier (for identity verification)
+    pkdk: string              # Device identity token (populated during registration)
 
     # Device classification
     device_class: string      # "password_required" | "direct_connect" (auto-detected via RTSP probe)
@@ -77,13 +77,13 @@ Unique string identifier for the camera.
 | Field | Default | Notes |
 |-------|---------|-------|
 | `ip` | `""` | Required for ONVIF cameras. |
-| `port` | `0` (unknown) | ONVIF service port. **Only verified ports are persisted** — `connect_device` probes candidates (2000/80/8000/8899) and writes back the real port automatically (Skyworth cameras: 2000; port 80 is the web UI). `0` means not yet verified. |
+| `port` | `0` (unknown) | ONVIF service port. **Only verified ports are persisted** — `connect_device` probes candidates and writes back the real port automatically. `0` means not yet verified. |
 | `onvif_port` | — | Alias for `port`. Written for compatibility with password auth scheme. |
 | `username` | `"admin"` | ONVIF login username. |
 | `password` | `""` | ONVIF login password. Auto-cached to config.yaml after successful connection. |
 | `rtsp_port` | `554` | RTSP streaming port. |
-| `rtsp_path` | `"/stream1"` | Main stream RTSP path. Aliases: `rtsp_path_main`. Skyworth cameras use `/stream0`, `/stream1`, `/md0_0`. |
-| `rtsp_sub_path` | `"/stream2"` | Sub stream RTSP path. Aliases: `rtsp_path_sub`. Skyworth cameras use `/md0_1`, `/stream2`. |
+| `rtsp_path` | `"/stream1"` | Main stream RTSP path. Aliases: `rtsp_path_main`. Skyworth cameras use vendor-specific paths; the toolkit auto-tries fallback paths when the configured path fails. |
+| `rtsp_sub_path` | `"/stream2"` | Sub stream RTSP path. Aliases: `rtsp_path_sub`. Same fallback behavior as main stream. |
 
 ### Device Identity Parameters
 
@@ -91,7 +91,7 @@ Unique string identifier for the camera.
 |-------|---------|-------|
 | `sn_code` | `""` | Device serial number. Populated by ONVIF `GetDeviceInformation` or Skyworth discovery during registration. |
 | `sn` | `""` | Alias for `sn_code`. Written for compatibility with password auth scheme. |
-| `pkdk` | `""` | Device public key identifier. Exposed by device firmware / private protocol for identity verification. |
+| `pkdk` | `""` | Device identity token. Populated automatically during registration. |
 | `device_class` | auto | Auto-detected by RTSP probe: 401 response → `"password_required"` (needs username/password); 200 response → `"direct_connect"` (no password, connects immediately). |
 | `illumination_modes` | `[]` | Auto-probed by `connect_device()` via ONVIF Imaging Service `GetMoveOptions`. Contains supported illumination mode strings (e.g. `["OFF", "AUTO", "ON"]`) or empty list when the device does not support illumination mode switching or has not been probed yet. Written to config.yaml after the first successful connection; subsequent sessions read the cache and skip re-probing. |
 

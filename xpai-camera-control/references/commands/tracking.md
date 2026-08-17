@@ -13,23 +13,19 @@ Camera intelligent detection and tracking control — exposed as two MCP tools b
 
 ## Architecture
 
-Detection & tracking uses **Skyworth Private Protocol only** (TCP 9010, dynamic-token HTTP). There is **no ONVIF fallback** — tracking is a Skyworth-specific feature set.
+Detection & tracking uses **Skyworth Private Protocol only** (TCP channel, dynamic-token HTTP). There is **no ONVIF fallback** — tracking is a Skyworth-specific feature set.
 
 Three detection types are supported, each with its own protocol section:
 
 | Type | Protocol Section | Response Key | Description |
 |------|-----------------|--------------|-------------|
-| `human` | 5.7 Human Detect | `humandetect` | Human-shape detection & auto-tracking |
-| `vehicle` | 5.12 Object Detect | `objectdetect` | Vehicle detection (requires `object=vehicle` in payload) |
-| `area` | 5.10 VG Rect Detect | `vgrectdetect` | Area/region-based detection (line-crossing, enter/leave) |
+| `human` | Human Detect | `humandetect` | Human-shape detection & auto-tracking |
+| `vehicle` | Object Detect | `objectdetect` | Vehicle detection (requires `object=vehicle` in payload) |
+| `area` | VG Rect Detect | `vgrectdetect` | Area/region-based detection (line-crossing, enter/leave) |
 
-### SK Commands (9 total)
+### Private Protocol Commands (9 total)
 
-| Detection Type | Query Capability | Read Current | Write |
-|---------------|-----------------|--------------|-------|
-| Human (5.7) | `SK_SETTING_GET_HUMANDETECT_OPTION` | `SK_SETTING_GET_HUMANDETECT` | `SK_SETTING_SET_HUMANDETECT` |
-| Vehicle (5.12) | `SK_SETTING_GET_OBJECTDETECT_OPTION` | `SK_SETTING_GET_OBJECTDETECT` | `SK_SETTING_SET_OBJECTDETECT` |
-| Area (5.10) | `SK_SETTING_GET_VGRECTDETECT_OPTION` | `SK_SETTING_GET_VGRECTDETECT` | `SK_SETTING_SET_VGRECTDETECT` |
+Each detection type has three vendor-specific commands (query capability, read current, write) handled internally by the tool. The Agent interacts only through the `query_tracking_capabilities` and `set_tracking` MCP tools.
 
 ### Common parameters across detection types
 
