@@ -76,7 +76,7 @@ connect_device(camera_name="客厅摄像头")
 Step 1 — Connect without password:
   connect_device(camera_name="discovered_192_168_1_100", sn_code="SN123456")
   → tool internally triggers cloud authorization
-  → waiting for user to confirm on APP (blocks up to 10 min)
+  → waiting for user to confirm on APP (blocks until timeout)
   → success=true: cloud authorized, auto-connected, credentials persisted
   → status="needs_password": cloud service unreachable, inform user
   → status="auth_rejected": user denied authorization, cannot connect
@@ -119,7 +119,7 @@ Cloud authorization is now fully handled inside `connect_device`. The Agent does
 ```text
 # Cloud auth flow is automatic:
 connect_device(camera_name="discovered_192_168_1_100", sn_code="SN123456")
-→ internally: POST cloud auth request → poll every 5s for up to 10 min
+→ internally: triggers cloud auth request → polls for result with timeout
 → if authorized: auto-connect with cloud password, credentials persisted
 → if rejected/timeout/error: return appropriate status for Agent to handle
 ```
@@ -252,7 +252,7 @@ Receive alarm events (motion, human, vehicle, tamper, line-crossing, …) with l
 
 ### Illumination Mode Control (`manage_illumination`)
 
-Query and adjust camera illumination parameters. Dual-protocol: Skyworth private (TCP 9010, 15 parameters) + ONVIF Imaging fallback (mode only). Single tool, `action` switches mode: `get` / `set`.
+Query and adjust camera illumination parameters. Dual-protocol: Skyworth private (TCP channel, 15 parameters) + ONVIF Imaging fallback (mode only). Single tool, `action` switches mode: `get` / `set`.
 
 | Aspect | Detail |
 |--------|--------|

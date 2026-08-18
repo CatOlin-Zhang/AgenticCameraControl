@@ -43,17 +43,17 @@ Before ONVIF authentication, `connect_device` verifies the real ONVIF port inter
 1. Agent → calls connect_device(camera_name, sn_code="SN123456")
    └─ Tool checks config.yaml → no cached password
    └─ Tool detects device_class == "password_required"
-   └─ Tool internally calls _cloud_auth_and_connect():
-      ├─ SN available → POST /deviceAuthReq → poll /checkAuth (5s × 120)
+   └─ Tool internally triggers cloud authorization:
+      ├─ SN available → request cloud auth → poll for result
       │  ├─ AUTHORIZED → auto-connect with cloud password → credentials persisted
       │  │  → ConnectResult(success=True, auth_method="password")
       │  ├─ REJECTED → user declined in app
       │  │  → ConnectResult(success=False, status="auth_rejected")
-      │  ├─ Cloud unreachable (404 / network error)
+      │  ├─ Cloud unreachable (network error)
       │  │  → ConnectResult(success=False, status="needs_password")
       │  ├─ Cloud password mismatch (authorized but connect fails)
       │  │  → ConnectResult(success=False, status="cloud_pwd_failed")
-      │  └─ Timeout (10 min)
+      │  └─ Timeout
       │     → ConnectResult(success=False, status="needs_password")
       └─ SN unavailable → ConnectResult(success=False, status="needs_password")
 
@@ -69,7 +69,7 @@ Before ONVIF authentication, `connect_device` verifies the real ONVIF port inter
 ```
 1. Agent → calls connect_device(camera_name, password=user_input, ip=..., rtsp_port=...)
    └─ Single attempt with user-provided password (no retry, no cache cleanup)
-   └─ Tool attempts ONVIF WS-UsernameToken auth → TCP channel (port 9010)
+   └─ Tool attempts ONVIF WS-UsernameToken auth → TCP channel fallback
    └─ Success → registers to config.yaml → ConnectResult(success=True)
    └─ Failure → ConnectResult(success=False, status="failed", needs_password=True)
 ```
@@ -109,26 +109,22 @@ This is injected as a SOAP header for ONVIF service calls. RTSP URLs are auto-co
 
 ### Skyworth Private Protocol
 
-| Parameter | Value |
-|-----------|-------|
-| Multicast address | `239.230.236.230:9008` (IPC listens) |
-| Tool receive port | `9028` |
-| NVR receive port | `9018` |
-| TCP command port | `9010` (HTTP + Basic Auth) |
-| ONVIF port | `2000` (field-verified on ZCY121/ZCR461 — **not** 80; port 80 serves the web UI and returns 404 for `/onvif/device_service`) |
-| Broadcast address | `255.255.255.255` |
-| Protocol | JSON over UDP (SK_DISCOVERY_SEARCH / SK_DISCOVERY_SEARCH_R) |
-| TCP path | `POST /xiaopaitech/device_service HTTP/1.1` |
-| RTSP main stream | `/stream0`, `/stream1`, `/md0_0` (2560x1440) |
-| RTSP sub stream | `/md0_1` (1280x720) |
+Skyworth cameras use a vendor-specific protocol for discovery, PTZ control, illumination, image settings, and tracking. Protocol details are handled internally by the toolkit; this section describes the architecture at a high level.
+
+| Aspect | Description |
+|--------|-------------|
+| Discovery | Vendor-specific broadcast/unicast over UDP; supplements WS-Discovery with additional device metadata (SN, MAC, channels) |
+| Command channel | HTTP-based TCP command channel (port auto-detected during connection) |
+| ONVIF port | Auto-probed during `connect_device` (not always 80; port 80 typically serves the web UI) |
+| RTSP paths | Non-standard paths; the toolkit auto-tries multiple fallback paths when the configured path fails |
 
 ### Key Discovery Fields
 
 | Field | Source | Purpose |
 |-------|--------|---------|
-| SN (Serial Number) | Skyworth private protocol unicast probe (`probe_device_sn`) after WS-Discovery | Unique device identifier, required for cloud authorization. WS-Discovery does **not** provide SN; it is supplemented via a `SK_DISCOVERY_SEARCH` unicast to the device IP (port 9008). Skyworth discovery provides SN natively. |
+| SN (Serial Number) | Skyworth private protocol unicast probe after WS-Discovery | Unique device identifier, required for cloud authorization. WS-Discovery does **not** provide SN; it is supplemented via the Skyworth discovery protocol. |
 | Model | WS-Discovery Scopes / ONVIF | Device model identification |
-| ONVIF Port | WS-Discovery XAddrs parsing | **Parse from XAddrs — not always 80**. `sky_discovery` returns `onvif_port=0` (private protocol only reports the web port); the real port is probed & persisted by `connect_device`. |
+| ONVIF Port | WS-Discovery XAddrs parsing | **Parse from XAddrs — not always 80**. The real port is probed & persisted by `connect_device`. |
 | IP Address | WS-Discovery source address | LAN communication address |
 
 ### SN Supplement Probe (WS-Discovery → Skyworth Private)
@@ -137,29 +133,24 @@ WS-Discovery (ONVIF) does not return the device SN, which blocks the cloud autho
 
 ```
 1. WS-Discovery discovers device at IP X
-   └─ _search_ws_discovery_devices() calls _probe_sn_via_sky(ip=X)
+   └─ A unicast SN probe is sent to the device via Skyworth private protocol
 
-2. _probe_sn_via_sky(ip, timeout=2.0):
-   └─ Calls probe_device_sn() from discovery.py
-   └─ Builds SK_DISCOVERY_SEARCH command (reuse build_search_command)
-   └─ Unicast send to ip:9008 (UDP) + multicast to 239.230.236.230:9008
-   └─ Listen on local port 9028 for SK_DISCOVERY_SEARCH_R response
-   └─ Match response by source IP → extract sn field
-   └─ Return SN string or "" (timeout / non-Skyworth device / network error)
+2. Probe result:
+   └─ SN extracted from response → attached to DiscoveredDevice.sn_code
+   └─ Timeout / non-Skyworth device / network error → sn_code=""
 
-3. SN is attached to DiscoveredDevice.sn_code
-   └─ Agent passes sn_code to connect_device() for cloud auth
+3. Agent passes sn_code to connect_device() for cloud auth
    └─ Non-Skyworth devices: sn_code="" → cloud auth skipped, falls back to needs_password
 ```
 
-This probe is **non-blocking** for the main discovery flow — a 2-second timeout ensures non-Skyworth devices do not slow down discovery.
+This probe is **non-blocking** for the main discovery flow — a short timeout ensures non-Skyworth devices do not slow down discovery.
 
 ### Fallback Discovery
 
 When WS-Discovery fails (firewall, non-ONVIF cameras, wrong subnet):
 1. Enumerate local IPs via `psutil.net_if_addrs()`
 2. Scan each subnet for port 80 (HTTP) and 554 (RTSP)
-3. Fingerprint HTTP responses for camera signatures (e.g. "Skyworth", "Hikvision")
+3. Fingerprint HTTP responses for camera signatures 
 4. Try RTSP connection with common URL patterns
 
 ## Device Classification
@@ -173,25 +164,25 @@ When WS-Discovery fails (firewall, non-ONVIF cameras, wrong subnet):
 
 ## Cloud Authorization Flow (Internal)
 
-Cloud authorization is fully encapsulated inside `connect_device` via the internal `_cloud_auth_and_connect()` function. The Agent does **not** call any separate cloud auth tool — `big_connect` and `poll_auth_status` have been deprecated as external MCP tools.
+Cloud authorization is fully encapsulated inside `connect_device` via internal functions. The Agent does **not** call any separate cloud auth tool — `big_connect` and `poll_auth_status` have been deprecated as external MCP tools.
 
 ```
 1. connect_device() detects password_required / auth_required
-   └─ Calls _cloud_auth_and_connect(camera_name, ip, port, sn_code, ...)
+   └─ Internal cloud auth function is invoked
 
-2. _cloud_auth_and_connect():
+2. Cloud auth process:
    ├─ Check SN availability → no SN → return needs_password
-   ├─ POST /deviceAuthReq with {claw_id, sn, device_ip, device_model}
-   │  └─ Failure (network/404) → return needs_password
-   ├─ Register device info to config.yaml (for poll_auth_status lookup)
-   ├─ Poll GET /checkAuth every 5 seconds (up to 10 minutes / 120 polls)
-   │  ├─ authStatus=AUTHORIZED → try connect with cloud devicePwd
+   ├─ Request authorization from cloud server (with device identity info)
+   │  └─ Failure (network/server error) → return needs_password
+   ├─ Register device info to config.yaml
+   ├─ Poll authorization status (with timeout)
+   │  ├─ AUTHORIZED → try connect with cloud-provided credentials
    │  │  ├─ Connect success → persist credentials → return connected
    │  │  └─ Connect failure → return cloud_pwd_failed
-   │  ├─ authStatus=REJECTED → return auth_rejected
-   │  ├─ authStatus=ERROR → return needs_password
-   │  └─ authStatus=PENDING → continue polling
-   └─ Timeout (10 min) → return needs_password
+   │  ├─ REJECTED → return auth_rejected
+   │  ├─ ERROR → return needs_password
+   │  └─ PENDING → continue polling
+   └─ Timeout → return needs_password
 ```
 
 **ConnectResult status values (cloud auth):**
@@ -203,9 +194,7 @@ Cloud authorization is fully encapsulated inside `connect_device` via the intern
 | `auth_rejected` | User denied authorization in app — cannot connect |
 | `cloud_pwd_failed` | Cloud authorized but password mismatch — device may have changed password |
 
-**Cloud auth signing:** Each request includes `requestId`, `timestamp`, and `scSign` (HMAC-based signature using `clawID + sn + timestamp`). The `clawID` is auto-generated and persisted for the agent session.
-
-**Password auto-persist:** Upon authorization, the cloud returns `devicePwd` (MD5-based), which is automatically written to `config.yaml` via `register_camera()`. Subsequent connections use the cached password.
+**Password auto-persist:** Upon successful cloud authorization, the returned credentials are automatically written to `config.yaml` via `register_camera()`. Subsequent connections use the cached password.
 
 ## PTZ Dual-Protocol Architecture
 
@@ -216,7 +205,7 @@ PTZ control in `scripts/toolkit/ptz.py` implements a **dual-protocol strategy** 
    └─ Tool tries ONVIF PTZ Service (ContinuousMove + auto Stop)
    └─ If ONVIF succeeds → returns PTZMoveResult(protocol="onvif")
    └─ If ONVIF fails (no onvif_camera, no PTZ service, timeout)...
-   └─ Tool falls back to Skyworth private protocol (SK_SETTING_SET_PTZ via TCP 9010)
+   └─ Tool falls back to Skyworth private protocol (vendor command via TCP channel)
    └─ If private succeeds → returns PTZMoveResult(protocol="sky_private")
    └─ If both fail → returns PTZMoveResult(success=False, error_message=...)
 ```
@@ -229,10 +218,10 @@ PTZ control in `scripts/toolkit/ptz.py` implements a **dual-protocol strategy** 
 
 | Function | ONVIF | Private Protocol |
 |----------|:-----:|:----------------:|
-| `control_ptz` (direction) | `ContinuousMove` + `Stop` | `SK_SETTING_SET_PTZ` cmd |
-| `get_ptz_parameters` | `GetStatus` | `SK_SETTING_GET_PTZ` |
-| `stop_ptz` | `Stop` | `SK_SETTING_SET_PTZ` stop |
-| `calibrate_ptz` | — | `SK_SETTING_SET_PTZ` calibrate |
+| `control_ptz` (direction) | `ContinuousMove` + `Stop` | Vendor PTZ command |
+| `get_ptz_parameters` | `GetStatus` | Vendor status query |
+| `stop_ptz` | `Stop` | Vendor stop command |
+| `calibrate_ptz` | — | Vendor calibration command |
 
 ## Event Monitoring Architecture (Guardian Mode Foundation)
 
@@ -276,7 +265,7 @@ Illumination control in `scripts/toolkit/illumination.py` follows the same **dua
 1. connect_device() succeeds (Phase 0 or Phase 2)
    └─ _probe_and_save_illumination() fires after connection
    └─ probe_illumination_capability():
-      ├─ Try Skyworth private protocol (SK_SETTING_GET_FILLLIGHT_OPTION via TCP 9010)
+      ├─ Try Skyworth private protocol (vendor capability query via TCP channel)
       │  └─ Success → 15 parameter capabilities parsed, protocol="sky_private"
       └─ Fallback: ONVIF Imaging Service (GetMoveOptions)
          └─ Success → IlluminationConfiguration modes, protocol="onvif"
@@ -285,10 +274,10 @@ Illumination control in `scripts/toolkit/illumination.py` follows the same **dua
 
 2. manage_illumination(action="get")
    └─ Route: always-try-TCP strategy (asymmetric with PTZ):
-      ├─ Has IP → Try Skyworth private protocol first (TCP 9010)
-      │  ├─ SK_SETTING_GET_FILLLIGHT_OPTION → parameter capabilities & ranges
-      │  └─ SK_SETTING_GET_FILLLIGHT → all 15 current parameter values
-      │  └─ TCP success → write back tcp_port to _connected_devices
+      ├─ Has IP → Try Skyworth private protocol first
+      │  ├─ Query parameter capabilities & ranges
+      │  └─ Query all 15 current parameter values
+      │  └─ TCP success → cache port info
       └─ TCP failed or no IP → Fallback to ONVIF Imaging Service
          ├─ GetMoveOptions → supported illumination modes
          └─ GetImagingSettings → current IlluminationConfiguration.Mode
@@ -297,30 +286,29 @@ Illumination control in `scripts/toolkit/illumination.py` follows the same **dua
 3. manage_illumination(action="set", daynightmode=2, brightness=80, ...)
    └─ Same always-try-TCP routing as get:
    └─ Skyworth private protocol path:
-      ├─ GET current settings (SK_SETTING_GET_FILLLIGHT)
+      ├─ GET current settings
       ├─ Merge user-specified params into current settings (full-set write required by device)
-      ├─ SET merged settings (SK_SETTING_SET_FILLLIGHT)
+      ├─ SET merged settings
       └─ Re-query to confirm → returns previous_settings + current_settings
    └─ ONVIF fallback path:
       └─ SetImagingSettings with IlluminationConfiguration.Mode only
 ```
 
-**Routing rationale (defense in depth):** The `manage_illumination` router checks for IP availability (not `tcp_port` presence) and always attempts TCP 9010 first. This addresses a three-layer defect: (1) `_try_connect_with_password` only stores `tcp_port` when the TCP path succeeds — ONVIF/RTSP paths omit it; (2) `_probe_and_save_illumination` writes back `tcp_port` to `_connected_devices` when TCP probe succeeds; (3) `_get_device_connection` always includes `tcp_port` in cached-fallback connection info. Together these ensure Skyworth devices always get a TCP attempt regardless of how they were connected.
+**Routing rationale (defense in depth):** The `manage_illumination` router checks for IP availability (not cached port presence) and always attempts the private protocol TCP channel first. This ensures Skyworth devices always get a TCP attempt regardless of how they were initially connected.
 
 **Protocol capability matrix:**
 
-| Function | Skyworth Private (TCP 9010) | ONVIF Imaging ver20 |
-|----------|:---------------------------:|:-------------------:|
-| Query capability | `SK_SETTING_GET_FILLLIGHT_OPTION` (15 params) | `GetMoveOptions` (mode list) |
-| Read settings | `SK_SETTING_GET_FILLLIGHT` (15 params) | `GetImagingSettings` (mode only) |
-| Write settings | `SK_SETTING_SET_FILLLIGHT` (full-set merge) | `SetImagingSettings` (mode only) |
+| Function | Skyworth Private (TCP channel) | ONVIF Imaging ver20 |
+|----------|:------------------------------:|:-------------------:|
+| Query capability | Vendor command (15 params) | `GetMoveOptions` (mode list) |
+| Read settings | Vendor command (15 params) | `GetImagingSettings` (mode only) |
+| Write settings | Vendor command (full-set merge) | `SetImagingSettings` (mode only) |
 | Granularity | 15 parameters (daynight/filllight/brightness/timer/sensitivity) | 1 parameter (mode string) |
 
 **Key design decisions:**
 - **Non-blocking probe**: capability detection at connect time never delays the connection flow — failures are silently dropped.
 - **Cached capability**: `illumination_modes` in config.yaml avoids re-probing on every session.
 - **Full-set merge on write**: the Skyworth device requires all 15 parameters in every SET command. The tool handles this internally (GET → merge → SET); the Agent only passes the parameters it wants to change.
-- **Imaging path probing** (ONVIF fallback): candidate paths (`/onvif/imaging_service`, `/onvif/Imaging`, `/onvif/device_service`) are tried in order; first SOAP Envelope response wins.
 - **Minimal side-effects**: ONVIF `SetImagingSettings` only touches `IlluminationConfiguration.Mode` — exposure, white balance, and all other imaging parameters are left untouched.
 
 For per-action tool details, parameter tables, and return field reference, see [commands/illumination.md](commands/illumination.md).
@@ -352,14 +340,7 @@ This is also why bypassing the MCP layer breaks the system: a standalone script 
 
 ### Skyworth camera RTSP paths
 
-Skyworth IP cameras (discovered via `sky_discovery`) use non-standard RTSP paths. When the configured path fails, the toolkit tries fallback paths in order — standard ONVIF paths first (`/Streaming/Channels/101`, `/h264/ch1/main/av_stream`, `/live`), then the Skyworth paths below:
-
-| Path | Stream | Typical Resolution |
-|------|--------|-------------------|
-| `/stream0` | Main stream | 2560x1440 |
-| `/stream1` | Main stream (alt) | 2560x1440 |
-| `/md0_0` | Main stream (alt) | 2560x1440 |
-| `/md0_1` | Sub stream | 1280x720 |
+Skyworth IP cameras use non-standard RTSP paths. When the configured path fails, the toolkit automatically tries multiple fallback paths — standard ONVIF paths first, then vendor-specific alternatives. The fallback order and path list are handled internally; no configuration is needed from the Agent or user.
 
 ## Dependencies
 

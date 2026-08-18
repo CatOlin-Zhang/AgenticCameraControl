@@ -79,12 +79,12 @@ When Phase 0 cache is unavailable, call `search_devices()` to discover cameras o
 **Camera Naming:** When `search_devices()` returns multiple cameras, the Agent **MUST**:
 
 1. **List all discovered cameras** — present each device with its key identifiers (IP, model, SN) in a numbered list so the user can distinguish them
-2. **Prompt for user-defined names** — ask the user if they want to assign friendly names (e.g. "客厅摄像头", "前门", "车库") before connecting. Pass the chosen name as the `name` parameter to `connect_device()` or `register_camera()`
-3. **Or auto-name via multimodal model** — if the Agent has vision capabilities, it can connect each camera first, call `capture_video_screenshot()` to capture a frame, analyze the scene content, and generate a descriptive name automatically (e.g. a camera showing a doorway → "前门摄像头"). Then call `register_camera(name=auto_name, ip=camera_ip, ...)` to rename — `register_camera` matches by IP and replaces the old entry in-place, no duplicates
+2. **Prompt for user-defined names** — ask the user if they want to assign friendly names (e.g. "living room camera", "front door", "garage") before connecting. Pass the chosen name as the `name` parameter to `connect_device()` or `register_camera()`
+3. **Or auto-name via multimodal model** — if the Agent has vision capabilities, it can connect each camera first, call `capture_video_screenshot()` to capture a frame, analyze the scene content, and generate a descriptive name automatically (e.g. a camera showing a doorway → "front door cam"). Then call `register_camera(name=auto_name, ip=camera_ip, ...)` to rename — `register_camera` matches by IP and replaces the old entry in-place, no duplicates
 
 > **Renaming:** `register_camera` uses a three-tier match: **name → IP → SN**. Calling it with a new name but the same IP or SN as an existing entry will rename that entry in-place. This means users can rename cameras at any time — during initial setup, after connecting, or in a later session.
 
-> **Note:** If the user skips naming, the toolkit assigns a default name based on the device model or IP. Friendly names make subsequent operations much clearer (e.g. "客厅摄像头向左转" vs "192.168.1.105 设备向左转").
+> **Note:** If the user skips naming, the toolkit assigns a default name based on the device model or IP. Friendly names make subsequent operations much clearer (e.g. "The living room camera turns left" vs "192.168.1.105 device turns left").
 
 ### Phase 2 — Connect & Authorize
 
@@ -121,7 +121,7 @@ After capturing a screenshot and fetching the stream URL, the Agent **MUST** del
 
 ### Phase 4 — PTZ Control
 
-PTZ control uses a **dual-protocol strategy**: ONVIF is tried first, automatically falling back to the Skyworth private protocol (`SK_SETTING_SET_PTZ` via TCP port 9010) when ONVIF is unavailable.
+PTZ control uses a **dual-protocol strategy**: ONVIF is tried first, automatically falling back to the Skyworth private protocol (vendor command via TCP channel) when ONVIF is unavailable.
 
 | Capability                          | Tools | Protocol |
 |-------------------------------------|-------|----------|
@@ -143,12 +143,12 @@ The following tools extend the skill's functionality beyond the core workflow. T
 | Tool | What it does | Prerequisite | Reference |
 |------|-------------|-------------|----------|
 | `manage_camera_events` | Alarm event receiving (motion, human, vehicle, tamper, …) with linked snapshots. Actions: `start` / `stop` / `poll` / `wait`. | Camera connected via `connect_device()` | [commands/events.md](references/commands/events.md) |
-| `manage_illumination` | Query & adjust camera illumination (15 parameters: daynight/filllight mode, brightness, timer, sensitivity). Dual-protocol: Skyworth private (TCP 9010) + ONVIF fallback. Actions: `get` / `set`. | Camera connected; capability auto-probed at connect time and cached in `config.yaml` (`illumination_modes`) | [commands/illumination.md](references/commands/illumination.md) |
-| `manage_image_settings` | Query & adjust image parameters (brightness, contrast, saturation, sharpness, flip, whitebalance, wdr, face/plate mode). Dual-channel: Skyworth private (TCP 9010) preferred, ONVIF Imaging fallback. Actions: `get` / `set`. | Camera connected | — |
+| `manage_illumination` | Query & adjust camera illumination (15 parameters: daynight/filllight mode, brightness, timer, sensitivity). Dual-protocol: Skyworth private (TCP channel) + ONVIF fallback. Actions: `get` / `set`. | Camera connected; capability auto-probed at connect time and cached in `config.yaml` (`illumination_modes`) | [commands/illumination.md](references/commands/illumination.md) |
+| `manage_image_settings` | Query & adjust image parameters (brightness, contrast, saturation, sharpness, flip, whitebalance, wdr, face/plate mode). Dual-channel: Skyworth private (TCP channel) preferred, ONVIF Imaging fallback. Actions: `get` / `set`. | Camera connected | — |
 | `query_tracking_capabilities` | Query detection & tracking capabilities (human/vehicle/area) with current values and parameter ranges. | Camera connected | — |
 | `set_tracking` | Enable/disable detection & tracking features (human tracking, vehicle tracking, area detection). | Camera connected; modifies hardware settings | — |
 
-> **Note:** `manage_camera_events(action="start")` spawns a background listener thread — **requires explicit user confirmation** before calling. `manage_illumination(action="set")` and `set_tracking` modify hardware settings — also require user confirmation. Cloud authorization is handled internally by `connect_device` (blocking call, may wait up to 10 minutes).
+> **Note:** `manage_camera_events(action="start")` spawns a background listener thread — **requires explicit user confirmation** before calling. `manage_illumination(action="set")` and `set_tracking` modify hardware settings — also require user confirmation. Cloud authorization is handled internally by `connect_device` (blocking call, may wait for user confirmation on APP).
 
 ## Toolkit Modules
 
@@ -174,8 +174,8 @@ The following tools extend the skill's functionality beyond the core workflow. T
 
 ## Gotchas
 
-- **TCP 9010 private-protocol port flaps intermittently (DEVICE_UNREACHABLE) even though the device is online.** → **Action:** for illumination / image / tracking tools, retry the same call up to 3 times at 2-3 s intervals; do not conclude offline or reconnect. Report only after all retries fail (tracking has no ONVIF fallback).
-- **ONVIF port is not always 80.** → **Action:** always use `onvif_port` from `search_devices()` / config.yaml; never hardcode port 80. Skyworth cameras use port 2000 for ONVIF.
+- **TCP private-protocol port flaps intermittently (DEVICE_UNREACHABLE) even though the device is online.** → **Action:** for illumination / image / tracking tools, retry the same call up to 3 times at 2-3 s intervals; do not conclude offline or reconnect. Report only after all retries fail (tracking has no ONVIF fallback).
+- **ONVIF port is not always 80.** → **Action:** always use `onvif_port` from `search_devices()` / config.yaml; never hardcode port 80. Skyworth cameras typically use a non-standard ONVIF port (auto-probed by `connect_device`).
 - **`GetStreamUri` returns bare RTSP URLs without credentials.** → **Action:** always use the `stream_url` returned by `get_audio_video_stream()` — the toolkit auto-injects credentials. Never manually construct RTSP URLs.
 - **Chinese characters in Windows paths cause `cv2.imwrite()` to silently fail.** → **Action:** no manual workaround needed — the toolkit handles this internally. If you pass a custom `save_path`, prefer ASCII-only paths.
 - **Connection state is in-memory only — silently lost across sessions.** → **Action:** if any operation returns `success=false` with a connection-related error, call `connect_device()` first to re-establish the connection, then retry the failed operation. All operations must run in the same MCP server process.
@@ -238,7 +238,7 @@ The following tools extend the skill's functionality beyond the core workflow. T
 | `storage full` | Suggest cleanup via `manage_storage_status()` or change storage policy |
 | `not support illumination` | Device doesn't support illumination mode control — inform user |
 | `MCP tools not available` | Register MCP server in client config — do NOT write workaround scripts |
-| `DEVICE_UNREACHABLE` (from TCP 9010 / SK HTTP, on illumination / image / tracking tools, ONVIF connection healthy) | Transient port flapping — retry the same call with unchanged parameters after 2-3 seconds, up to 3 attempts. Report only after all retries fail. Do **not** reconnect or rediscover |
+| `DEVICE_UNREACHABLE` (from private protocol / SK HTTP, on illumination / image / tracking tools, ONVIF connection healthy) | Transient port flapping — retry the same call with unchanged parameters after 2-3 seconds, up to 3 attempts. Report only after all retries fail. Do **not** reconnect or rediscover |
 
 ## Error Handling Policy
 
@@ -251,7 +251,7 @@ When any MCP tool call fails, crashes, **or the MCP tools are unavailable in the
    - **Why it failed** — root cause from the `error_message` field and context
    - **How to fix it** — concrete actionable steps the user can take
 4. **Wait for the user's decision.** Do not proceed with retries, fallbacks, or alternative approaches until the user confirms.
-5.**Exception - transient private-protocol port flapping:** `DEVICE_UNREACHABLE` errors returned by the Skyworth private protocol (TCP port 9010) on the illumination / image-settings / tracking tools (`manage_illumination`, `manage_image_settings`, `query_tracking_capabilities`, `set_tracking`) are known transient failures while the device remains online. For this specific error, the Agent performs bounded automatic retries (up to 3 attempts, 2-3 seconds apart) **without** waiting for user confirmation, per the Gotchas entry below. Only report to the user after all retries are exhausted.
+5.**Exception - transient private-protocol port flapping:** `DEVICE_UNREACHABLE` errors returned by the Skyworth private protocol (TCP command channel) on the illumination / image-settings / tracking tools (`manage_illumination`, `manage_image_settings`, `query_tracking_capabilities`, `set_tracking`) are known transient failures while the device remains online. For this specific error, the Agent performs bounded automatic retries (up to 3 attempts, 2-3 seconds apart) **without** waiting for user confirmation, per the Gotchas entry below. Only report to the user after all retries are exhausted.
 
 ## Configuration
 

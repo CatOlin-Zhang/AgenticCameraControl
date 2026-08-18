@@ -10,16 +10,10 @@ Alarm/event subscription, snapshot linkage, and on-disk event store — exposed 
 
 **Dual-protocol event sources** (same pattern as PTZ):
 
-1. **ONVIF Event Service** — `CreatePullPointSubscription` + `PullMessages` long-poll loop (Skyworth ONVIF port is 2000, auto-probed if unknown). Only the *active* edge of boolean state items (`IsMotion=true`, `State=true`, …) is reported; clear edges are ignored.
-2. **Skyworth private protocol** — alarm messages are pushed **over the RTSP channel** (vendor doc §5.24). The listener keeps an RTSP session open (DESCRIBE → SETUP → PLAY on the sub-stream, TCP interleaved) and scans the connection for alarm JSON:
+1. **ONVIF Event Service** — `CreatePullPointSubscription` + `PullMessages` long-poll loop (ONVIF port auto-probed if unknown). Only the *active* edge of boolean state items (`IsMotion=true`, `State=true`, …) is reported; clear edges are ignored.
+2. **Skyworth private protocol** — alarm messages are pushed **over a persistent RTSP session** (vendor-specific channel). The listener keeps the session open and scans the connection for alarm messages:
 
-```json
-{"serv": "alarm", "alm": "MD", "date": "2023-06-16 08:08:08", "dir": 0,
- "fn": "c8138b2be056_MOTIONDETECT_1664361267.jpg", "fmt": "JPEG",
- "num": "3", "data": "SUBTYPE=SaloonCar;X=30;..."}
-```
-
-**`alm` codes → normalized topics** (shared namespace with ONVIF, prerequisite for cross-protocol dedup):
+**Alarm codes → normalized topics** (shared namespace with ONVIF, prerequisite for cross-protocol dedup):
 
 | `alm` | Topic | Meaning | | `alm` | Topic | Meaning |
 |-------|-------|---------|-|-------|-------|---------|

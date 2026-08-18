@@ -2,7 +2,7 @@
 
 Pan/tilt control with **dual-protocol strategy** — exposed as MCP tools by `scripts/mcp_server.py`
 
-ONVIF PTZ Service is tried first, automatically falling back to the Skyworth private protocol (`SK_SETTING_SET_PTZ` via TCP port 9010) when ONVIF is unavailable. Protocol selection and fallback are handled internally — the Agent only sees the `protocol` field in the result.
+ONVIF PTZ Service is tried first, automatically falling back to the Skyworth private protocol (vendor command via TCP channel) when ONVIF is unavailable. Protocol selection and fallback are handled internally — the Agent only sees the `protocol` field in the result.
 
 > **MCP-only:** All tools below are invoked exclusively through the MCP server (`scripts/mcp_server.py`). Never import this module directly or write standalone scripts to call these functions.
 
