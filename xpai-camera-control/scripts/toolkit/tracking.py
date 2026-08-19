@@ -1,18 +1,26 @@
 """
-Toolkit: 侦测追踪控制（协议 5.7/5.10/5.12 SK_SETTING_*_HUMANDETECT/VGRECTDETECT/OBJECTDETECT）
+Toolkit: 侦测追踪控制（协议 5.7/5.8/5.9/5.10/5.12 SK_SETTING_*_HUMANDETECT/MOTIONDETECT/VGLINEDETECT/VGRECTDETECT/OBJECTDETECT）
 
 工具清单：
-  - big_tracking_query     查询侦测能力清单 + 当前值（人形/车辆/区域三种）
+  - big_tracking_query     查询侦测能力清单 + 当前值（人形/车辆/区域/移动/越界五种）
   - big_tracking_set       开关侦测追踪功能（读-校验-合并-写-回读）
   - manage_tracking        统一侦测追踪管理入口（查询/设置）
 
 传输通道：SK TCP HTTP（POST http://<ip>:9010/xiaopaitech/device_service，动态 Token 鉴权）
 
-九条 SK 命令：
+十五条 SK 命令：
   人形侦测（5.7）:
     - SK_SETTING_GET_HUMANDETECT_OPTION  查询人形侦测能力
     - SK_SETTING_GET_HUMANDETECT         查询人形侦测当前参数
     - SK_SETTING_SET_HUMANDETECT         设置人形侦测参数
+  移动侦测（5.8）:
+    - SK_SETTING_GET_MOTIONDETECT_OPTION  查询移动侦测能力
+    - SK_SETTING_GET_MOTIONDETECT         查询移动侦测当前参数
+    - SK_SETTING_SET_MOTIONDETECT         设置移动侦测参数
+  越界侦测（5.9）:
+    - SK_SETTING_GET_VGLINEDETECT_OPTION  查询越界侦测能力
+    - SK_SETTING_GET_VGLINEDETECT         查询越界侦测当前参数
+    - SK_SETTING_SET_VGLINEDETECT         设置越界侦测参数
   车辆侦测（5.12）:
     - SK_SETTING_GET_OBJECTDETECT_OPTION  查询车辆侦测能力（需 object=vehicle）
     - SK_SETTING_GET_OBJECTDETECT         查询车辆侦测当前参数
@@ -71,6 +79,8 @@ class DetectType(str, Enum):
     HUMAN = "human"
     VEHICLE = "vehicle"
     AREA = "area"
+    MOTION = "motion"
+    LINE = "line"
     ALL = "all"
 
 
@@ -93,6 +103,16 @@ _SK_CMD_VEHICLE_SET = "SK_SETTING_SET_OBJECTDETECT"
 _SK_CMD_AREA_OPTION = "SK_SETTING_GET_VGRECTDETECT_OPTION"
 _SK_CMD_AREA_GET = "SK_SETTING_GET_VGRECTDETECT"
 _SK_CMD_AREA_SET = "SK_SETTING_SET_VGRECTDETECT"
+
+# 移动侦测命令（协议 5.8）
+_SK_CMD_MOTION_OPTION = "SK_SETTING_GET_MOTIONDETECT_OPTION"
+_SK_CMD_MOTION_GET = "SK_SETTING_GET_MOTIONDETECT"
+_SK_CMD_MOTION_SET = "SK_SETTING_SET_MOTIONDETECT"
+
+# 越界侦测命令（协议 5.9）
+_SK_CMD_LINE_OPTION = "SK_SETTING_GET_VGLINEDETECT_OPTION"
+_SK_CMD_LINE_GET = "SK_SETTING_GET_VGLINEDETECT"
+_SK_CMD_LINE_SET = "SK_SETTING_SET_VGLINEDETECT"
 
 # 中文标签（协议字段 → 中文）
 _TRACKING_LABELS = {
@@ -125,6 +145,13 @@ _TRACKING_LABELS = {
     "enter_alarm_type": "进入报警类型",
     "leave_alarm_enable": "离开报警",
     "leave_alarm_type": "离开报警类型",
+    # 越界侦测专有
+    "dx0": "方向起点X(A点)", "dy0": "方向起点Y(A点)",
+    "dx1": "方向终点X(B点)", "dy1": "方向终点Y(B点)",
+    "AtoB_alarm_enable": "A到B报警",
+    "AtoB_alarm_type": "A到B报警类型",
+    "BtoA_alarm_enable": "B到A报警",
+    "BtoA_alarm_type": "B到A报警类型",
 }
 
 # 多档位枚举的档位说明
@@ -139,6 +166,8 @@ _TRACKING_VALUE_TEXTS = {
     "idenable": {0: "关闭", 1: "打开"},
     "enter_alarm_enable": {0: "关闭", 1: "打开"},
     "leave_alarm_enable": {0: "关闭", 1: "打开"},
+    "AtoB_alarm_enable": {0: "关闭", 1: "打开"},
+    "BtoA_alarm_enable": {0: "关闭", 1: "打开"},
     "indoor": {0: "室外模式", 1: "室内模式", 2: "室外人车"},
     "level": {0: "关闭", 1: "低", 2: "中", 3: "高"},
     "dir": {0: "进入区域", 1: "离开区域", 2: "双向"},
@@ -158,9 +187,13 @@ class TrackingQueryResult:
     human_capabilities: List[Dict[str, Any]] = field(default_factory=list)
     vehicle_capabilities: List[Dict[str, Any]] = field(default_factory=list)
     area_capabilities: List[Dict[str, Any]] = field(default_factory=list)
+    motion_capabilities: List[Dict[str, Any]] = field(default_factory=list)
+    line_capabilities: List[Dict[str, Any]] = field(default_factory=list)
     human_current: Dict[str, Any] = field(default_factory=dict)
     vehicle_current: Dict[str, Any] = field(default_factory=dict)
     area_current: Dict[str, Any] = field(default_factory=dict)
+    motion_current: Dict[str, Any] = field(default_factory=dict)
+    line_current: Dict[str, Any] = field(default_factory=dict)
     error_code: str = ""
     message: str = ""
     hint: str = ""
@@ -359,6 +392,108 @@ def _sk_area_set(cam, payload: Dict[str, Any]) -> Dict[str, Any]:
             "status": status, "raw": resp}
 
 
+# ── 移动侦测（协议 5.8）──
+
+def _sk_motion_option(cam) -> Dict[str, Any]:
+    """SK_SETTING_GET_MOTIONDETECT_OPTION"""
+    ok, resp, status = _sk_http_query_ex(
+        cam.ip, _SK_TRACKING_PORT, _SK_CMD_MOTION_OPTION, {},
+        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    if not ok or not resp:
+        _log(f"SK 查移动侦测能力失败（status={status}）")
+        return {"ok": False, "status": status}
+    caps = resp.get("motiondetect")
+    _ok = resp.get("code") == _SK_OK_CODE and isinstance(caps, list)
+    if _ok:
+        _log(f"SK 移动侦测能力 {len(caps)} 项: "
+             f"{[c.get('name') for c in caps if isinstance(c, dict)]}")
+    else:
+        _log(f"SK 移动侦测能力响应异常 code={resp.get('code')}")
+    return {"ok": _ok, "capabilities": caps if isinstance(caps, list) else [],
+            "code": resp.get("code", ""), "status": status, "raw": resp}
+
+
+def _sk_motion_cur(cam) -> Dict[str, Any]:
+    """SK_SETTING_GET_MOTIONDETECT"""
+    ok, resp, status = _sk_http_query_ex(
+        cam.ip, _SK_TRACKING_PORT, _SK_CMD_MOTION_GET, {},
+        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    if not ok or not resp:
+        _log(f"SK 查移动侦测当前值失败（status={status}）")
+        return {"ok": False, "status": status}
+    current = {k: v for k, v in resp.items() if k not in _RESP_HEAD}
+    _ok = resp.get("code") == _SK_OK_CODE
+    _log(f"SK 移动侦测当前值 code={resp.get('code')}: "
+         f"{current if _ok else '（code 非 C0000）'}")
+    return {"ok": _ok, "current": current,
+            "code": resp.get("code", ""), "status": status, "raw": resp}
+
+
+def _sk_motion_set(cam, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """SK_SETTING_SET_MOTIONDETECT"""
+    ok, resp, status = _sk_http_query_ex(
+        cam.ip, _SK_TRACKING_PORT, _SK_CMD_MOTION_SET, payload,
+        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    if not ok or not resp:
+        _log(f"SK 移动侦测设置失败（status={status}）")
+        return {"ok": False, "status": status}
+    _ok = resp.get("code") == _SK_OK_CODE
+    _log(f"SK 移动侦测设置 code={resp.get('code')}")
+    return {"ok": _ok, "code": resp.get("code", ""), "msg": resp.get("msg", ""),
+            "status": status, "raw": resp}
+
+
+# ── 越界侦测（协议 5.9）──
+
+def _sk_line_option(cam) -> Dict[str, Any]:
+    """SK_SETTING_GET_VGLINEDETECT_OPTION"""
+    ok, resp, status = _sk_http_query_ex(
+        cam.ip, _SK_TRACKING_PORT, _SK_CMD_LINE_OPTION, {},
+        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    if not ok or not resp:
+        _log(f"SK 查越界侦测能力失败（status={status}）")
+        return {"ok": False, "status": status}
+    caps = resp.get("vglinedetect")
+    _ok = resp.get("code") == _SK_OK_CODE and isinstance(caps, list)
+    if _ok:
+        _log(f"SK 越界侦测能力 {len(caps)} 项: "
+             f"{[c.get('name') for c in caps if isinstance(c, dict)]}")
+    else:
+        _log(f"SK 越界侦测能力响应异常 code={resp.get('code')}")
+    return {"ok": _ok, "capabilities": caps if isinstance(caps, list) else [],
+            "code": resp.get("code", ""), "status": status, "raw": resp}
+
+
+def _sk_line_cur(cam) -> Dict[str, Any]:
+    """SK_SETTING_GET_VGLINEDETECT"""
+    ok, resp, status = _sk_http_query_ex(
+        cam.ip, _SK_TRACKING_PORT, _SK_CMD_LINE_GET, {},
+        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    if not ok or not resp:
+        _log(f"SK 查越界侦测当前值失败（status={status}）")
+        return {"ok": False, "status": status}
+    current = {k: v for k, v in resp.items() if k not in _RESP_HEAD}
+    _ok = resp.get("code") == _SK_OK_CODE
+    _log(f"SK 越界侦测当前值 code={resp.get('code')}: "
+         f"{current if _ok else '（code 非 C0000）'}")
+    return {"ok": _ok, "current": current,
+            "code": resp.get("code", ""), "status": status, "raw": resp}
+
+
+def _sk_line_set(cam, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """SK_SETTING_SET_VGLINEDETECT"""
+    ok, resp, status = _sk_http_query_ex(
+        cam.ip, _SK_TRACKING_PORT, _SK_CMD_LINE_SET, payload,
+        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    if not ok or not resp:
+        _log(f"SK 越界侦测设置失败（status={status}）")
+        return {"ok": False, "status": status}
+    _ok = resp.get("code") == _SK_OK_CODE
+    _log(f"SK 越界侦测设置 code={resp.get('code')}")
+    return {"ok": _ok, "code": resp.get("code", ""), "msg": resp.get("msg", ""),
+            "status": status, "raw": resp}
+
+
 # ──────────────────────────────────────────────
 #  编排入口
 # ──────────────────────────────────────────────
@@ -369,19 +504,19 @@ def big_tracking_query(
     answers: Optional[Dict[str, Any]] = None,
 ) -> TrackingQueryResult:
     """
-    查询 IPC 侦测追踪能力 + 当前值（人形/车辆/区域三种，协议 5.7/5.12/5.10）。
+    查询 IPC 侦测追踪能力 + 当前值（人形/车辆/区域/移动/越界五种，协议 5.7/5.8/5.9/5.10/5.12）。
 
-    SK 私有协议（动态 Token 鉴权），返回三种侦测的能力与完整当前值。
+    SK 私有协议（动态 Token 鉴权），返回五种侦测的能力与完整当前值。
     可独立调试：直接调用本函数即可，无需 MCP。
 
     Args:
         name:        摄像头名称（None 时走 resolve_target 降级：唯一一台直接用）
-        detect_type: 查询类型 human/vehicle/area/all
+        detect_type: 查询类型 human/vehicle/area/motion/line/all
         answers:     NEEDS_INPUT 重调时的回答 dict
 
     Returns:
         TrackingQueryResult:
-            ok=True:  human/vehicle/area_capabilities + current
+            ok=True:  human/vehicle/area/motion/line_capabilities + current
             ok=False: error_code + message + hint
     """
     err, cam = _sk_resolve_camera(name, answers, TrackingQueryResult)
@@ -451,10 +586,50 @@ def big_tracking_query(
                     _TRACKING_LABELS, _TRACKING_VALUE_TEXTS)
                 result.area_current = cur["current"]
 
+    # ── 移动侦测 ──
+    if dt in ("all", "motion"):
+        opt = _sk_motion_option(cam)
+        if not opt["ok"]:
+            if opt.get("status") is None:
+                return _sk_err(TrackingQueryResult, "DEVICE_UNREACHABLE",
+                                 f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
+                                 "确认摄像头在线、网络可达", camera=cam.name)
+            _log(f"移动侦测能力查询失败，跳过（code={opt.get('code')}）")
+        else:
+            cur = _sk_motion_cur(cam)
+            if not cur["ok"]:
+                _log(f"移动侦测当前值查询失败，跳过（code={cur.get('code')}）")
+            else:
+                result.motion_capabilities = _merge_capabilities(
+                    opt["capabilities"], cur["current"],
+                    _TRACKING_LABELS, _TRACKING_VALUE_TEXTS)
+                result.motion_current = cur["current"]
+
+    # ── 越界侦测 ──
+    if dt in ("all", "line"):
+        opt = _sk_line_option(cam)
+        if not opt["ok"]:
+            if opt.get("status") is None:
+                return _sk_err(TrackingQueryResult, "DEVICE_UNREACHABLE",
+                                 f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
+                                 "确认摄像头在线、网络可达", camera=cam.name)
+            _log(f"越界侦测能力查询失败，跳过（code={opt.get('code')}）")
+        else:
+            cur = _sk_line_cur(cam)
+            if not cur["ok"]:
+                _log(f"越界侦测当前值查询失败，跳过（code={cur.get('code')}）")
+            else:
+                result.line_capabilities = _merge_capabilities(
+                    opt["capabilities"], cur["current"],
+                    _TRACKING_LABELS, _TRACKING_VALUE_TEXTS)
+                result.line_current = cur["current"]
+
     result.message = (f"侦测查询完成: "
                       f"人形={len(result.human_capabilities)}项, "
                       f"车辆={len(result.vehicle_capabilities)}项, "
-                      f"区域={len(result.area_capabilities)}项")
+                      f"区域={len(result.area_capabilities)}项, "
+                      f"移动={len(result.motion_capabilities)}项, "
+                      f"越界={len(result.line_capabilities)}项")
     _log(f"===== 侦测查询结束 ok={result.ok} {result.message} =====")
     return result
 
@@ -468,15 +643,15 @@ def big_tracking_set(
     answers: Optional[Dict[str, Any]] = None,
 ) -> TrackingSetResult:
     """
-    开关 IPC 侦测追踪功能（协议 5.7/5.12/5.10，读-校验-合并-写-回读）。
+    开关 IPC 侦测追踪功能（协议 5.7/5.8/5.9/5.10/5.12，读-校验-合并-写-回读）。
 
     可独立调试：直接调用本函数即可，无需 MCP。
 
     Args:
         name:             摄像头名称
-        detect_type:      侦测类型 human/vehicle/area
+        detect_type:      侦测类型 human/vehicle/area/motion/line
         enable:           是否开启该侦测功能（True/False → 1/0）
-        tracking:         是否开启追踪（仅 human/vehicle 有效，True/False → 1/0）
+        tracking:         是否开启追踪（仅 human/vehicle/motion 有效，True/False → 1/0）
         sensitivity_level: 灵敏度等级 0-3（0关闭/1低/2中/3高）
         answers:          NEEDS_INPUT 重调时的回答 dict
 
@@ -504,14 +679,14 @@ def big_tracking_set(
         return err
 
     dt = detect_type.lower() if detect_type else "human"
-    if dt not in ("human", "vehicle", "area"):
+    if dt not in ("human", "vehicle", "area", "motion", "line"):
         return _sk_err(TrackingSetResult, "INVALID_DETECT_TYPE",
                        f"不支持的侦测类型：{detect_type}",
-                       "支持: human(人形追踪)/vehicle(车辆追踪)/area(区域检测)")
+                       "支持: human(人形追踪)/vehicle(车辆追踪)/area(区域检测)/motion(移动侦测)/line(越界侦测)")
 
-    # 区域侦测不支持 tracking 字段
-    if dt == "area" and tracking is not None:
-        _log("区域侦测不支持 tracking 字段，已忽略")
+    # 区域侦测和越界侦测不支持 tracking 字段
+    if dt in ("area", "line") and tracking is not None:
+        _log(f"{dt}侦测不支持 tracking 字段，已忽略")
         updates.pop("tracking", None)
 
     _log(f"===== 侦测设置开始 camera={cam.name} ip={cam.ip} "
@@ -522,8 +697,12 @@ def big_tracking_set(
         option_fn, cur_fn, set_fn = _sk_human_option, _sk_human_cur, _sk_human_set
     elif dt == "vehicle":
         option_fn, cur_fn, set_fn = _sk_vehicle_option, _sk_vehicle_cur, _sk_vehicle_set
-    else:
+    elif dt == "area":
         option_fn, cur_fn, set_fn = _sk_area_option, _sk_area_cur, _sk_area_set
+    elif dt == "motion":
+        option_fn, cur_fn, set_fn = _sk_motion_option, _sk_motion_cur, _sk_motion_set
+    else:
+        option_fn, cur_fn, set_fn = _sk_line_option, _sk_line_cur, _sk_line_set
 
     # 1. 查能力 → 客户端校验
     opt = option_fn(cam)
@@ -586,7 +765,8 @@ def big_tracking_set(
     updated = {k: cur[k] for k in updates if k in cur}
     _log(f"SK {dt}侦测回读确认 updated={updated}")
 
-    type_names = {"human": "人形追踪", "vehicle": "车辆追踪", "area": "区域检测"}
+    type_names = {"human": "人形追踪", "vehicle": "车辆追踪", "area": "区域检测",
+                  "motion": "移动侦测", "line": "越界侦测"}
     return TrackingSetResult(
         ok=True, camera=cam.name, channel="sk", detect_type=dt,
         updated=updated, current=cur,
@@ -614,9 +794,9 @@ def manage_tracking(
         action:           操作类型 (TrackingAction: get / set)
         camera_name:      摄像头名称（MCP 层传入，优先使用）
         name:             摄像头名称（内部调用兼容）
-        detect_type:      侦测类型 human/vehicle/area/all（查询）或 human/vehicle/area（设置）
+        detect_type:      侦测类型 human/vehicle/area/motion/line/all（查询）或 human/vehicle/area/motion/line（设置）
         enable:           是否开启该侦测功能（仅 SET）
-        tracking:         是否开启追踪（仅 SET，human/vehicle 有效）
+        tracking:         是否开启追踪（仅 SET，human/vehicle/motion 有效）
         sensitivity_level: 灵敏度等级 0-3（仅 SET）
         answers:          NEEDS_INPUT 重调时的回答 dict
 

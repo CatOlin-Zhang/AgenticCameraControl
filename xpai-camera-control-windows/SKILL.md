@@ -1,6 +1,6 @@
 ---
 name: xpai-camera-control
-description: Discover, connect, and control Skyworth cameras on the local network. Capabilities include device detection, streaming, WebRTC browser preview, snapshot capture, PTZ pan/tilt control, alarm event monitoring, illumination mode control, image parameter adjustment, detection & tracking, and device management. Runs as an MCP Server. Use when the user wants to discover cameras, view a camera feed, capture snapshots, control PTZ, watch for motion/alarm events, adjust illumination mode, adjust image parameters, enable detection or tracking, manage camera settings, or mentions ONVIF, RTSP, IP camera, webcam, or Skyworth cameras.
+description: Discover, connect, and control Skyworth cameras on the local network. Capabilities include device detection, streaming, WebRTC browser preview, snapshot capture, PTZ pan/tilt control, alarm event monitoring, illumination mode control, image parameter adjustment, detection & tracking (human/vehicle/area/motion/line-crossing), and device management. Runs as an MCP Server. Use when the user wants to discover cameras, view a camera feed, capture snapshots, control PTZ, watch for motion/alarm events, adjust illumination mode, adjust image parameters, enable detection or tracking, manage camera settings, or mentions ONVIF, RTSP, IP camera, webcam, or Skyworth cameras.
 license: MIT
 compatibility: Requires Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. Cameras must be on the same LAN for discovery.
 metadata:
@@ -19,7 +19,7 @@ Trigger this skill when the user:
 - Wants to adjust illumination mode (IR light, white light, night vision, auto-switch)
 - Wants to adjust image parameters (brightness, contrast, saturation, sharpness, flip, white balance, WDR)
 - Wants to view camera feed in a browser via WebRTC live preview
-- Wants to enable/disable detection or tracking features (human tracking, vehicle tracking, area detection)
+- Wants to enable/disable detection or tracking features (human tracking, vehicle tracking, area detection, motion detection, line-crossing detection)
 - Mentions ONVIF, RTSP, IP camera, webcam, or specific camera brands
 
 ## Running Mode: MCP Server
@@ -145,8 +145,8 @@ The following tools extend the skill's functionality beyond the core workflow. T
 | `manage_camera_events` | Alarm event receiving (motion, human, vehicle, tamper, …) with linked snapshots. Actions: `start` / `stop` / `poll` / `wait`. | Camera connected via `connect_device()` | [commands/events.md](references/commands/events.md) |
 | `manage_illumination` | Query & adjust camera illumination (15 parameters: daynight/filllight mode, brightness, timer, sensitivity). Dual-protocol: Skyworth private (TCP channel) + ONVIF fallback. Actions: `get` / `set`. | Camera connected; capability auto-probed at connect time and cached in `config.yaml` (`illumination_modes`) | [commands/illumination.md](references/commands/illumination.md) |
 | `manage_image_settings` | Query & adjust image parameters (brightness, contrast, saturation, sharpness, flip, whitebalance, wdr, face/plate mode). Dual-channel: Skyworth private (TCP channel) preferred, ONVIF Imaging fallback. Actions: `get` / `set`. | Camera connected | — |
-| `query_tracking_capabilities` | Query detection & tracking capabilities (human/vehicle/area) with current values and parameter ranges. | Camera connected | — |
-| `set_tracking` | Enable/disable detection & tracking features (human tracking, vehicle tracking, area detection). | Camera connected; modifies hardware settings | — |
+| `query_tracking_capabilities` | Query detection & tracking capabilities (human/vehicle/area/motion/line-crossing) with current values and parameter ranges. | Camera connected | — |
+| `set_tracking` | Enable/disable detection & tracking features (human tracking, vehicle tracking, area detection, motion detection, line-crossing detection). | Camera connected; modifies hardware settings | — |
 
 > **Note:** `manage_camera_events(action="start")` spawns a background listener thread — **requires explicit user confirmation** before calling. `manage_illumination(action="set")` and `set_tracking` modify hardware settings — also require user confirmation. Cloud authorization is handled internally by `connect_device` (blocking call, may wait for user confirmation on APP).
 
