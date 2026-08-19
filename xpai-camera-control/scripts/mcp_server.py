@@ -476,7 +476,7 @@ TOOLS = [
     # ── Tracking (侦测追踪控制) ──
     Tool(
         name="query_tracking_capabilities",
-        description="查询摄像头的智能侦测与追踪能力（人形追踪/车辆追踪/区域检测），返回各侦测类型的可用参数和当前设置值。只读查询，修改设置请用 set_tracking。",
+        description="查询摄像头的智能侦测与追踪能力（人形追踪/车辆追踪/区域检测/移动侦测/越界侦测），返回各侦测类型的可用参数和当前设置值。只读查询，修改设置请用 set_tracking。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -486,7 +486,7 @@ TOOLS = [
                 },
                 "detect_type": {
                     "type": "string",
-                    "description": "侦测类型: human(人形)/vehicle(车辆)/area(区域)/all(全部)",
+                    "description": "侦测类型: human(人形)/vehicle(车辆)/area(区域)/motion(移动)/line(越界)/all(全部)",
                     "default": "all",
                 },
             },
@@ -495,7 +495,7 @@ TOOLS = [
     ),
     Tool(
         name="set_tracking",
-        description="开启或关闭摄像头的智能侦测与追踪功能（人形追踪/车辆追踪/区域检测）。修改硬件设置，需用户确认。仅传需修改的参数，未传的参数保持不变。查询能力请用 query_tracking_capabilities。",
+        description="开启或关闭摄像头的智能侦测与追踪功能（人形追踪/车辆追踪/区域检测/移动侦测/越界侦测）。修改硬件设置，需用户确认。仅传需修改的参数，未传的参数保持不变。查询能力请用 query_tracking_capabilities。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -505,7 +505,7 @@ TOOLS = [
                 },
                 "detect_type": {
                     "type": "string",
-                    "description": "侦测类型: human(人形追踪)/vehicle(车辆追踪)/area(区域检测)",
+                    "description": "侦测类型: human(人形追踪)/vehicle(车辆追踪)/area(区域检测)/motion(移动侦测)/line(越界侦测)",
                 },
                 "enable": {
                     "type": "boolean",
@@ -513,7 +513,7 @@ TOOLS = [
                 },
                 "tracking": {
                     "type": "boolean",
-                    "description": "是否开启追踪（仅 human/vehicle 有效）",
+                    "description": "是否开启追踪（仅 human/vehicle/motion 有效）",
                 },
                 "sensitivity_level": {
                     "type": "integer",
