@@ -66,7 +66,7 @@ TOOLS = [
     ),
     Tool(
         name="search_devices",
-        description="扫描局域网发现可用摄像头（WS-Discovery / 创维私有协议 / USB）。返回新发现的设备列表，与 get_registered_cameras（读取本地已保存配置）不同。",
+        description="扫描局域网发现可用摄像头（WS-Discovery / 创维私有协议）。返回新发现的设备列表，与 get_registered_cameras（读取本地已保存配置）不同。发现多个设备时必须将全部设备逐一展示给用户，不得省略或仅展示部分结果。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -558,7 +558,15 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     elif name == "register_camera":
         return _serialize(tk.register_camera(**args))
     elif name == "search_devices":
-        return _serialize(tk.search_devices(**args))
+        result = _serialize(tk.search_devices(**args))
+        if isinstance(result, dict):
+            count = len(result.get("devices", []))
+            result["device_count"] = count
+            if count > 0:
+                result["_display_instruction"] = (
+                    f"共发现 {count} 台设备，必须将上述 {count} 台设备全部展示给用户，禁止省略"
+                )
+        return result
     elif name == "connect_device":
         return _serialize(tk.connect_device(**args))
     elif name == "disconnect_device":
@@ -690,6 +698,11 @@ async def main():
     _resume_event_monitors_async()
 
     async with stdio_server() as (read_stream, write_stream):
+        # MCP stdio 传输协议使用 stdout 作为 JSON-RPC 通道。
+        # toolkit 模块（如 discover_sky_devices）中的 print() 会写入 stdout，
+        # 污染 MCP 协议通道，导致设备发现响应丢失。
+        # 将 stdout 重定向到 stderr 以保护 MCP 通信。
+        sys.stdout = sys.stderr
         init_options = server.create_initialization_options()
         await server.run(read_stream, write_stream, init_options)
 
