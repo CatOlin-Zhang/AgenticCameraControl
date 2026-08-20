@@ -116,7 +116,7 @@ class ConnectResult:
     """设备连接返回结果"""
     success: bool                              # 连接是否成功
     auth_method: str = ""                      # 认证方式 ("password" / "direct")
-    status: str = "connected"                  # "connected" | "needs_password" | "failed"
+    status: str = "connected"                  # "connected" | "needs_password" | "no_sn" | "failed"
     error_message: str = ""                    # 失败原因
     needs_password: bool = False               # True 表示需要密码，Agent 应提示用户输入
     onvif_port: int = 0                        # 实际验证过的 ONVIF 端口（0=未验证成功）
@@ -537,6 +537,33 @@ def register_camera(
             data = {}
 
     cameras = data.get("cameras", [])
+
+    # 空值保护：空密码/空 SN 不覆盖已缓存值（三级匹配 name → ip → sn 查已有条目）。
+    # - 云端授权预注册会调 register_camera(password="")（见 _cloud_auth_and_connect），
+    #   若无保护会把用户已修正的凭据清回空串。
+    # - SN 探测失败时会调 register_camera(sn_code="")（如 ONVIF 发现的设备），
+    #   若无保护会按 ip 匹配命中旧条目并把已探到的 SN 清空（整体替换语义）。
+    if not password or not sn_code:
+        existing = None
+        for cam in cameras:
+            if cam.get("name") == name:
+                existing = cam
+                break
+        if existing is None and ip:
+            for cam in cameras:
+                if cam.get("ip") == ip:
+                    existing = cam
+                    break
+        if existing is None and sn_code:
+            for cam in cameras:
+                if cam.get("sn_code") == sn_code or cam.get("sn") == sn_code:
+                    existing = cam
+                    break
+        if existing:
+            if not password and existing.get("password"):
+                password = existing["password"]
+            if not sn_code:
+                sn_code = existing.get("sn_code") or existing.get("sn") or ""
 
     # 构建新条目（同时写入两种方案的字段名以兼容）
     new_entry = {
@@ -988,10 +1015,12 @@ def _cloud_auth_and_connect(
         result = poll_auth_status(camera_name)
 
         if result.status == AuthStatus.AUTHORIZED:
-            # 5. 用云端下发的密码尝试连接
+            # 5. 用云端下发的密码尝试连接（强制 RTSP 验证：云端密码必须先经
+            #    RTSP 确认正确才允许进入连接态，未验证的密码不写盘）
             conn = _try_connect_with_password(
                 camera_name, ip, port, rtsp_port, rtsp_path,
                 username, result.device_pwd,
+                require_rtsp=True,
             )
             if conn.success:
                 # 连接成功 → 持久化凭据（含 SN）
@@ -1012,13 +1041,14 @@ def _cloud_auth_and_connect(
                 )
                 return conn
             else:
-                # 云端密码连接失败 → 设备可能改过密码
+                # 云端密码连接失败 → 密码经 RTSP 验证不可用，或完全无法连接
                 return ConnectResult(
                     success=False, status="cloud_pwd_failed",
                     needs_password=True,
                     error_message=(
-                        f"云端下发的密码连接设备 {camera_name}({ip}) 失败，"
-                        f"设备可能修改过密码。请输入正确密码。"
+                        f"云端下发的密码无法通过设备 {camera_name}({ip}) 的验证"
+                        f"（{conn.error_message}），设备可能修改过密码或存在凭据隔离。"
+                        f"请输入正确密码。"
                     ),
                 )
 
@@ -1092,9 +1122,13 @@ def connect_device(
         ConnectResult:
             - success: 连接是否成功
             - auth_method: "password" 或 "direct"
-            - status: "connected" / "needs_password" / "auth_rejected" / "cloud_pwd_failed" / "failed"
+            - status: "connected" / "needs_password" / "no_sn" / "auth_rejected" / "cloud_pwd_failed" / "failed"
             - needs_password: True 表示需要密码
             - error_message: 失败原因
+
+    连接态硬约束: 无 SN 不进入连接态。SN 是 SK HTTP 通信（动态 token 计算）的
+    必要参数，三条连接路径（密码 / 直连 / 云端授权）任一返回 "connected" 时，
+    config.yaml 中该设备的 SN 必然已注册（探测不到 SN 返回 "no_sn" 拒绝连接）。
     """
     # ── Step 1: 从 config.yaml 查找缓存配置 ──
     cached = _find_cached_camera(camera_name)
@@ -1139,6 +1173,22 @@ def connect_device(
                 time.sleep(1.0)
 
         if last_result.success:
+            # 连接态硬约束：密码设备同样必须有 SN（SK 动态 token 计算的必要参数）。
+            # 发现阶段未带到（如 ONVIF 发现后用户手动输密码）时此处补探测。
+            if not effective_sn:
+                effective_sn = _probe_sn_via_sky(dev_ip, timeout=3.0)
+            if not effective_sn:
+                # 拒绝进入连接态：回滚 _try_connect_with_password 写入的内存连接
+                _connected_devices.pop(camera_name, None)
+                return ConnectResult(
+                    success=False, status="no_sn",
+                    error_message=(
+                        f"设备 {camera_name}({dev_ip}) 密码验证通过但 SN 探测失败，"
+                        f"已拒绝进入连接态（连接态设备必须在 config 中注册 SN，"
+                        f"否则 SK 私有功能将全部失效）。"
+                        f"请确认设备为创维 SK 协议设备后重试。"
+                    ),
+                )
             # 连接成功 → 持久化凭据与验证过的 ONVIF 端口。
             # result.onvif_port 为实测验证值（0=未验证成功）；未验证时不把假设端口写盘，
             # 保证 config.yaml 落盘结果只取决于设备事实，不随调用方传参漂移。
@@ -1164,15 +1214,25 @@ def connect_device(
 
         # 密码认证失败
         if cached and not password:
-            # 缓存凭据多次重试仍失败 → 清除过期注册，让后续流程重新发现设备
+            # 缓存凭据失效 → 先尝试云端重新授权获取新密码
+            if effective_sn:
+                cloud_result = _cloud_auth_and_connect(
+                    camera_name, dev_ip, dev_port, effective_sn,
+                    dev_rtsp_port, dev_rtsp_path, dev_username,
+                    cached=cached,
+                )
+                if cloud_result.success:
+                    return cloud_result  # 云端获取新密码 + RTSP 验证通过
+
+            # 云端也失败（或无 SN）→ 清除缓存，让用户手动输入
             _remove_camera_config(camera_name)
             return ConnectResult(
-                success=False, status="failed",
+                success=False, status="needs_password",
                 needs_password=True,
                 error_message=(
-                    f"缓存凭据连接失败（已重试 {max_attempts} 次）: {last_result.error_message}。"
-                    f"已从 config.yaml 清除设备 '{camera_name}' 的注册信息，"
-                    f"请重新搜索并连接该设备。"
+                    f"缓存凭据已失效（{last_result.error_message}），"
+                    f"云端重新授权也未能获取可用密码。"
+                    f"请直接输入设备 {camera_name}({dev_ip}) 的当前密码。"
                 ),
             )
         return ConnectResult(
@@ -1194,7 +1254,31 @@ def connect_device(
 
     if access == "open":
         # 免密设备，直接连接（ONVIF 端口同样以探测验证结果为准）
+        # 1. 获取 SN（搜索阶段可能未传入 connect_device，此处补探测）
+        probed_sn = effective_sn or _probe_sn_via_sky(dev_ip, timeout=3.0)
+
+        # 连接态硬约束：无 SN 不进入连接态。
+        # SN 是 SK HTTP 通信（动态 token 计算）的必要参数，缺失会导致补光/
+        # 追踪/图像调节/移动侦测等 SK 功能全部静默失效，却仍显示"已连接"。
+        if not probed_sn:
+            return ConnectResult(
+                success=False, status="no_sn",
+                error_message=(
+                    f"设备 {camera_name}({dev_ip}) 免密可达但 SN 探测失败，"
+                    f"已拒绝进入连接态（连接态设备必须在 config 中注册 SN，"
+                    f"否则 SK 私有功能将全部失效）。"
+                    f"请确认设备为创维 SK 协议设备且网络可达后重试。"
+                ),
+            )
+
+        # 2. 探测 ONVIF 端口
         verified_port = _probe_onvif_port(dev_ip, hint_port=dev_port)
+
+        # 3. 验证 SK HTTP 通信（有 SN 时才验证）
+        sk_http_ok = False
+        if probed_sn:
+            sk_http_ok = _verify_sk_http(dev_ip, probed_sn)
+
         conn_info = {
             "ip": dev_ip,
             "port": verified_port or dev_port,
@@ -1202,6 +1286,7 @@ def connect_device(
             "rtsp_path": dev_rtsp_path,
             "username": "",
             "password": "",
+            "sn_code": probed_sn,  # ← 内存中保存 SN，供 illumination/tracking 等使用
         }
         # 尽力建立 ONVIF 连接（部分免密设备支持默认凭据/匿名 ONVIF，供 PTZ 控制使用）
         if verified_port or dev_port:
@@ -1214,13 +1299,16 @@ def connect_device(
             except Exception:
                 pass  # ONVIF 不可用不影响拉流，仅 PTZ 功能受限
         _connected_devices[camera_name] = conn_info
-        # 缓存为 direct_connect（仅持久化验证过的端口，未验证则留 0 待解析）
-        if not cached:
+        # 缓存为 direct_connect（带 SN，供后续 SK HTTP 通信使用）。
+        # 已注册但 config 缺 SN（如首次连接时探测失败的残留）时也回填——
+        # 旧逻辑仅在首次注册时写盘，SN 一旦漏写将永久为空。
+        if not cached or not cached.sn_code:
             register_camera(
                 name=camera_name, ip=dev_ip, port=verified_port,
                 username="", password="",
                 rtsp_port=dev_rtsp_port, rtsp_path=dev_rtsp_path,
                 device_class="direct_connect",
+                sn_code=probed_sn,  # ← SN 写入 config（硬约束保证非空）
             )
         # 连接成功后探测补光能力（失败不阻断）
         _probe_and_save_illumination(
@@ -1254,6 +1342,44 @@ def connect_device(
 # ──────────────────────────────────────────────
 
 _connected_devices: Dict[str, dict] = {}   # camera_name -> 连接信息
+
+
+def _verify_sk_http(ip: str, sn: str, timeout: float = 5.0) -> bool:
+    """验证 SK HTTP 通信是否可用（轻量级探测，失败静默）。
+
+    用 SK_SETTING_GET_MAGIC 命令探测（最轻量的 SK 免鉴权命令），
+    返回 True 表示 SK HTTP 通道可用、SN 有效、设备支持创维私有协议。
+
+    Args:
+        ip:       设备 IP
+        sn:       设备 SN（用于构造请求）
+        timeout:  超时秒数
+
+    Returns:
+        True = SK HTTP 通道可用；False = 不可用或非创维设备
+    """
+    cmd = {
+        "service_type": "setting",
+        "msg_id": "0000000000000000000000",
+        "cmd_name": "SK_SETTING_GET_MAGIC",
+        "ver": "1.0",
+        "channel": 2,
+        "sequence": 0,
+        "refresh": "0",
+    }
+    resp = send_tcp_command(
+        ip=ip, command=cmd,
+        username="admin", password="",
+        timeout=timeout, port=SK_TCP_PORT,
+    )
+    if resp is None:
+        return False
+    http_status = resp.get("_http_status", 0)
+    resp_code = resp.get("code", "")
+    # HTTP 200 或 SK 正常响应码 → SK HTTP 通道可用
+    if http_status == 200 or resp_code in ("C0000", "C000", ""):
+        return True
+    return False
 
 
 def _probe_and_save_illumination(
@@ -1339,10 +1465,17 @@ def _try_connect_with_password(
     rtsp_path: str,
     username: str,
     password: str,
+    require_rtsp: bool = False,
 ) -> ConnectResult:
     """
-    使用密码尝试连接设备（TCP 通道 → ONVIF → RTSP 逐级尝试）。
-    连接成功则记录到 _connected_devices。
+    使用密码尝试连接设备（TCP 通道 → ONVIF → RTSP 逐级验证）。
+
+    连接成功的判定标准:
+      - TCP 或 ONVIF 至少一个认证通过（HTTP 200 / 鉴权调用成功）
+      - **且** RTSP 拉流验证通过（密码对 RTSP 也有效）
+      - 例外: TCP/ONVIF 通过但 RTSP 端口不可达时，仍接受连接（设备可能不支持标准 RTSP 路径）；
+        require_rtsp=True 时取消该例外（RTSP 不可达 = 密码未经 RTSP 验证 = 拒绝），
+        供云端授权密码使用——系统获取的密码必须先经 RTSP 验证正确才允许进入连接态。
 
     确定性保证: 传入的 onvif_port 只作为探测线索（hint），不直接采信。
     先探测验证设备真实 ONVIF 端口，成功路径统一使用验证后的端口，
@@ -1366,42 +1499,66 @@ def _try_connect_with_password(
         timeout=5.0,
         port=SK_TCP_PORT,
     )
+    tcp_ok = False
     if resp is not None:
-        _connected_devices[camera_name] = {
-            "ip": ip, "port": effective_port,
-            "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
-            "username": username, "password": password,
-            "tcp_port": SK_TCP_PORT,
-        }
-        return ConnectResult(
-            success=True, auth_method="password", status="connected",
-            onvif_port=verified_port,
+        _tcp_http_status = resp.get("_http_status", 0)
+        _tcp_resp_code = resp.get("code", "")
+        # 认证成功: HTTP 200 或 SK 正常响应码（C0000/C000/空）
+        tcp_ok = (
+            _tcp_http_status == 200
+            or (not _tcp_http_status and _tcp_resp_code in ("C0000", "C000", ""))
         )
+        if tcp_ok:
+            _connected_devices[camera_name] = {
+                "ip": ip, "port": effective_port,
+                "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
+                "username": username, "password": password,
+                "tcp_port": SK_TCP_PORT,
+            }
+        # else: TCP 返回了响应但认证失败（401/403/其他），降级到 ONVIF → RTSP
 
     # ── 尝试 2: ONVIF 连接（使用验证过的端口）──
+    onvif_ok = False
     if effective_port:
         try:
             from onvif import ONVIFCamera
             cam = ONVIFCamera(host=ip, port=effective_port, user=username, passwd=password)
             dev_svc = cam.create_devicemgmt_service()
             dev_svc.GetDeviceInformation()
-            _connected_devices[camera_name] = {
+            onvif_ok = True
+            # 在已有连接信息上追加 ONVIF camera 对象（保留 TCP 信息）
+            conn = _connected_devices.get(camera_name, {
                 "ip": ip, "port": effective_port,
                 "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
                 "username": username, "password": password,
-                "onvif_camera": cam,
-            }
-            return ConnectResult(
-                success=True, auth_method="password", status="connected",
-                onvif_port=effective_port,  # ONVIF 鉴权调用成功，该端口即验证事实
-            )
+            })
+            conn["onvif_camera"] = cam
+            _connected_devices[camera_name] = conn
         except Exception:
-            # ONVIF 失败，继续尝试 RTSP
-            pass
+            pass  # ONVIF 失败，继续尝试 RTSP
 
-    # ── 尝试 3: RTSP 带认证拉流 ──
-    access = _probe_stream_access(ip, rtsp_port, rtsp_path, username, password)
-    if access == "open":
+    # ── RTSP 密码验证: 密码必须对 RTSP 也有效才算"密码可用" ──
+    rtsp_access = _probe_stream_access(ip, rtsp_port, rtsp_path, username, password)
+    rtsp_ok = (rtsp_access == "open")
+
+    # ── 最终判定 ──
+    if (tcp_ok or onvif_ok) and rtsp_ok:
+        # TCP/ONVIF + RTSP 全部通过 → 密码确认可用
+        return ConnectResult(
+            success=True, auth_method="password", status="connected",
+            onvif_port=verified_port,
+        )
+
+    if (tcp_ok or onvif_ok) and rtsp_access == "auth_required":
+        # TCP/ONVIF 成功但 RTSP 认证失败 → 密码对 RTSP 无效（凭据隔离或密码不一致）
+        _connected_devices.pop(camera_name, None)
+        return ConnectResult(
+            success=False, status="failed",
+            error_message="TCP/ONVIF 连接成功但 RTSP 认证失败（密码可能对 RTSP 无效）",
+        )
+
+    if rtsp_ok:
+        # 仅 RTSP 通过（TCP/ONVIF 均失败）→ 密码对 RTSP 有效，接受连接
         _connected_devices[camera_name] = {
             "ip": ip, "port": effective_port,
             "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
@@ -1412,10 +1569,198 @@ def _try_connect_with_password(
             onvif_port=verified_port,
         )
 
+    if (tcp_ok or onvif_ok) and rtsp_access == "unreachable":
+        if require_rtsp:
+            # 云端授权密码：RTSP 不可达 = 密码未经 RTSP 验证，不允许进入连接态
+            _connected_devices.pop(camera_name, None)
+            return ConnectResult(
+                success=False, status="failed",
+                error_message="RTSP 端口不可达，密码未经 RTSP 验证（云端授权密码要求强制 RTSP 验证）",
+            )
+        # TCP/ONVIF 成功但 RTSP 不可达 → 接受连接（设备可能不支持标准 RTSP 路径）
+        return ConnectResult(
+            success=True, auth_method="password", status="connected",
+            onvif_port=verified_port,
+        )
+
+    # 全部失败
+    _connected_devices.pop(camera_name, None)
     return ConnectResult(
         success=False, status="failed",
         error_message="TCP/ONVIF/RTSP 均连接失败",
     )
+
+
+def _rtsp_read_response_head(sock) -> str:
+    """读取 RTSP 响应至头部结束（\r\n\r\n）；超时/对端关闭时返回已收到的内容。"""
+    response = b""
+    while True:
+        try:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+            if b"\r\n\r\n" in response:
+                break
+        except socket.timeout:
+            break
+    return response.decode("utf-8", errors="ignore")
+
+
+def _rtsp_status_code(resp_text: str) -> int:
+    """严格解析 RTSP 状态行（RTSP/x.y <code>）；非标准状态行返回 0。
+
+    不做子串匹配——旧版 "401" in text 会被响应头/SDP 中偶现的数字串误判。
+    """
+    import re
+    first_line = resp_text.split("\r\n", 1)[0].split("\n", 1)[0].strip()
+    m = re.match(r"^RTSP/\d+\.\d+\s+(\d{3})", first_line)
+    return int(m.group(1)) if m else 0
+
+
+def _rtsp_send_describe(sock, rtsp_url: str, cseq: int, auth_header: str = "") -> str:
+    """在给定连接上发送一个 DESCRIBE 请求并读取响应头。"""
+    request = (
+        f"DESCRIBE {rtsp_url} RTSP/1.0\r\n"
+        f"CSeq: {cseq}\r\n"
+        f"Accept: application/sdp\r\n"
+        f"{auth_header}"
+        f"\r\n"
+    )
+    sock.sendall(request.encode("utf-8"))
+    return _rtsp_read_response_head(sock)
+
+
+def _parse_www_authenticate(resp_text: str) -> List[Dict[str, Any]]:
+    """解析响应头中全部 WWW-Authenticate challenge。
+
+    Returns:
+        [{"scheme": "digest"|"basic", "params": {realm/nonce/qop/...}}]
+    """
+    import re
+    challenges: List[Dict[str, Any]] = []
+    for line in resp_text.splitlines():
+        if ":" not in line:
+            continue
+        name, _, value = line.partition(":")
+        if name.strip().lower() != "www-authenticate":
+            continue
+        m = re.match(r"\s*(Basic|Digest)\s*(.*)", value, re.IGNORECASE)
+        if not m:
+            continue
+        params: Dict[str, str] = {}
+        for key, quoted, plain in re.findall(
+            r'([a-zA-Z][a-zA-Z0-9_-]*)=(?:"([^"]*)"|([^\s,]+))', m.group(2)
+        ):
+            params[key.lower()] = quoted if quoted else plain.rstrip(",")
+        challenges.append({"scheme": m.group(1).lower(), "params": params})
+    return challenges
+
+
+def _build_rtsp_digest_header(
+    params: Dict[str, str],
+    username: str,
+    password: str,
+    method: str,
+    uri: str,
+) -> str:
+    """按 RFC 2617 计算 Digest 认证头（RTSP DESCRIBE 用，兼容无 qop 的 RFC 2069 模式）。
+
+    response = MD5( MD5(user:realm:pass) : nonce [:nc:cnonce:qop] : MD5(method:uri) )
+    """
+    def _md5(s: str) -> str:
+        return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+    realm = params.get("realm", "")
+    nonce = params.get("nonce", "")
+    ha1 = _md5(f"{username}:{realm}:{password}")
+    ha2 = _md5(f"{method}:{uri}")
+    qop = (params.get("qop", "") or "").split(",")[0].strip()
+    if qop:
+        nc = "00000001"
+        cnonce = secrets.token_hex(4)
+        response = _md5(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}")
+        qop_fields = f', qop={qop}, nc={nc}, cnonce="{cnonce}"'
+    else:
+        response = _md5(f"{ha1}:{nonce}:{ha2}")
+        qop_fields = ""
+    header = (
+        f'Authorization: Digest username="{username}", realm="{realm}", '
+        f'nonce="{nonce}", uri="{uri}", response="{response}", algorithm=MD5'
+    )
+    if params.get("opaque"):
+        header += f', opaque="{params["opaque"]}"'
+    return header + qop_fields + "\r\n"
+
+
+def _rtsp_negotiated_describe(
+    ip: str,
+    rtsp_port: int,
+    path: str,
+    username: str = "",
+    password: str = "",
+    timeout: float = 5.0,
+) -> Tuple[int, str]:
+    """完整 RTSP DESCRIBE 认证协商（标准 401 challenge/response）。
+
+    流程：无认证 DESCRIBE → 401 + WWW-Authenticate → 按 challenge 用
+    Digest（优先）/ Basic 重发 → 200。与 FFmpeg/VLC 的协商行为对齐，
+    修复旧版"单次 Basic DESCRIBE 被固件回 401 即误判认证失败"的假阴性。
+
+    Returns:
+        (最终 RTSP 状态码, 最后一次响应文本)；连接失败/无标准状态行返回 (0, "")
+    """
+    rtsp_url = f"rtsp://{ip}:{rtsp_port}{path}"
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect((ip, rtsp_port))
+    except Exception:
+        return 0, ""
+
+    try:
+        # 第 1 发：无认证 DESCRIBE（免密设备直接 200；需鉴权设备回 401 + challenge）
+        resp = _rtsp_send_describe(sock, rtsp_url, 1)
+        code = _rtsp_status_code(resp)
+        if code != 401 or not (username and password):
+            return code, resp
+
+        # 401 → 排空残留数据后按 challenge 协商重发
+        try:
+            sock.settimeout(0.2)
+            while sock.recv(4096):
+                pass
+        except Exception:
+            pass
+        sock.settimeout(timeout)
+
+        challenges = _parse_www_authenticate(resp)
+        ordered = ([c for c in challenges if c["scheme"] == "digest"]
+                   + [c for c in challenges if c["scheme"] == "basic"])
+        if not ordered:
+            # 固件 401 未带 challenge（非标准）→ 按旧版行为直接试一次 Basic
+            ordered = [{"scheme": "basic", "params": {}}]
+
+        for cseq, challenge in enumerate(ordered, start=2):
+            if challenge["scheme"] == "digest":
+                auth_header = _build_rtsp_digest_header(
+                    challenge["params"], username, password, "DESCRIBE", rtsp_url,
+                )
+            else:
+                token = base64.b64encode(f"{username}:{password}".encode()).decode()
+                auth_header = f"Authorization: Basic {token}\r\n"
+            resp = _rtsp_send_describe(sock, rtsp_url, cseq, auth_header)
+            code = _rtsp_status_code(resp)
+            if code != 401:
+                return code, resp
+        return code, resp
+    except Exception:
+        return 0, ""
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
 
 
 def _probe_stream_access(
@@ -1426,15 +1771,13 @@ def _probe_stream_access(
     password: str = "",
 ) -> str:
     """
-    探测 RTSP 流是否可访问。
+    探测 RTSP 流是否可访问（含标准 401 认证协商，Basic / Digest 均支持）。
 
     Returns:
         "open"           — 可以拉流（免密或密码正确）
-        "auth_required"  — 需要密码（返回 401）
+        "auth_required"  — 协商后仍 401（密码确实无效）
         "unreachable"    — 设备不可达
     """
-    import socket
-
     # 先检查端口是否开放
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1446,119 +1789,40 @@ def _probe_stream_access(
     except Exception:
         return "unreachable"
 
-    # 端口开放 → 发送 RTSP DESCRIBE 探测
-    rtsp_url = f"rtsp://{ip}:{rtsp_port}{rtsp_path}"
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(5.0)
-        sock.connect((ip, rtsp_port))
+    # 端口开放 → 完整协商 DESCRIBE（无认证 → 401 challenge → Digest/Basic 重发）
+    code, _resp_text = _rtsp_negotiated_describe(ip, rtsp_port, rtsp_path, username, password)
 
-        # 构建 RTSP DESCRIBE 请求
-        if username and password:
-            import base64
-            auth = base64.b64encode(f"{username}:{password}".encode()).decode()
-            auth_header = f"Authorization: Basic {auth}\r\n"
-        else:
-            auth_header = ""
-
-        request = (
-            f"DESCRIBE {rtsp_url} RTSP/1.0\r\n"
-            f"CSeq: 1\r\n"
-            f"Accept: application/sdp\r\n"
-            f"{auth_header}"
-            f"\r\n"
-        )
-        sock.sendall(request.encode("utf-8"))
-
-        # 读取响应
-        response = b""
-        while True:
-            try:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                response += chunk
-                if b"\r\n\r\n" in response:
-                    break
-            except socket.timeout:
-                break
-        sock.close()
-
-        resp_text = response.decode("utf-8", errors="ignore")
-
-        # 解析 RTSP 状态码
-        if "RTSP/1.0 200" in resp_text:
-            return "open"
-        elif "401" in resp_text:
-            return "auth_required"
-        elif "RTSP/1.0" in resp_text:
-            # 其他 RTSP 错误码（404 等）— 可能是路径不对，但端口可达
-            # 尝试常见路径（含创维摄像头路径 /stream0, /md0_0, /md0_1）
-            for alt_path in ["/Streaming/Channels/101", "/h264/ch1/main/av_stream", "/live",
-                             "/stream0", "/md0_0", "/stream1", "/md0_1"]:
-                if alt_path == rtsp_path:
-                    continue
-                alt_result = _quick_rtsp_check(ip, rtsp_port, alt_path, username, password)
-                if alt_result == "open":
-                    return "open"
-                elif alt_result == "auth_required":
-                    return "auth_required"
-            return "open"  # 端口开放且响应了 RTSP，视为可用
-        else:
-            # 非标准响应，端口开放视为可达
-            return "open"
-
-    except Exception:
-        return "unreachable"
+    if code == 200:
+        return "open"
+    if code == 401:
+        return "auth_required"
+    if code:
+        # 其他 RTSP 错误码（404 等）— 可能是路径不对，但端口可达
+        # 尝试常见路径（含创维摄像头路径 /stream0, /md0_0, /md0_1）
+        for alt_path in ["/Streaming/Channels/101", "/h264/ch1/main/av_stream", "/live",
+                         "/stream0", "/md0_0", "/stream1", "/md0_1"]:
+            if alt_path == rtsp_path:
+                continue
+            alt_result = _quick_rtsp_check(ip, rtsp_port, alt_path, username, password)
+            if alt_result == "open":
+                return "open"
+            elif alt_result == "auth_required":
+                return "auth_required"
+        return "open"  # 端口开放且响应了 RTSP，视为可用
+    # 无标准状态行（响应异常/超时）— 维持旧版宽松语义：端口开放视为可达
+    return "open"
 
 
 def _quick_rtsp_check(
     ip: str, rtsp_port: int, path: str,
     username: str = "", password: str = "",
 ) -> str:
-    """快速检查单个 RTSP 路径是否可访问"""
-    import socket
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(3.0)
-        sock.connect((ip, rtsp_port))
-
-        rtsp_url = f"rtsp://{ip}:{rtsp_port}{path}"
-        if username and password:
-            import base64
-            auth = base64.b64encode(f"{username}:{password}".encode()).decode()
-            auth_header = f"Authorization: Basic {auth}\r\n"
-        else:
-            auth_header = ""
-
-        request = (
-            f"DESCRIBE {rtsp_url} RTSP/1.0\r\n"
-            f"CSeq: 1\r\n"
-            f"Accept: application/sdp\r\n"
-            f"{auth_header}"
-            f"\r\n"
-        )
-        sock.sendall(request.encode("utf-8"))
-        response = b""
-        while True:
-            try:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                response += chunk
-                if b"\r\n\r\n" in response:
-                    break
-            except socket.timeout:
-                break
-        sock.close()
-
-        text = response.decode("utf-8", errors="ignore")
-        if "200" in text:
-            return "open"
-        elif "401" in text:
-            return "auth_required"
-    except Exception:
-        pass
+    """快速检查单个 RTSP 路径是否可访问（复用完整认证协商，状态行严格解析）"""
+    code, _ = _rtsp_negotiated_describe(ip, rtsp_port, path, username, password)
+    if code == 200:
+        return "open"
+    if code == 401:
+        return "auth_required"
     return "unreachable"
 
 

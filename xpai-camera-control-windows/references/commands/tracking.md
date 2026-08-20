@@ -115,11 +115,12 @@ Read-only query of the camera's detection and tracking capabilities.
 
 **Returns** `TrackingQueryResult` with:
 - `channel`: always `"sk"` (no ONVIF fallback)
-- `human_capabilities` / `human_current`: human detection parameter list and current values
-- `vehicle_capabilities` / `vehicle_current`: vehicle detection parameter list and current values
-- `area_capabilities` / `area_current`: area detection parameter list and current values
-- `motion_capabilities` / `motion_current`: motion detection parameter list and current values
-- `line_capabilities` / `line_current`: line-crossing detection parameter list and current values
+- `*_capabilities` / `*_current`: filtered to **only the 3 settable parameters** (`enable`, `tracking`, `level`) — device-only parameters (alarm_enable, white_light, timestrategy, etc.) are excluded
+- `human_capabilities` / `human_current`: human detection
+- `vehicle_capabilities` / `vehicle_current`: vehicle detection
+- `area_capabilities` / `area_current`: area detection
+- `motion_capabilities` / `motion_current`: motion detection
+- `line_capabilities` / `line_current`: line-crossing detection
 
 ---
 
@@ -150,16 +151,16 @@ Enable, disable, or configure detection and tracking features. **Requires explic
 | `ok` | bool | Whether the operation succeeded |
 | `camera` | string | Camera name |
 | `channel` | string | Always `"sk"` |
-| `human_capabilities` | list[dict] | Human detection parameter descriptions with ranges and current values |
-| `human_current` | dict | Raw current human detection parameter values |
-| `vehicle_capabilities` | list[dict] | Vehicle detection parameter descriptions with ranges and current values |
-| `vehicle_current` | dict | Raw current vehicle detection parameter values |
-| `area_capabilities` | list[dict] | Area detection parameter descriptions with ranges and current values |
-| `area_current` | dict | Raw current area detection parameter values |
-| `motion_capabilities` | list[dict] | Motion detection parameter descriptions with ranges and current values |
-| `motion_current` | dict | Raw current motion detection parameter values |
-| `line_capabilities` | list[dict] | Line-crossing detection parameter descriptions with ranges and current values |
-| `line_current` | dict | Raw current line-crossing detection parameter values |
+| `human_capabilities` | list[dict] | Human detection: only `enable`/`tracking`/`level` with ranges and current values |
+| `human_current` | dict | Human detection: only `enable`/`tracking`/`level` current values |
+| `vehicle_capabilities` | list[dict] | Vehicle detection: only `enable`/`tracking`/`level` with ranges and current values |
+| `vehicle_current` | dict | Vehicle detection: only `enable`/`tracking`/`level` current values |
+| `area_capabilities` | list[dict] | Area detection: only `enable`/`level` with ranges and current values (no tracking) |
+| `area_current` | dict | Area detection: only `enable`/`level` current values |
+| `motion_capabilities` | list[dict] | Motion detection: only `enable`/`tracking`/`level` with ranges and current values |
+| `motion_current` | dict | Motion detection: only `enable`/`tracking`/`level` current values |
+| `line_capabilities` | list[dict] | Line-crossing detection: only `enable`/`level` with ranges and current values (no tracking) |
+| `line_current` | dict | Line-crossing detection: only `enable`/`level` current values |
 | `error_code` | string | Error code on failure |
 | `message` | string | Human-readable status message |
 | `hint` | string | Suggested next step on failure |
@@ -173,7 +174,7 @@ Enable, disable, or configure detection and tracking features. **Requires explic
 | `channel` | string | Always `"sk"` |
 | `detect_type` | string | Which detection type was modified (`human`/`vehicle`/`area`/`motion`/`line`) |
 | `updated` | dict | Fields that were changed, with post-write readback values |
-| `current` | dict | Full current parameter state after the change |
+| `current` | dict | Current state of settable parameters only (`enable`/`tracking`/`level`) after the change |
 | `error_code` | string | Error code on failure |
 | `message` | string | Human-readable status message |
 | `hint` | string | Suggested next step on failure |

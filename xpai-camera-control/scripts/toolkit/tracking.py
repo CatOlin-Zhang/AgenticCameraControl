@@ -89,6 +89,9 @@ _SK_TRACKING_PORT = 9010
 _SK_TRACKING_TIMEOUT = 3.0
 _SK_OK_CODE = "C0000"
 
+# set_tracking 仅支持这 3 个参数的设置与上报
+_SETTABLE_FIELDS = {"enable", "tracking", "level"}
+
 # 人形侦测命令（协议 5.7）
 _SK_CMD_HUMAN_OPTION = "SK_SETTING_GET_HUMANDETECT_OPTION"
 _SK_CMD_HUMAN_GET = "SK_SETTING_GET_HUMANDETECT"
@@ -543,10 +546,13 @@ def big_tracking_query(
             if not cur["ok"]:
                 _log(f"人形侦测当前值查询失败，跳过（code={cur.get('code')}）")
             else:
-                result.human_capabilities = _merge_capabilities(
-                    opt["capabilities"], cur["current"],
-                    _TRACKING_LABELS, _TRACKING_VALUE_TEXTS)
-                result.human_current = cur["current"]
+                result.human_capabilities = [
+                    c for c in _merge_capabilities(
+                        opt["capabilities"], cur["current"],
+                        _TRACKING_LABELS, _TRACKING_VALUE_TEXTS)
+                    if c.get("name") in _SETTABLE_FIELDS]
+                result.human_current = {
+                    k: v for k, v in cur["current"].items() if k in _SETTABLE_FIELDS}
 
     # ── 车辆侦测 ──
     if dt in ("all", "vehicle"):
@@ -562,10 +568,13 @@ def big_tracking_query(
             if not cur["ok"]:
                 _log(f"车辆侦测当前值查询失败，跳过（code={cur.get('code')}）")
             else:
-                result.vehicle_capabilities = _merge_capabilities(
-                    opt["capabilities"], cur["current"],
-                    _TRACKING_LABELS, _TRACKING_VALUE_TEXTS)
-                result.vehicle_current = cur["current"]
+                result.vehicle_capabilities = [
+                    c for c in _merge_capabilities(
+                        opt["capabilities"], cur["current"],
+                        _TRACKING_LABELS, _TRACKING_VALUE_TEXTS)
+                    if c.get("name") in _SETTABLE_FIELDS]
+                result.vehicle_current = {
+                    k: v for k, v in cur["current"].items() if k in _SETTABLE_FIELDS}
 
     # ── 区域侦测 ──
     if dt in ("all", "area"):
@@ -581,10 +590,13 @@ def big_tracking_query(
             if not cur["ok"]:
                 _log(f"区域侦测当前值查询失败，跳过（code={cur.get('code')}）")
             else:
-                result.area_capabilities = _merge_capabilities(
-                    opt["capabilities"], cur["current"],
-                    _TRACKING_LABELS, _TRACKING_VALUE_TEXTS)
-                result.area_current = cur["current"]
+                result.area_capabilities = [
+                    c for c in _merge_capabilities(
+                        opt["capabilities"], cur["current"],
+                        _TRACKING_LABELS, _TRACKING_VALUE_TEXTS)
+                    if c.get("name") in _SETTABLE_FIELDS]
+                result.area_current = {
+                    k: v for k, v in cur["current"].items() if k in _SETTABLE_FIELDS}
 
     # ── 移动侦测 ──
     if dt in ("all", "motion"):
@@ -600,10 +612,13 @@ def big_tracking_query(
             if not cur["ok"]:
                 _log(f"移动侦测当前值查询失败，跳过（code={cur.get('code')}）")
             else:
-                result.motion_capabilities = _merge_capabilities(
-                    opt["capabilities"], cur["current"],
-                    _TRACKING_LABELS, _TRACKING_VALUE_TEXTS)
-                result.motion_current = cur["current"]
+                result.motion_capabilities = [
+                    c for c in _merge_capabilities(
+                        opt["capabilities"], cur["current"],
+                        _TRACKING_LABELS, _TRACKING_VALUE_TEXTS)
+                    if c.get("name") in _SETTABLE_FIELDS]
+                result.motion_current = {
+                    k: v for k, v in cur["current"].items() if k in _SETTABLE_FIELDS}
 
     # ── 越界侦测 ──
     if dt in ("all", "line"):
@@ -619,10 +634,13 @@ def big_tracking_query(
             if not cur["ok"]:
                 _log(f"越界侦测当前值查询失败，跳过（code={cur.get('code')}）")
             else:
-                result.line_capabilities = _merge_capabilities(
-                    opt["capabilities"], cur["current"],
-                    _TRACKING_LABELS, _TRACKING_VALUE_TEXTS)
-                result.line_current = cur["current"]
+                result.line_capabilities = [
+                    c for c in _merge_capabilities(
+                        opt["capabilities"], cur["current"],
+                        _TRACKING_LABELS, _TRACKING_VALUE_TEXTS)
+                    if c.get("name") in _SETTABLE_FIELDS]
+                result.line_current = {
+                    k: v for k, v in cur["current"].items() if k in _SETTABLE_FIELDS}
 
     result.message = (f"侦测查询完成: "
                       f"人形={len(result.human_capabilities)}项, "
@@ -759,9 +777,10 @@ def big_tracking_set(
                        f"msg={set_result.get('msg')}）",
                        camera=cam.name)
 
-    # 4. 回读确认
+    # 4. 回读确认（仅上报可控参数）
     rb = cur_fn(cam)
-    cur = rb["current"] if rb["ok"] else dict(payload)
+    full_cur = rb["current"] if rb["ok"] else dict(payload)
+    cur = {k: full_cur[k] for k in _SETTABLE_FIELDS if k in full_cur}
     updated = {k: cur[k] for k in updates if k in cur}
     _log(f"SK {dt}侦测回读确认 updated={updated}")
 

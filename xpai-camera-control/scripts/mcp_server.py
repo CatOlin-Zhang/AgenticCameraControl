@@ -85,7 +85,7 @@ TOOLS = [
     ),
     Tool(
         name="connect_device",
-        description="连接摄像头。自动加载缓存凭据并重试；无缓存或失败时自动处理云端授权。返回 status 指示下一步：success=已连接；needs_password=请用户提供密码后重新调用；auth_rejected=云端拒绝；cloud_pwd_failed=云端密码不匹配，请用户输入正确密码。",
+        description="连接摄像头。自动加载缓存凭据（TCP/ONVIF/RTSP 三通道验证，密码设备须 RTSP 验证通过）；缓存失效时先尝试云端重新授权，仍失败再请用户输入。直连设备自动获取 SN 并验证 SK HTTP 通信。返回 status 指示下一步：success=已连接；needs_password=请用户提供密码后重新调用；auth_rejected=云端拒绝；cloud_pwd_failed=云端密码验证不通过，请用户输入正确密码。",
         inputSchema={
             "type": "object",
             "properties": {

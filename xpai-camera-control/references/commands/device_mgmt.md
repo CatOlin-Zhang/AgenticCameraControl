@@ -137,7 +137,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
 |-------|------|-------------|
 | `success` | bool | Whether the connection succeeded |
 | `auth_method` | string | Authentication method used: `"password"` or `"direct"` (empty if not connected) |
-| `status` | string | `"connected"` / `"needs_password"` / `"pending_auth"` / `"failed"` |
+| `status` | string | `"connected"` / `"needs_password"` / `"cloud_pwd_failed"` / `"auth_rejected"` / `"failed"` |
 | `error_message` | string | Failure reason or status detail (empty on success) |
 | `needs_password` | bool | `true` = Agent must prompt user for password and re-call with `password` arg |
 | `onvif_port` | int | Verified ONVIF port (0 = not verified; auto-probed by `connect_device`) |
@@ -146,15 +146,17 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
 
 **Illumination capability probing:** after a successful connection (both password-auth and direct-connect paths), `connect_device()` automatically probes the ONVIF Imaging Service for supported illumination modes via `probe_illumination_capability()`. The result is persisted to `config.yaml` as `illumination_modes`. The probe is non-blocking — failures are silently ignored so they never delay the connection flow. If `illumination_modes` is already cached in config.yaml from a previous session, re-probing is skipped.
 
-**Connection flow:**
+**Connection flow (三通道验证: TCP 9010 → ONVIF → RTSP):**
 
-1. Check `config.yaml` for cached credentials → if found, retry ONVIF auth up to 3 times (1s interval) → connect. All retries fail → auto-remove registration from config.yaml → return `status="failed"`, `needs_password=True`
-2. If password provided by user → single attempt with ONVIF auth → TCP channel (no retry, no cache cleanup)
-3. If no password and `device_class == "password_required"` → return `status="needs_password"`, prompt user for password
+1. Check `config.yaml` for cached credentials → if found, retry connection up to 3 times (1s interval) using TCP/ONVIF/RTSP three-channel verification. For password devices, the password must pass **RTSP authentication** to be considered valid. All retries fail → attempt **cloud re-authorization** (if SN available) to fetch a fresh password; cloud also fails → auto-remove registration from config.yaml → return `status="needs_password"`
+2. If password provided by user → single attempt with TCP/ONVIF/RTSP verification (no retry, no cache cleanup). RTSP auth failure → `status="failed"`
+3. If no password and `device_class == "password_required"` → internally initiate cloud authorization (POST request + polling). Cloud returns password → verify via TCP/ONVIF + RTSP → success: persist credentials; failure: return `status="cloud_pwd_failed"`
 4. If not `password_required` → probe RTSP stream:
-   - `200 OK` → direct-connect (`auth_method="direct"`)
-   - `401 Unauthorized` → return `needs_password=True`
-5. If device requires cloud authorization (SN-based auth) → return `status="pending_auth"` → cloud auth is handled internally by `connect_device` on subsequent calls with `sn_code`
+   - `200 OK` (direct-connect) → probe SN via Skyworth private protocol → verify SK HTTP communication → register to config.yaml with SN → `auth_method="direct"`
+   - `401 Unauthorized` → internally initiate cloud authorization (same as step 3)
+5. Cloud authorization outcomes: authorized → auto-connect with cloud password; rejected → `status="auth_rejected"`; timeout/error → `status="needs_password"`
+
+**Password verification standard:** A password is considered valid only when **both** TCP/ONVIF authentication **and** RTSP stream access succeed. If TCP/ONVIF passes but RTSP returns 401, the password is rejected (possible credential isolation or password mismatch on the device).
 
 #### Return JSON examples by scenario
 
@@ -170,18 +172,18 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
 }
 ```
 
-**Cached credentials failed (registration auto-removed):**
+**Cached credentials failed (cloud re-auth attempted, registration auto-removed):**
 ```json
 {
   "success": false,
   "auth_method": "",
-  "status": "failed",
-  "error_message": "缓存凭据连接失败（已重试 3 次）: ONVIF 认证失败. 已从 config.yaml 清除设备 '客厅摄像头' 的注册信息，请重新搜索并连接该设备。",
+  "status": "needs_password",
+  "error_message": "缓存凭据已失效（TCP/ONVIF/RTSP 均连接失败），云端重新授权也未能获取可用密码。请直接输入设备 客厅摄像头(192.168.1.100) 的当前密码。",
   "needs_password": true,
   "onvif_port": 0
 }
 ```
-→ Agent: re-discover via `search_devices()` and re-connect.
+→ Agent: prompt user for password → `connect_device(camera_name, password=user_input, ip=...)`.
 
 **Direct-connect — no password needed:**
 ```json
@@ -214,24 +216,36 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
   "success": false,
   "auth_method": "",
   "status": "failed",
-  "error_message": "密码认证失败: ONVIF 认证失败: 用户名或密码错误，请确认密码后重试",
+  "error_message": "密码认证失败: TCP/ONVIF/RTSP 均连接失败",
   "needs_password": true,
   "onvif_port": 8000
 }
 ```
 
-**Pending cloud authorization:**
+**RTSP auth failure despite TCP/ONVIF success (credential isolation):**
 ```json
 {
   "success": false,
   "auth_method": "",
-  "status": "pending_auth",
-  "error_message": "设备需要云端授权，请提供 sn_code 后重新调用 connect_device 触发云端授权流程",
+  "status": "failed",
+  "error_message": "TCP/ONVIF 连接成功但 RTSP 认证失败（密码可能对 RTSP 无效）",
   "needs_password": false,
+  "onvif_port": 8000
+}
+```
+
+**Cloud password verification failed (credential isolation or password mismatch):**
+```json
+{
+  "success": false,
+  "auth_method": "",
+  "status": "cloud_pwd_failed",
+  "error_message": "云端下发的密码无法通过设备 客厅摄像头(192.168.1.100) 的验证（TCP/ONVIF 连接成功但 RTSP 认证失败（密码可能对 RTSP 无效）），设备可能修改过密码或存在凭据隔离。请输入正确密码。",
+  "needs_password": true,
   "onvif_port": 0
 }
 ```
-→ Agent: re-call `connect_device(camera_name, sn_code="SN...")` to trigger cloud auth internally.
+→ Agent: prompt user for password → `connect_device(camera_name, password=user_input)`.
 
 ---
 
