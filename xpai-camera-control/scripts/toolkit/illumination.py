@@ -8,9 +8,8 @@ Toolkit: 补光设置（协议 5.2 SK_SETTING_*_FILLLIGHT 三命令）
   - probe_illumination_capability  探测摄像头补光能力
 
 SK 动态 Token 鉴权：先调 GET_MAGIC 拿 stamp，再 token = Base64(SHA1(stamp + sn + KEY))
-固件返回能力项：daynightmode/filllightmode/duration/brightnessmode/
-                brightness/begintime/endtime/repeatdays/enable/
-                irmode/irbrightness/whiteonvalue/whiteoffvalue/ironvalue/iroffvalue
+对外仅暴露 daynightmode/filllightmode 两个参数（多数设备只支持这两项调节），
+其余固件字段不上报、不可设置，仅在 SET_FILLLIGHT 全量下发时作为基线透传
 SET_FILLLIGHT 是全量下发，设置前必须先 GET_FILLLIGHT 读基线再合并
 """
 import base64
@@ -58,12 +57,6 @@ class FilllightModeEnum(str, Enum):
     FULL_COLOR = "full_color"  # 0 全彩模式
     INFRARED = "infrared"      # 1 红外模式
     SMART = "smart"            # 2 智能夜视
-
-
-class AdjustMode(str, Enum):
-    """亮度调节模式"""
-    AUTO = "auto"      # 0 自动调节
-    MANUAL = "manual"  # 1 手动调节
 
 
 # 日夜模式：整数 ↔ 中文/英文别名
@@ -153,32 +146,19 @@ _SK_CMD_FILLLIGHT_OPTION = "SK_SETTING_GET_FILLLIGHT_OPTION"
 _SK_CMD_FILLLIGHT_GET = "SK_SETTING_GET_FILLLIGHT"
 _SK_CMD_FILLLIGHT_SET = "SK_SETTING_SET_FILLLIGHT"
 
+# 对外暴露的补光参数白名单（多数设备仅支持这两项调节，其余固件字段不上报）
+_SK_FILLLIGHT_SUPPORTED = ("daynightmode", "filllightmode")
+
 # 补光参数中文标签（协议字段 → 中文，协议 5.2.1 参数表）
 _SK_FILLLIGHT_LABELS = {
     "daynightmode": "开灯设置（日夜模式）",
     "filllightmode": "补光方式",
-    "duration": "智能夜视白光灯补光时长（秒）",
-    "brightnessmode": "白光灯亮度调节模式",
-    "brightness": "白光灯亮度",
-    "begintime": "定时模式开始时间（秒）",
-    "endtime": "定时模式结束时间（秒）",
-    "repeatdays": "定时模式重复日期",
-    "enable": "定时器使能",
-    "irmode": "红外灯亮度调节模式",
-    "irbrightness": "红外灯亮度",
-    "whiteonvalue": "白光灯开灯灵敏度",
-    "whiteoffvalue": "白光灯关灯灵敏度",
-    "ironvalue": "红外灯开灯灵敏度",
-    "iroffvalue": "红外灯关灯灵敏度",
 }
 
 # 枚举档位文本（协议 5.2.1）
 _SK_FILLLIGHT_VALUE_TEXTS = {
     "daynightmode": {0: "白天模式", 1: "夜晚模式", 2: "自动模式", 3: "定时模式", 4: "智能模式"},
     "filllightmode": {0: "全彩模式", 1: "红外模式", 2: "智能夜视"},
-    "brightnessmode": {0: "自动调节", 1: "手动调节"},
-    "irmode": {0: "自动调节", 1: "手动调节"},
-    "enable": {0: "关闭", 1: "开启"},
 }
 
 # 枚举参数的字符串别名（字符串/整数均可传入，小写后匹配）
@@ -187,7 +167,6 @@ _SK_DAYNIGHT_ALIASES = {"day": 0, "白天": 0, "night": 1, "夜晚": 1, "auto": 
 _SK_FILLMODE_ALIASES = {"color": 0, "full_color": 0, "全彩": 0,
                         "ir": 1, "infrared": 1, "红外": 1,
                         "smart": 2, "智能夜视": 2}
-_SK_ADJMODE_ALIASES = {"auto": 0, "自动": 0, "manual": 1, "手动": 1}
 
 # ── SK 协议动态 Token 计算 ──
 # Authorization: Basic <SHA1(stamp + sn + KEY) 的 base64>
@@ -487,9 +466,10 @@ def _sk_filllight_set(cam, updates: Dict[str, Any]) -> FilllightSetResult:
     if resp.get("code") != _SK_OK_CODE:
         return _sk_err(FilllightSetResult, "SET_FAILED",
                        f"设备拒绝设置（code={resp.get('code')} msg={resp.get('msg')}）", camera=cam.name)
-    # 4. 回读确认
+    # 4. 回读确认（对外仅上报白名单参数）
     rb = _sk_filllight_cur(cam)
     cur = rb["current"] if rb["ok"] else dict(payload)
+    cur = {k: v for k, v in cur.items() if k in _SK_FILLLIGHT_SUPPORTED}
     updated = {k: cur[k] for k in updates if k in cur}
     _log(f"SK 补光回读确认 updated={updated}")
     return FilllightSetResult(ok=True, camera=cam.name, channel="sk", updated=updated, current=cur,
@@ -516,11 +496,15 @@ def _query_filllight_cam(cam) -> FilllightQueryResult:
     if not cur["ok"]:
         return _sk_err(FilllightQueryResult, "CURRENT_QUERY_FAILED",
                        f"查询补光当前值失败（code={cur['code']}）", camera=cam.name)
+    # 对外仅上报白名单参数：能力清单与当前值都过滤
+    caps = [c for c in opt["capabilities"]
+            if isinstance(c, dict) and str(c.get("name", "")) in _SK_FILLLIGHT_SUPPORTED]
+    current = {k: v for k, v in cur["current"].items() if k in _SK_FILLLIGHT_SUPPORTED}
     return FilllightQueryResult(
         ok=True, camera=cam.name, channel="sk",
-        capabilities=_merge_capabilities(opt["capabilities"], cur["current"],
+        capabilities=_merge_capabilities(caps, current,
                                          _SK_FILLLIGHT_LABELS, _SK_FILLLIGHT_VALUE_TEXTS),
-        current=cur["current"],
+        current=current,
     )
 
 
@@ -537,7 +521,7 @@ def big_filllight_query(
     """
     查询 IPC 夜视补光设置：能力清单 + 当前值（协议 5.2.1 / 5.2.3）。
 
-    SK 私有协议（动态 Token 鉴权），返回补光能力与完整当前值。
+    SK 私有协议（动态 Token 鉴权），返回补光能力与当前值（仅 daynightmode/filllightmode）。
     可独立调试：直接调用本函数即可，无需 MCP。
 
     Args:
@@ -563,71 +547,35 @@ def big_filllight_set(
     name: Optional[str] = None,
     daynightmode=None,
     filllightmode=None,
-    duration: Optional[int] = None,
-    brightnessmode=None,
-    brightness: Optional[int] = None,
-    irmode=None,
-    irbrightness: Optional[int] = None,
-    begintime: Optional[int] = None,
-    endtime: Optional[int] = None,
-    repeatdays: Optional[str] = None,
-    enable: Optional[int] = None,
-    whiteonvalue: Optional[int] = None,
-    whiteoffvalue: Optional[int] = None,
-    ironvalue: Optional[int] = None,
-    iroffvalue: Optional[int] = None,
     answers: Optional[Dict[str, Any]] = None,
 ) -> FilllightSetResult:
     """
     设置 IPC 夜视补光参数（协议 5.2.2 SK_SETTING_SET_FILLLIGHT，读-校验-合并-写-回读）。
 
-    仅传需要修改的参数；枚举参数接受整数或字符串别名（如 daynightmode='auto' 或 2）。
+    仅支持 daynightmode/filllightmode 两个参数（多数设备只支持这两项调节）；
+    枚举参数接受整数或字符串别名（如 daynightmode='auto' 或 2）。
     可独立调试：直接调用本函数即可，无需 MCP。
 
     Args:
         name:           摄像头名称（None 时走 resolve_target 降级）
         daynightmode:   开灯设置 0白天/1夜晚/2自动/3定时/4智能（别名 day/night/auto/timer/smart）
         filllightmode:  补光方式 0全彩/1红外/2智能夜视（别名 color/ir/smart）
-        duration:       智能夜视白光灯补光时长（5-60 秒）
-        brightnessmode: 白光灯亮度调节 0自动/1手动（别名 auto/manual）
-        brightness:     白光灯亮度（1-100）
-        irmode:         红外灯亮度调节 0自动/1手动（别名 auto/manual）
-        irbrightness:   红外灯亮度（1-100）
-        begintime/endtime: 定时模式起止时间（秒）
-        repeatdays:     定时模式重复日期（字符串，如 "sun,mon,tue,wed,thu,fri,sat,"）
-        enable:         定时器使能 0关/1开
-        whiteonvalue/whiteoffvalue: 白光灯开/关灯灵敏度（0-100）
-        ironvalue/iroffvalue:       红外灯开/关灯灵敏度（0-100）
         answers:        NEEDS_INPUT 重调时的回答 dict
 
     Returns:
         FilllightSetResult:
-            ok=True:  updated 生效字段；current 完整当前值；channel="sk"
+            ok=True:  updated 生效字段；current 当前值（仅白名单参数）；channel="sk"
             ok=False: error_code + message + hint
     """
     updates: Dict[str, Any] = {}
     for k, v, aliases in (("daynightmode", daynightmode, _SK_DAYNIGHT_ALIASES),
-                          ("filllightmode", filllightmode, _SK_FILLMODE_ALIASES),
-                          ("brightnessmode", brightnessmode, _SK_ADJMODE_ALIASES),
-                          ("irmode", irmode, _SK_ADJMODE_ALIASES)):
+                          ("filllightmode", filllightmode, _SK_FILLMODE_ALIASES)):
         if v is None:
             continue
         okv, val, err = _enum_coerce(v, aliases, k, FilllightSetResult)
         if not okv:
             return err
         updates[k] = val
-    for k, v in (("duration", duration), ("brightness", brightness), ("irbrightness", irbrightness),
-                 ("begintime", begintime), ("endtime", endtime), ("enable", enable),
-                 ("whiteonvalue", whiteonvalue), ("whiteoffvalue", whiteoffvalue),
-                 ("ironvalue", ironvalue), ("iroffvalue", iroffvalue)):
-        if v is None:
-            continue
-        if isinstance(v, bool) or not isinstance(v, int):
-            return _sk_err(FilllightSetResult, "INVALID_PARAM_TYPE", f"{k} 需要整数，收到 {v!r}")
-        updates[k] = v
-    # repeatdays 为字符串类型，直接透传
-    if repeatdays is not None:
-        updates["repeatdays"] = str(repeatdays)
     if not updates:
         return _sk_err(FilllightSetResult, "NO_PARAMS", "未传入任何要修改的补光参数",
                        "至少传一个参数，如 daynightmode='auto'；可先调 big_filllight_query 查看可设置项")
@@ -652,23 +600,12 @@ def manage_illumination(
     name: Optional[str] = None,
     daynightmode=None,
     filllightmode=None,
-    duration: Optional[int] = None,
-    brightnessmode=None,
-    brightness: Optional[int] = None,
-    irmode=None,
-    irbrightness: Optional[int] = None,
-    begintime: Optional[int] = None,
-    endtime: Optional[int] = None,
-    repeatdays: Optional[str] = None,
-    enable: Optional[int] = None,
-    whiteonvalue: Optional[int] = None,
-    whiteoffvalue: Optional[int] = None,
-    ironvalue: Optional[int] = None,
-    iroffvalue: Optional[int] = None,
     answers: Optional[Dict[str, Any]] = None,
 ):
     """
     统一补光管理入口：根据 action 分发到查询或设置。
+
+    仅支持 daynightmode/filllightmode 两个参数（多数设备只支持这两项调节）。
 
     Args:
         action:         操作类型 (IlluminationAction: get / set)
@@ -676,19 +613,6 @@ def manage_illumination(
         name:           摄像头名称（内部调用兼容）
         daynightmode:   开灯设置（仅 SET）
         filllightmode:  补光方式（仅 SET）
-        duration:       智能夜视补光时长（仅 SET）
-        brightnessmode: 白光灯亮度调节模式（仅 SET）
-        brightness:     白光灯亮度（仅 SET）
-        irmode:         红外灯亮度调节模式（仅 SET）
-        irbrightness:   红外灯亮度（仅 SET）
-        begintime:      定时开始时间（仅 SET）
-        endtime:        定时结束时间（仅 SET）
-        repeatdays:     定时模式重复日期（仅 SET，如 "sun,mon,tue"）
-        enable:         定时器使能 0关/1开（仅 SET）
-        whiteonvalue:   白光灯开灯灵敏度（仅 SET）
-        whiteoffvalue:  白光灯关灯灵敏度（仅 SET）
-        ironvalue:      红外灯开灯灵敏度（仅 SET）
-        iroffvalue:     红外灯关灯灵敏度（仅 SET）
         answers:        NEEDS_INPUT 重调时的回答 dict
 
     Returns:
@@ -704,19 +628,6 @@ def manage_illumination(
             name=resolved_name,
             daynightmode=daynightmode,
             filllightmode=filllightmode,
-            duration=duration,
-            brightnessmode=brightnessmode,
-            brightness=brightness,
-            irmode=irmode,
-            irbrightness=irbrightness,
-            begintime=begintime,
-            endtime=endtime,
-            repeatdays=repeatdays,
-            enable=enable,
-            whiteonvalue=whiteonvalue,
-            whiteoffvalue=whiteoffvalue,
-            ironvalue=ironvalue,
-            iroffvalue=iroffvalue,
             answers=answers,
         )
     else:

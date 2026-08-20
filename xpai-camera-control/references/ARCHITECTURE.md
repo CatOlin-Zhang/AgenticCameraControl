@@ -9,7 +9,7 @@ Toolkit modules (exposed via MCP tools):
   device_mgmt   — Device discovery, connection, config, management
   stream        — Audio/video streaming, snapshot, recording, storage
   ptz           — PTZ control (ONVIF + private protocol dual-channel)
-  events        — Event/alarm receiving (ONVIF PullPoint + private RTSP-channel push), schema 1.0 store
+  events        — Event/alarm receiving (Skyworth private RTSP-channel push), schema 1.0 store
   illumination  — Illumination mode query & control (Skyworth private protocol + ONVIF Imaging fallback)
 
 Internal modules (not exposed, accessed only through MCP tools above):
@@ -225,19 +225,24 @@ PTZ control in `scripts/toolkit/ptz.py` implements a **dual-protocol strategy** 
 
 ## Event Monitoring Architecture (Guardian Mode Foundation)
 
-Event receiving in `scripts/toolkit/events.py` follows the same **dual-protocol strategy** as PTZ, exposed as the single MCP tool `manage_camera_events(action=start|stop|poll|wait)`:
+Event receiving in `scripts/toolkit/events.py` is **private-protocol only** (the former ONVIF pull-point channel has been removed), exposed as the single MCP tool `manage_camera_events(action=start|stop|poll|wait)`:
 
 ```
 1. manage_camera_events(action="start") — after explicit user confirmation
    └─ Spawns one background listener thread per camera (the ONLY background threads in this skill)
    └─ Persists the monitoring intent to events/monitor_state.json (cleared only by action="stop")
-   └─ Channel 1: ONVIF Event Service — CreatePullPointSubscription + PullMessages long-poll (auto-renew)
-   └─ Channel 2: Skyworth private protocol — alarm JSON pushed over a persistent RTSP session (vendor doc §5.24)
+   └─ Skyworth private protocol — alarm JSON (~94 bytes) pushed over a persistent RTSP session
+      (User-Agent "skyworth", interleaved channel 0x65, endpoint = config.yaml main stream /md0_0)
+   └─ Handshake is real: any non-200 DESCRIBE/SETUP/PLAY aborts into a reconnect backoff
+      (2 s → 30 s exponential cap); status exposes rtsp_session / last_error
 
-2. On event arrival (either channel):
+2. On event arrival:
    └─ Normalize topic to the shared namespace (motion / human / tamper / …)
-   └─ Dedup by (camera, topic) within the debounce window (default 5 s, collapses cross-protocol duplicates)
-   └─ Capture snapshot in-process (rate-limited to one per camera per window)
+   └─ Dedup by (camera, topic) within the debounce window (default 5 s)
+   └─ Snapshot is sampled, not triggered: at most one per camera per fixed 30 s interval,
+      captured asynchronously on a background thread with a pre-generated path (never blocks
+      the alarm socket — a synchronous snapshot once stalled it and the device killed the
+      session after its 30 s send timeout)
    └─ A processing layer converts the raw protocol message into schema 1.0 (raw fields are never persisted)
    └─ Append one JSON line to events/camera_events.txt (single source of truth)
 

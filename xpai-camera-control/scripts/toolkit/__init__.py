@@ -5,7 +5,7 @@ XPAI Camera Control — Toolkit 工具集
   1. stream         — 音视频流与存储（含 WebRTC go2rtc 转流）
   2. ptz            — 云台与巡航
   3. device_mgmt    — 设备管理与维护
-  4. events         — IPC 事件接收（双协议告警监听 + 落盘）
+  4. events         — IPC 事件接收（私有协议告警监听 + 落盘）
   5. illumination   — 补光模式控制（SK HTTP 私有协议）
   6. image_settings — 图像参数设置（SK 私有协议优先，ONVIF Imaging 回退）
   7. tracking       — 侦测追踪控制（人形追踪/车辆追踪/区域检测，SK HTTP 私有协议）

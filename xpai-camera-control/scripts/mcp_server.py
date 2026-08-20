@@ -279,15 +279,9 @@ TOOLS = [
                     "type": "string",
                     "description": "摄像头名称（start/stop 必填；poll/wait 省略则面向全部相机）",
                 },
-                "protocols": {
-                    "type": "string",
-                    "enum": ["both", "onvif", "private"],
-                    "description": "监听协议通道（仅 start）",
-                    "default": "both",
-                },
                 "debounce_seconds": {
                     "type": "number",
-                    "description": "去重与快照限流窗口（秒，仅 start）",
+                    "description": "去重窗口（秒，仅 start）",
                     "default": 5.0,
                 },
                 "limit": {
@@ -339,7 +333,7 @@ TOOLS = [
     # ── Illumination (补光模式控制) ──
     Tool(
         name="manage_illumination",
-        description="查询或设置摄像头补光与夜视模式。控制日夜切换(daynightmode)、补光灯(filllightmode)、白光灯/红外灯亮度、定时开关灯等。与 manage_image_settings（控制画面参数如亮度对比度）不同，本工具控制物理补光硬件。",
+        description="查询或设置摄像头补光与夜视模式。仅支持日夜切换(daynightmode)与补光方式(filllightmode)两项调节（多数设备只支持这两项）。与 manage_image_settings（控制画面参数如亮度对比度）不同，本工具控制物理补光硬件。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -358,55 +352,6 @@ TOOLS = [
                 "filllightmode": {
                     "description": "补光方式: 0全彩/1红外/2智能夜视（别名: color/ir/smart 或 全彩/红外/智能夜视）",
                 },
-                "duration": {
-                    "type": "integer",
-                    "description": "智能夜视白光灯补光时长 (5-60 秒)",
-                },
-                "brightnessmode": {
-                    "description": "白光灯亮度调节: 0自动/1手动（别名: auto/manual 或 自动/手动）",
-                },
-                "brightness": {
-                    "type": "integer",
-                    "description": "白光灯亮度 (1-100)",
-                },
-                "irmode": {
-                    "description": "红外灯亮度调节: 0自动/1手动（别名: auto/manual 或 自动/手动）",
-                },
-                "irbrightness": {
-                    "type": "integer",
-                    "description": "红外灯亮度 (1-100)",
-                },
-                "begintime": {
-                    "type": "integer",
-                    "description": "定时模式开始时间 (0-86399 秒)",
-                },
-                "endtime": {
-                    "type": "integer",
-                    "description": "定时模式结束时间 (0-172799 秒)",
-                },
-                "repeatdays": {
-                    "type": "string",
-                    "description": "定时模式重复日期 (如 sun,mon,tue,wed,thu,fri,sat,)",
-                },
-                "enable": {
-                    "description": "定时器使能: 0关/1开",
-                },
-                "whiteonvalue": {
-                    "type": "integer",
-                    "description": "白光灯开灯灵敏度 (0-100)",
-                },
-                "whiteoffvalue": {
-                    "type": "integer",
-                    "description": "白光灯关灯灵敏度 (0-100)",
-                },
-                "ironvalue": {
-                    "type": "integer",
-                    "description": "红外灯开灯灵敏度 (0-100)",
-                },
-                "iroffvalue": {
-                    "type": "integer",
-                    "description": "红外灯关灯灵敏度 (0-100)",
-                },
             },
             "required": ["action", "camera_name"],
         },
@@ -415,7 +360,7 @@ TOOLS = [
     # ── Image Settings (图像参数设置) ──
     Tool(
         name="manage_image_settings",
-        description="查询或设置摄像头画面参数：亮度(brightness)、对比度(contrast)、饱和度(saturation)、锐度(sharpness)、画面翻转(flip)、白平衡(whitebalance)、宽动态(wdr)、人脸优化(face_mode)、车牌优化(plate_mode)。与 manage_illumination（控制物理补光灯/夜视模式）不同，本工具调节画面成像参数。",
+        description="查询或设置摄像头画面参数：亮度(brightness)、对比度(contrast)、饱和度(saturation)、锐度(sharpness)（多数设备仅需这四项调节）。与 manage_illumination（控制物理补光灯/夜视模式）不同，本工具调节画面成像参数。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -443,30 +388,6 @@ TOOLS = [
                 "sharpness": {
                     "type": "integer",
                     "description": "锐度",
-                },
-                "flip": {
-                    "type": "integer",
-                    "description": "翻转 0正常/1对角/2水平/3垂直",
-                },
-                "whitebalance": {
-                    "type": "integer",
-                    "description": "白平衡 0自动/1白光灯/2白炽灯/3自然光/4暖光灯",
-                },
-                "wdr": {
-                    "type": "boolean",
-                    "description": "宽动态",
-                },
-                "face_mode": {
-                    "type": "boolean",
-                    "description": "看清人脸",
-                },
-                "plate_mode": {
-                    "type": "boolean",
-                    "description": "看清车牌",
-                },
-                "restore_default": {
-                    "type": "boolean",
-                    "description": "恢复默认参数",
                 },
             },
             "required": ["action", "camera_name"],
@@ -611,6 +532,7 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     # ── Events ──
     elif name == "manage_camera_events":
         args = dict(args)
+        args.pop("protocols", None)  # 兼容旧客户端仍传 protocols（ONVIF 已删，单私有协议通道）
         args["action"] = EventAction(args["action"])
         return _serialize(tk.manage_camera_events(**args))
 

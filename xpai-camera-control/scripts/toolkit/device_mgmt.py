@@ -140,8 +140,8 @@ class CameraConfig:
     username: str = "admin"                    # 用户名
     password: str = ""                         # 密码（从 config.yaml 加载，不暴露给用户）
     rtsp_port: int = 554                       # RTSP 端口
-    rtsp_path: str = "/stream1"                # 主流路径
-    rtsp_sub_path: str = "/stream2"            # 子流路径
+    rtsp_path: str = "/md0_0"                  # 主流路径（SK 设备报警流，告警随此流推送）
+    rtsp_sub_path: str = "/md0_1"              # 子流路径
     device_class: str = ""                     # "password_required" | "direct_connect"
     sn_code: str = ""                          # 序列号
     pkdk: str = ""                             # 设备公钥标识
@@ -472,12 +472,12 @@ def register_camera(
     username: str = "admin",
     password: str = "",
     rtsp_port: int = 554,
-    rtsp_path: str = "/stream1",
+    rtsp_path: str = "/md0_0",
     device_class: str = "direct_connect",
     connection_type: str = "onvif",
     sn_code: str = "",
     pkdk: str = "",
-    rtsp_sub_path: str = "/stream2",
+    rtsp_sub_path: str = "/md0_1",
     device_index: int = 0,
     device_model: str = "",
     product_version: str = "",
@@ -499,12 +499,12 @@ def register_camera(
         username:        登录用户名（默认 "admin"）
         password:        登录密码（保存到 config.yaml，不显示给用户）
         rtsp_port:       RTSP 端口（默认 554）
-        rtsp_path:       主流路径（默认 "/stream1"）
+        rtsp_path:       主流路径（默认 "/md0_0"，SK 设备报警流）
         device_class:    设备类型（"password_required" | "direct_connect"）
         connection_type: 连接类型（"onvif" | "usb"）
         sn_code:         序列号（可选）
         pkdk:            设备公钥标识（可选）
-        rtsp_sub_path:   子流路径（默认 "/stream2"）
+        rtsp_sub_path:   子流路径（默认 "/md0_1"）
         device_index:    USB 设备索引（USB 摄像头专用，默认 0）
         device_model:    USB 设备型号（可选）
         product_version: 产品版本（可选）
@@ -829,7 +829,7 @@ def _search_ws_discovery_devices(timeout: float) -> SearchResult:
     # ── Step 3: 免密 RTSP 探测分类 + 创维私有协议 SN 补探测 ──
     devices = []
     for ip, info in sorted(found.items()):
-        access = _probe_stream_access(ip, 554, "/stream1")
+        access = _probe_stream_access(ip, 554, "/md0_0")
         device_class = (
             DeviceClass.DIRECT_CONNECT if access == "open"
             else DeviceClass.PASSWORD_REQUIRED
@@ -1088,7 +1088,7 @@ def connect_device(
     ip: Optional[str] = None,
     port: Optional[int] = None,
     rtsp_port: Optional[int] = None,
-    rtsp_path: str = "/stream1",
+    rtsp_path: str = "/md0_0",
     username: str = "admin",
     sn_code: str = "",
 ) -> ConnectResult:
@@ -1114,7 +1114,7 @@ def connect_device(
         ip:          设备 IP（新发现的设备，未注册到 config.yaml 时需传入）
         port:        ONVIF 端口（可选；不传或传错时由工具自动探测验证真实端口）
         rtsp_port:   RTSP 端口（默认 554）
-        rtsp_path:   RTSP 路径（默认 /stream1）
+        rtsp_path:   RTSP 路径（默认 /md0_0，SK 设备报警流）
         username:    登录用户名（默认 admin）
         sn_code:     设备 SN（发现阶段获取，云端授权必需）
 
@@ -1284,6 +1284,8 @@ def connect_device(
             "port": verified_port or dev_port,
             "rtsp_port": dev_rtsp_port,
             "rtsp_path": dev_rtsp_path,
+            # 子码流路径与 CameraConfig 对齐（config 注册值为真相源，未注册时用 SK 约定默认）
+            "rtsp_sub_path": (cached.rtsp_sub_path if cached and cached.rtsp_sub_path else "") or "/md0_1",
             "username": "",
             "password": "",
             "sn_code": probed_sn,  # ← 内存中保存 SN，供 illumination/tracking 等使用
@@ -1412,7 +1414,7 @@ def _probe_and_save_illumination(
                 name=camera_name, ip=ip, port=port,
                 username=username, password=password,
                 rtsp_port=cached.rtsp_port if cached else 554,
-                rtsp_path=cached.rtsp_path if cached else "/stream1",
+                rtsp_path=cached.rtsp_path if cached else "/md0_0",
                 device_class=cached.device_class if cached else "",
                 sn_code=cached.sn_code if cached else "",
                 connection_type=cached.connection_type if cached else "onvif",
@@ -1485,6 +1487,10 @@ def _try_connect_with_password(
     verified_port = _probe_onvif_port(ip, hint_port=onvif_port)
     effective_port = verified_port or onvif_port  # 探测失败时保留 hint 供内存会话使用
 
+    # 子码流路径：config 注册值为真相源（与 CameraConfig 字段对齐），未注册时用 SK 约定默认
+    _cached_cfg = _find_cached_camera(camera_name)
+    sub_path = (_cached_cfg.rtsp_sub_path if _cached_cfg and _cached_cfg.rtsp_sub_path else "") or "/md0_1"
+
     # ── 尝试 1: 创维 TCP 通道 (9010) ──
     test_cmd = {
         "service_type": "device",
@@ -1512,6 +1518,7 @@ def _try_connect_with_password(
             _connected_devices[camera_name] = {
                 "ip": ip, "port": effective_port,
                 "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
+                "rtsp_sub_path": sub_path,
                 "username": username, "password": password,
                 "tcp_port": SK_TCP_PORT,
             }
@@ -1530,6 +1537,7 @@ def _try_connect_with_password(
             conn = _connected_devices.get(camera_name, {
                 "ip": ip, "port": effective_port,
                 "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
+                "rtsp_sub_path": sub_path,
                 "username": username, "password": password,
             })
             conn["onvif_camera"] = cam
@@ -1562,6 +1570,7 @@ def _try_connect_with_password(
         _connected_devices[camera_name] = {
             "ip": ip, "port": effective_port,
             "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
+            "rtsp_sub_path": sub_path,
             "username": username, "password": password,
         }
         return ConnectResult(
@@ -1766,7 +1775,7 @@ def _rtsp_negotiated_describe(
 def _probe_stream_access(
     ip: str,
     rtsp_port: int = 554,
-    rtsp_path: str = "/stream1",
+    rtsp_path: str = "/md0_0",
     username: str = "",
     password: str = "",
 ) -> str:
@@ -1881,8 +1890,8 @@ def _load_config_cameras() -> List[CameraConfig]:
                 username=entry.get("username", "admin"),
                 password=entry.get("password", ""),
                 rtsp_port=int(entry.get("rtsp_port", 554)),
-                rtsp_path=entry.get("rtsp_path_main", entry.get("rtsp_path", "/stream1")),
-                rtsp_sub_path=entry.get("rtsp_path_sub", entry.get("rtsp_sub_path", "/stream2")),
+                rtsp_path=entry.get("rtsp_path_main", entry.get("rtsp_path", "/md0_0")),
+                rtsp_sub_path=entry.get("rtsp_path_sub", entry.get("rtsp_sub_path", "/md0_1")),
                 device_class=entry.get("device_class", ""),
                 sn_code=entry.get("sn", entry.get("sn_code", "")),
                 pkdk=entry.get("pkdk", ""),

@@ -14,7 +14,9 @@ Toolkit: 图像参数设置（协议 5.3 SK_SETTING_*_IMAGE 三命令）
   - SK_SETTING_GET_IMAGE         查询当前图像参数（平铺字段）
   - SK_SETTING_SET_IMAGE         设置图像参数（全量字段下发）
 
-支持参数：brightness/contrast/saturation/sharpness/flip/whitebalance/wdr/face_mode/plate_mode
+支持参数：brightness/contrast/saturation/sharpness（多数设备仅需这四项调节），
+其余固件字段（flip/whitebalance/wdr/face_mode/plate_mode 等）不上报、不可设置，
+仅在 SET_IMAGE 全量下发时作为基线透传
 SET_IMAGE 是全量下发，设置前必须先 GET_IMAGE 读基线再合并，否则未传字段会被重置
 """
 import base64
@@ -81,32 +83,19 @@ _SK_CMD_IMAGE_OPTION = "SK_SETTING_GET_IMAGE_OPTION"
 _SK_CMD_IMAGE_GET = "SK_SETTING_GET_IMAGE"
 _SK_CMD_IMAGE_SET = "SK_SETTING_SET_IMAGE"
 
+# 对外暴露的图像参数白名单（多数设备仅需这四项调节，其余固件字段不上报）
+_SK_IMAGE_SUPPORTED = ("brightness", "contrast", "saturation", "sharpness")
+
 # 图像参数中文标签（协议字段 → 中文，协议 5.3.1 参数表）
 _SK_IMAGE_LABELS = {
     "brightness": "亮度",
     "contrast": "对比度",
     "saturation": "饱和度",
     "sharpness": "锐度",
-    "flip": "图像翻转",
-    "whitebalance": "白平衡",
-    "default": "默认参数开关",
-    "wdr": "宽动态",
-    "face_mode": "看清人脸",
-    "plate_mode": "看清车牌",
 }
 
-# 多档位枚举的档位说明
-_SK_IMAGE_VALUE_TEXTS = {
-    "flip": {0: "正常", 1: "对角翻转", 2: "水平翻转", 3: "垂直翻转"},
-    "whitebalance": {0: "自动", 1: "白光灯", 2: "白炽灯", 3: "自然光", 4: "暖光灯"},
-    "default": {0: "使用设置参数", 1: "使用默认参数"},
-    "wdr": {0: "关闭", 1: "打开"},
-    "face_mode": {0: "关闭", 1: "打开"},
-    "plate_mode": {0: "关闭", 1: "打开"},
-}
-
-# MCP 入参为 bool、协议值为 0/1 的字段
-_SK_BOOL_FIELDS = ("wdr", "face_mode", "plate_mode")
+# 多档位枚举的档位说明（保留参数均为数值型，无枚举档位；置空避免误用）
+_SK_IMAGE_VALUE_TEXTS = {}
 
 
 # ──────────────────────────────────────────────
@@ -245,9 +234,10 @@ def _sk_set(cam, updates: Dict[str, Any]) -> ImageSetResult:
         return _sk_err(ImageSetResult, "SET_FAILED",
                        f"设备拒绝设置（code={resp.get('code')} msg={resp.get('msg')}）", camera=cam.name)
 
-    # 4. 回读确认实际生效值
+    # 4. 回读确认实际生效值（对外仅上报白名单参数）
     rb = _sk_query_current(cam)
     cur = rb["current"] if rb["ok"] else dict(payload)
+    cur = {k: v for k, v in cur.items() if k in _SK_IMAGE_SUPPORTED}
     updated = {k: cur[k] for k in updates if k in cur}
     _log(f"SK 回读确认 updated={updated}")
     return ImageSetResult(ok=True, camera=cam.name, channel="sk", updated=updated, current=cur,
@@ -491,11 +481,15 @@ def _query_cam(cam) -> ImageQueryResult:
     if opt["ok"]:
         cur = _sk_query_current(cam)
         if cur["ok"]:
+            # 对外仅上报白名单参数：能力清单与当前值都过滤
+            caps = [c for c in opt["capabilities"]
+                    if isinstance(c, dict) and str(c.get("name", "")) in _SK_IMAGE_SUPPORTED]
+            current = {k: v for k, v in cur["current"].items() if k in _SK_IMAGE_SUPPORTED}
             return ImageQueryResult(
                 ok=True, camera=cam.name, channel="sk",
-                capabilities=_merge_capabilities(opt["capabilities"], cur["current"],
+                capabilities=_merge_capabilities(caps, current,
                                                  _SK_IMAGE_LABELS, _SK_IMAGE_VALUE_TEXTS),
-                current=cur["current"],
+                current=current,
             )
         return _sk_err(ImageQueryResult, "CURRENT_QUERY_FAILED",
                        f"查询图像当前值失败（code={cur['code']}）", camera=cam.name)
@@ -567,7 +561,8 @@ def big_image_query(
     Returns:
         ImageQueryResult:
             ok=True:  capabilities 能力列表（含 current/current_text/options），
-                      current 设备原始平铺当前值；channel 标注实际生效协议通道
+                      current 当前值（仅 brightness/contrast/saturation/sharpness）；
+                      channel 标注实际生效协议通道
             ok=False: error_code + message + hint
     """
     err, cam = _sk_resolve_camera(name, answers, ImageQueryResult)
@@ -586,18 +581,13 @@ def big_image_set(
     contrast: Optional[int] = None,
     saturation: Optional[int] = None,
     sharpness: Optional[int] = None,
-    flip: Optional[int] = None,
-    whitebalance: Optional[int] = None,
-    wdr: Optional[bool] = None,
-    face_mode: Optional[bool] = None,
-    plate_mode: Optional[bool] = None,
-    restore_default: Optional[bool] = None,
     answers: Optional[Dict[str, Any]] = None,
 ) -> ImageSetResult:
     """
     设置 IPC 图像参数（协议 5.3.2 SK_SETTING_SET_IMAGE，读-校验-合并-写-回读）。
 
-    仅传需要修改的参数，未传参数保持当前值（先读基线再全量下发）。
+    仅支持 brightness/contrast/saturation/sharpness 四个参数（多数设备仅需这四项调节），
+    未传参数保持当前值（先读基线再全量下发）。
     双通道：SK 私有协议优先，固件不支持时自动回退 ONVIF Imaging。
     可独立调试：直接调用本函数即可，无需 MCP。
 
@@ -607,32 +597,20 @@ def big_image_set(
         contrast:       对比度
         saturation:     饱和度
         sharpness:      锐度
-        flip:           图像翻转 0正常 1对角 2水平 3垂直
-        whitebalance:   白平衡 0自动 1白光灯 2白炽灯 3自然光 4暖光灯
-        wdr:            宽动态开关
-        face_mode:      看清人脸开关
-        plate_mode:     看清车牌开关
-        restore_default: True=恢复默认图像参数（协议 default=1）
         answers:        NEEDS_INPUT 重调时的回答 dict
 
     Returns:
         ImageSetResult:
-            ok=True:  updated 回读确认实际生效的字段，current 回读全量当前值
+            ok=True:  updated 回读确认实际生效的字段，current 当前值（仅白名单参数）
             ok=False: error_code + message + hint
     """
     updates: Dict[str, Any] = {}
     for k, v in (("brightness", brightness), ("contrast", contrast),
-                 ("saturation", saturation), ("sharpness", sharpness),
-                 ("flip", flip), ("whitebalance", whitebalance)):
+                 ("saturation", saturation), ("sharpness", sharpness)):
         if v is not None:
             if isinstance(v, bool) or not isinstance(v, int):
                 return _sk_err(ImageSetResult, "INVALID_PARAM_TYPE", f"{k} 需要整数，收到 {v!r}")
             updates[k] = v
-    for k, v in (("wdr", wdr), ("face_mode", face_mode), ("plate_mode", plate_mode)):
-        if v is not None:
-            updates[k] = 1 if v else 0
-    if restore_default:
-        updates["default"] = 1
     if not updates:
         return _sk_err(ImageSetResult, "NO_PARAMS", "未传入任何要修改的图像参数",
                        "至少传一个参数，如 brightness=150；可先调 big_image_query 查看可设置项")
@@ -659,16 +637,12 @@ def manage_image_settings(
     contrast: Optional[int] = None,
     saturation: Optional[int] = None,
     sharpness: Optional[int] = None,
-    flip: Optional[int] = None,
-    whitebalance: Optional[int] = None,
-    wdr: Optional[bool] = None,
-    face_mode: Optional[bool] = None,
-    plate_mode: Optional[bool] = None,
-    restore_default: Optional[bool] = None,
     answers: Optional[Dict[str, Any]] = None,
 ):
     """
     统一图像管理入口：根据 action 分发到查询或设置。
+
+    仅支持 brightness/contrast/saturation/sharpness 四个参数（多数设备仅需这四项调节）。
 
     Args:
         action:         操作类型 (ImageAction: get / set)
@@ -678,12 +652,6 @@ def manage_image_settings(
         contrast:       对比度（仅 SET）
         saturation:     饱和度（仅 SET）
         sharpness:      锐度（仅 SET）
-        flip:           图像翻转（仅 SET）
-        whitebalance:   白平衡（仅 SET）
-        wdr:            宽动态（仅 SET）
-        face_mode:      看清人脸（仅 SET）
-        plate_mode:     看清车牌（仅 SET）
-        restore_default: 恢复默认参数（仅 SET）
         answers:        NEEDS_INPUT 重调时的回答 dict
 
     Returns:
@@ -700,12 +668,6 @@ def manage_image_settings(
             contrast=contrast,
             saturation=saturation,
             sharpness=sharpness,
-            flip=flip,
-            whitebalance=whitebalance,
-            wdr=wdr,
-            face_mode=face_mode,
-            plate_mode=plate_mode,
-            restore_default=restore_default,
             answers=answers,
         )
     else:

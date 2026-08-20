@@ -8,11 +8,11 @@ cameras:
   pkdk: ''
   port: 0
   registered_at: '2026-08-20T03:16:08.054102+00:00'
-  rtsp_path: /stream1
-  rtsp_path_main: /stream1
-  rtsp_path_sub: /stream2
+  rtsp_path: /md0_0
+  rtsp_path_main: /md0_0
+  rtsp_path_sub: /md0_1
   rtsp_port: 554
-  rtsp_sub_path: /stream2
+  rtsp_sub_path: /md0_1
   sn: ''
   sn_code: ''
   username: admin
