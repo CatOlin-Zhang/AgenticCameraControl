@@ -8,3 +8,8 @@ __pycache__/
 /RELEASE_MEMO.md
 /TODOlist.md
 /SKILL_TECHNICAL_REFERENCE.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

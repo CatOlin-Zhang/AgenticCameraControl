@@ -1,0 +1,18 @@
+cameras:
+- connection_type: onvif
+  device_class: direct_connect
+  ip: 1.2.3.4
+  name: T2
+  onvif_port: 0
+  password: new_pw
+  pkdk: ''
+  port: 0
+  registered_at: '2026-08-20T03:16:08.054102+00:00'
+  rtsp_path: /stream1
+  rtsp_path_main: /stream1
+  rtsp_path_sub: /stream2
+  rtsp_port: 554
+  rtsp_sub_path: /stream2
+  sn: ''
+  sn_code: ''
+  username: admin

@@ -437,11 +437,6 @@ def capture_video_screenshot(
 #  录像模块级状态
 # ──────────────────────────────────────────────
 
-_recording_process: Optional[subprocess.Popen] = None   # ffmpeg 子进程
-_recording_start_time: Optional[float] = None           # time.time()
-_recording_file_path: str = ""                          # 当前录像文件路径
-_recording_transport: str = ""                          # 实际使用的 transport
-_recording_timer: Optional[threading.Timer] = None      # 自动停止定时器
 
 # ffmpeg -c:v copy remux 模式下，从 Popen 到实际写入第一帧的延迟（RTSP 握手 + 等待关键帧）
 # 实测约 1.0~2.0s，取 1.5s 作补偿
@@ -503,7 +498,7 @@ def _probe_dimensions(rtsp_url: str, transport_plan: List[str], timeout: int = 1
                 [
                     ffprobe_path,
                     "-rtsp_transport", transport,
-                    "-timeout", "10",
+                    "-timeout", "5000000",
                     "-v", "quiet",
                     "-print_format", "json",
                     "-show_entries", "stream=width,height",
@@ -521,6 +516,66 @@ def _probe_dimensions(rtsp_url: str, transport_plan: List[str], timeout: int = 1
     return 0, 0
 
 
+# ── 跨平台 ffmpeg 中断信号 ──
+
+_IS_WINDOWS = os.name == "nt"
+
+
+def _send_ffmpeg_interrupt(proc: subprocess.Popen) -> None:
+    """向 ffmpeg 子进程发送中断信号，使其优雅关闭（封包 moov atom）。
+
+    Linux/macOS: SIGINT（ffmpeg 内置 handler 优雅退出）
+    Windows:     CTRL_BREAK_EVENT + CREATE_NEW_PROCESS_GROUP 隔离发送
+                 （Python Windows 不支持 send_signal(SIGINT)，会抛 ValueError）
+    """
+    try:
+        if _IS_WINDOWS:
+            os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
+        else:
+            proc.send_signal(signal.SIGINT)
+    except (OSError, ValueError):
+        pass  # 进程可能已退出
+
+
+@dataclass
+class _CameraRecState:
+    """单台摄像头的录像状态"""
+    process: Optional[subprocess.Popen] = None
+    start_time: Optional[float] = None
+    file_path: str = ""
+    transport: str = ""
+    timer: Optional[threading.Timer] = None
+
+
+# camera_name → 录像状态（支持多台摄像头同时录像）
+_recording_states: Dict[str, _CameraRecState] = {}
+
+
+def _get_video_duration(file_path: str) -> Optional[float]:
+    """用 ffprobe 读取视频文件的精确时长（秒），失败返回 None。"""
+    ffprobe_path = _resolve_binary("ffprobe")
+    if not ffprobe_path:
+        return None
+    try:
+        probe = subprocess.run(
+            [
+                ffprobe_path,
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_entries", "format=duration",
+                file_path,
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        data = json.loads(probe.stdout)
+        dur = data.get("format", {}).get("duration")
+        if dur is not None:
+            return round(float(dur), 2)
+    except Exception:
+        pass
+    return None
+
+
 def toggle_recording(
     camera_name: str,
     action: RecordingAction,
@@ -533,7 +588,9 @@ def toggle_recording(
 
     使用 ffmpeg 子进程拉 RTSP 流，以 -c:v copy 纯 remux 方式写入 MP4 文件
     （不解码不重编码，画质 = 原始流）。
-    start 时启动子进程，stop 时发送 SIGINT 让 ffmpeg 优雅封包。
+    start 时启动子进程，stop 时发送中断信号让 ffmpeg 优雅封包
+    （Linux: SIGINT / Windows: CTRL_BREAK_EVENT）。
+    支持多台摄像头同时录像，每台设备独立维护 ffmpeg 子进程和定时器。
 
     RTSP transport 降级：复用截图模块的 _resolve_transport_plan() 做 tcp→udp 降级，
     启动后校验进程存活 + 文件有数据，失败则自动切换 transport 重试。
@@ -554,17 +611,16 @@ def toggle_recording(
             - auto_stop: 是否设置了自动停止定时器
             - error_message: 失败时的错误描述
     """
-    global _recording_process, _recording_start_time, _recording_file_path, _recording_transport, _recording_timer
-
     # ── STATUS 查询 ──
     if action == RecordingAction.STATUS:
-        if _recording_process is not None and _recording_process.poll() is None:
-            elapsed = time.time() - (_recording_start_time or time.time())
+        state = _recording_states.get(camera_name)
+        if state and state.process is not None and state.process.poll() is None:
+            elapsed = time.time() - (state.start_time or time.time())
             return RecordingResult(
                 success=True, is_recording=True,
-                file_path=_recording_file_path,
+                file_path=state.file_path,
                 duration_seconds=round(elapsed, 2),
-                auto_stop=_recording_timer is not None,
+                auto_stop=state.timer is not None,
             )
         return RecordingResult(
             success=True, is_recording=False,
@@ -573,26 +629,24 @@ def toggle_recording(
 
     # ── STOP 流程 ──
     if action == RecordingAction.STOP:
-        if _recording_process is None:
+        state = _recording_states.get(camera_name)
+        if not state or state.process is None:
             return RecordingResult(
                 success=False, is_recording=False,
                 error_message="当前没有正在进行的录像",
             )
 
         # 取消自动停止定时器（如果存在）
-        if _recording_timer is not None:
-            _recording_timer.cancel()
-            _recording_timer = None
+        if state.timer is not None:
+            state.timer.cancel()
+            state.timer = None
 
-        proc = _recording_process
-        start_time = _recording_start_time or time.time()
-        file_path = _recording_file_path
+        proc = state.process
+        start_time = state.start_time or time.time()
+        file_path = state.file_path
 
-        # 发送 SIGINT 让 ffmpeg 优雅关闭（封包 moov atom）
-        try:
-            proc.send_signal(signal.SIGINT)
-        except OSError:
-            pass  # 进程可能已退出
+        # 发送跨平台中断信号让 ffmpeg 优雅关闭（封包 moov atom）
+        _send_ffmpeg_interrupt(proc)
 
         try:
             proc.wait(timeout=15)
@@ -603,43 +657,42 @@ def toggle_recording(
             except Exception:
                 pass
 
+        # 使用 ffprobe 获取视频文件精确时长（替代 wall-clock elapsed，避免关闭时间被计入）
+        actual_duration = _get_video_duration(file_path)
         elapsed = time.time() - start_time
+        reported_duration = actual_duration if actual_duration is not None else round(elapsed, 2)
 
-        # 清理全局状态
-        _recording_process = None
-        _recording_start_time = None
-        _recording_file_path = ""
-        _recording_transport = ""
-        _recording_timer = None
+        # 清理该摄像头的录像状态
+        _recording_states.pop(camera_name, None)
 
         # 验证输出文件
         if not os.path.isfile(file_path) or os.path.getsize(file_path) == 0:
             return RecordingResult(
                 success=False, is_recording=False,
-                duration_seconds=round(elapsed, 2),
+                duration_seconds=reported_duration,
                 error_message="录像文件为空或不存在，录像可能未成功启动",
             )
 
         return RecordingResult(
             success=True, is_recording=False,
             file_path=file_path,
-            duration_seconds=round(elapsed, 2),
+            duration_seconds=reported_duration,
         )
 
     # ── START 流程 ──
     if action == RecordingAction.START:
-        # 检查是否已在录像
-        if _recording_process is not None and _recording_process.poll() is None:
+        # 检查该摄像头是否已在录像
+        existing = _recording_states.get(camera_name)
+        if existing and existing.process is not None and existing.process.poll() is None:
             return RecordingResult(
                 success=False, is_recording=True,
-                error_message=f"录像正在进行中（文件: {_recording_file_path}），请先停止再开始新录像",
+                error_message=f"摄像头 {camera_name} 正在录像（文件: {existing.file_path}），请先停止再开始",
             )
-        # 清理残留状态（进程已意外退出的情况）
-        if _recording_process is not None:
-            _recording_process = None
-            _recording_start_time = None
-            _recording_file_path = ""
-            _recording_transport = ""
+        # 清理残留状态（进程已意外退出的情况，含孤儿定时器）
+        if existing:
+            if existing.timer is not None:
+                existing.timer.cancel()
+            _recording_states.pop(camera_name, None)
 
         # 检查 ffmpeg 是否可用
         ffmpeg_path = _resolve_binary("ffmpeg")
@@ -687,7 +740,7 @@ def toggle_recording(
 
         # 生成文件名
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_path = os.path.join(recording_dir, f"recording_{timestamp}.mp4")
+        file_path = os.path.join(recording_dir, f"recording_{camera_name}_{timestamp}.mp4")
 
         # RTSP transport 降级
         try:
@@ -720,7 +773,7 @@ def toggle_recording(
             ffmpeg_cmd = [
                 ffmpeg_path, "-y",
                 "-rtsp_transport", transport,
-                "-timeout", "10",
+                "-timeout", "5000000",
                 "-i", rtsp_url,
                 "-c:v", "copy",
                 "-an",
@@ -730,12 +783,11 @@ def toggle_recording(
                 ffmpeg_cmd += ["-t", str(ffmpeg_timeout)]
             ffmpeg_cmd.append(file_path)
 
+            popen_kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if _IS_WINDOWS:
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
             try:
-                proc = subprocess.Popen(
-                    ffmpeg_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
+                proc = subprocess.Popen(ffmpeg_cmd, **popen_kwargs)
             except FileNotFoundError:
                 return RecordingResult(
                     success=False, is_recording=False,
@@ -743,10 +795,12 @@ def toggle_recording(
                 )
 
             # Popen 启动后立即记录开始时间
-            _recording_start_time = time.time()
+            popen_time = time.time()
+            _recording_start_time = popen_time
 
             # 启动后校验：等 2 秒检查进程存活 + 文件有数据
             time.sleep(2)
+            health_check_delay = time.time() - popen_time  # 实际健康检查耗时（≈2s）
             if proc.poll() is not None:
                 _, stderr = proc.communicate()
                 last_error = (stderr.decode(errors="replace") or "")[-300:]
@@ -755,23 +809,28 @@ def toggle_recording(
                 continue
 
             if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
-                _recording_process = proc
-                _recording_file_path = file_path
-                _recording_transport = transport
+                state = _CameraRecState(
+                    process=proc, start_time=_recording_start_time,
+                    file_path=file_path, transport=transport,
+                )
+                _recording_states[camera_name] = state
                 print(f"[recording] 录像已启动: {file_path} (transport={transport})",
                       file=sys.stderr)
 
-                # 设置自动停止定时器
+                # 设置自动停止定时器（扣除 health check 已消耗的时间）
                 if duration is not None and duration > 0:
-                    compensated = duration + _RECORDING_STARTUP_COMPENSATION
-                    _recording_timer = threading.Timer(
-                        compensated,
-                        lambda: toggle_recording(camera_name, RecordingAction.STOP)
+                    compensated = max(
+                        duration + _RECORDING_STARTUP_COMPENSATION - health_check_delay,
+                        1.0,
                     )
-                    _recording_timer.daemon = True
-                    _recording_timer.start()
+                    state.timer = threading.Timer(
+                        compensated,
+                        lambda: toggle_recording(camera_name, RecordingAction.STOP),
+                    )
+                    state.timer.daemon = True
+                    state.timer.start()
                     print(f"[recording] 已设置自动停止定时器: {compensated:.1f}s 后自动停止"
-                          f"（含 {_RECORDING_STARTUP_COMPENSATION}s 启动补偿）",
+                          f"（含启动补偿，已扣除 {health_check_delay:.1f}s 健康检查延迟）",
                           file=sys.stderr)
 
                 return RecordingResult(
@@ -780,25 +839,30 @@ def toggle_recording(
                     auto_stop=duration is not None and duration > 0,
                 )
 
-            # 文件无数据但进程还活着——可能是等待关键帧，再等一下
-            time.sleep(2)
+            # 文件无数据但进程还活着——可能是等待关键帧，再等一下（总窗口 2+8=10s 覆盖长 GOP）
+            time.sleep(8)
             if proc.poll() is None and os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
-                _recording_process = proc
-                _recording_file_path = file_path
-                _recording_transport = transport
+                state = _CameraRecState(
+                    process=proc, start_time=_recording_start_time,
+                    file_path=file_path, transport=transport,
+                )
+                _recording_states[camera_name] = state
                 print(f"[recording] 录像已启动（等待关键帧）: {file_path} (transport={transport})",
                       file=sys.stderr)
 
                 if duration is not None and duration > 0:
-                    compensated = duration + _RECORDING_STARTUP_COMPENSATION
-                    _recording_timer = threading.Timer(
-                        compensated,
-                        lambda: toggle_recording(camera_name, RecordingAction.STOP)
+                    compensated = max(
+                        duration + _RECORDING_STARTUP_COMPENSATION - health_check_delay,
+                        1.0,
                     )
-                    _recording_timer.daemon = True
-                    _recording_timer.start()
+                    state.timer = threading.Timer(
+                        compensated,
+                        lambda: toggle_recording(camera_name, RecordingAction.STOP),
+                    )
+                    state.timer.daemon = True
+                    state.timer.start()
                     print(f"[recording] 已设置自动停止定时器: {compensated:.1f}s 后自动停止"
-                          f"（含 {_RECORDING_STARTUP_COMPENSATION}s 启动补偿）",
+                          f"（含启动补偿，已扣除 {health_check_delay:.1f}s 健康检查延迟）",
                           file=sys.stderr)
 
                 return RecordingResult(

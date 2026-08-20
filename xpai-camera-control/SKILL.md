@@ -65,7 +65,7 @@ At the beginning of each session, check if there are any registered cameras in c
 
 1. Call `get_registered_cameras()` to read the camera configurations (including credentials) saved in config.yaml
 2. For each registered camera, call `connect_device(cam.name)` — the tool will automatically use the credentials in config.yaml to connect, **no need for the user to input a password again**
-   - Cached credentials are retried up to 3 times on failure; if all attempts fail, the registration is automatically removed from config.yaml and the tool returns `status="failed"` with `needs_password=True`
+   - Cached credentials are verified via TCP/ONVIF/RTSP three-channel check (password must pass RTSP auth). Retried up to 3 times on failure; if all attempts fail, the tool **automatically attempts cloud re-authorization** to fetch a fresh password; cloud also fails → registration auto-removed from config.yaml → `status="needs_password"`
 3. If config.yaml is empty or all registered cameras fail to connect → enter Phase 1
 
 ### Phase 1 — Discover Cameras
@@ -92,8 +92,8 @@ For each discovered camera, call `connect_device()` to connect. **The specific c
 
 | Scenario | Agent Operation |
 |----------|----------------|
-| **Cached credentials** (config.yaml has password) | Tool auto-loads credentials → ONVIF auth verification (retry 3x) → `ConnectResult(success=True)` — no user interaction. If all retries fail → registration auto-removed from config.yaml → `status="failed"`, `needs_password=True` |
-| **direct_connect** (stream probe succeeds) | Tool connects directly via RTSP → `ConnectResult(auth_method="direct")` — no user interaction |
+| **Cached credentials** (config.yaml has password) | Tool auto-loads credentials → TCP/ONVIF/RTSP three-channel verification (password must pass RTSP auth, retry 3x) → `ConnectResult(success=True)` — no user interaction. If all retries fail → cloud re-authorization attempted → still fails → registration auto-removed → `status="needs_password"` |
+| **direct_connect** (stream probe succeeds) | Tool connects directly via RTSP → probes SN → verifies SK HTTP communication → registers SN to config.yaml → `ConnectResult(auth_method="direct")` — no user interaction |
 | **password_required** (cloud auth auto-triggered) | Tool internally requests cloud authorization. The Agent does **not** need to call any extra tool. |
 | Cloud authorized → `success=True` | Tool auto-connected with cloud password, credentials persisted. No user interaction needed |
 | Cloud rejected → `status="auth_rejected"` | Inform user: authorization was denied, cannot connect |
@@ -180,7 +180,7 @@ The following tools extend the skill's functionality beyond the core workflow. T
 - **Chinese characters in Windows paths cause `cv2.imwrite()` to silently fail.** → **Action:** no manual workaround needed — the toolkit handles this internally. If you pass a custom `save_path`, prefer ASCII-only paths.
 - **Connection state is in-memory only — silently lost across sessions.** → **Action:** if any operation returns `success=false` with a connection-related error, call `connect_device()` first to re-establish the connection, then retry the failed operation. All operations must run in the same MCP server process.
 - **Skyworth cameras use non-standard RTSP paths.** → **Action:** no manual path configuration needed — the toolkit auto-tries fallback paths (ONVIF standard → Skyworth private) when the configured path fails.
-- **Cached credentials failed → registration auto-removed.** → **Action:** if `connect_device()` reports that cached credentials failed and registration was cleared, re-discover the device via `search_devices()` and re-connect.
+- **Cached credentials failed → cloud re-auth attempted first, then registration auto-removed.** → **Action:** if `connect_device()` returns `status="needs_password"` after cached credentials failed, the tool already tried cloud re-authorization. Simply prompt the user for the correct password and re-call `connect_device(camera_name, password=user_input)`.
 
 ## Quick Reference — Common Operation Sequences
 
@@ -228,10 +228,10 @@ The following tools extend the skill's functionality beyond the core workflow. T
 | `error_message` pattern / `status` | Agent Action |
 |------------------------------------|--------------|
 | `not_connected` / `device not found` | Call `connect_device()` first, then retry the failed operation |
-| `needs_password` (status) | Cloud service unreachable or SN missing — ask user for password → `connect_device(camera_name, password=user_input)` |
+| `needs_password` (status) | Cached credentials expired (cloud re-auth also failed), cloud service unreachable, or SN missing — ask user for password → `connect_device(camera_name, password=user_input)` |
 | `auth_rejected` (status) | User denied cloud authorization — inform user, cannot connect |
 | `cloud_pwd_failed` (status) | Cloud password doesn't match — device may have changed password, ask user for correct password |
-| `cached credentials cleared` (in error_message) | Re-discover via `search_devices()` and re-connect; old registration has been auto-removed |
+| `cached credentials cleared` (in error_message) | Tool already attempted cloud re-authorization; prompt user for password → `connect_device(camera_name, password=user_input)` |
 | `degraded=true` (PTZ result) | **MUST** relay `degrade_reason` to user verbatim |
 | `limit_reached=true` | Stop sending PTZ commands in that direction — physical limit reached |
 | `stream unavailable` / RTSP failure | Check camera is online, verify network connectivity |
