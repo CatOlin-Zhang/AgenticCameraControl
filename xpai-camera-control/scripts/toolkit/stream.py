@@ -87,6 +87,24 @@ class StorageResult:
 #  工具函数
 # ──────────────────────────────────────────────
 
+def _open_rtsp_capture(rtsp_url: str):
+    """打开 RTSP 流（FFmpeg 后端，打开 3s / 读帧 5s 超时）。
+
+    超时经 VideoCapture params 重载传入（OpenCV ≥ 4.5.2）；老版本无此
+    重载（或无超时常量）时退回普通打开，避免直接抛异常。
+    事件联动快照在后台线程调用本模块，无超时的 cv2 打开会因设备
+    高负载挂死线程（TCP 半开 + ffmpeg 内部阻塞）。
+    """
+    import cv2
+    try:
+        return cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG, [
+            cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000,
+            cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000,
+        ])
+    except (TypeError, AttributeError):
+        return cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+
+
 def get_audio_video_stream(
     camera_name: str,
     sub_stream: bool = False,
@@ -126,6 +144,7 @@ def get_audio_video_stream(
                 "ip": cached.ip,
                 "rtsp_port": cached.rtsp_port,
                 "rtsp_path": cached.rtsp_path if not sub_stream else cached.rtsp_sub_path,
+                "rtsp_sub_path": cached.rtsp_sub_path,
                 "username": cached.username,
                 "password": cached.password,
                 "connection_type": cached.connection_type,
@@ -176,12 +195,14 @@ def get_audio_video_stream(
     # ── Step 3: ONVIF / RTSP 设备 ──
     ip = conn_info.get("ip", "")
     rtsp_port = conn_info.get("rtsp_port", 554)
-    rtsp_path = conn_info.get("rtsp_path", "/stream1")
     username = conn_info.get("username", "")
     password = conn_info.get("password", "")
 
+    # 端点真相源：连接/配置态的主、子码流路径（SK 设备 /md0_0、/md0_1）
     if sub_stream:
-        rtsp_path = conn_info.get("rtsp_sub_path", "/stream2")
+        rtsp_path = conn_info.get("rtsp_sub_path") or "/md0_1"
+    else:
+        rtsp_path = conn_info.get("rtsp_path") or "/md0_0"
 
     # 构建 RTSP URL（使用 _build_rtsp_url 自动注入凭据）
     from .device_mgmt import _build_rtsp_url
@@ -214,26 +235,19 @@ def get_audio_video_stream(
                 error_message=f"设备 {camera_name}({ip}) RTSP 流不可达",
             )
 
-    # 使用 OpenCV 验证并获取流参数
-    cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+    # 使用 OpenCV 验证并获取流参数（带打开/读帧超时）
+    cap = _open_rtsp_capture(rtsp_url)
     if not cap.isOpened():
+        # 端点只用另一条码流互备（主↔子），不盲试通用路径列表——猜测端点
+        # 掩盖配置错误，且每次失败都要白等一次连接超时
         cap.release()
-        # 尝试常见备选路径（含创维摄像头路径 /stream0, /md0_0, /md0_1）
-        alt_paths = ["/Streaming/Channels/101", "/h264/ch1/main/av_stream", "/live",
-                     "/stream0", "/md0_0", "/stream1"]
-        if sub_stream:
-            alt_paths = ["/Streaming/Channels/102", "/h264/ch1/sub/av_stream", "/stream2",
-                         "/md0_1"]
-        for alt in alt_paths:
-            if alt == rtsp_path:
-                continue
-            alt_url = _build_rtsp_url(ip, rtsp_port, alt, username, password)
-            cap = cv2.VideoCapture(alt_url, cv2.CAP_FFMPEG)
-            if cap.isOpened():
-                rtsp_url = alt_url
-                break
+        alt_path = (conn_info.get("rtsp_path") or "/md0_0") if sub_stream \
+            else (conn_info.get("rtsp_sub_path") or "/md0_1")
+        if alt_path != rtsp_path:
+            rtsp_url = _build_rtsp_url(ip, rtsp_port, alt_path, username, password)
+            cap = _open_rtsp_capture(rtsp_url)
+        if not cap.isOpened():
             cap.release()
-        else:
             return StreamResult(
                 success=False,
                 error_message=f"无法从 {ip}:{rtsp_port} 获取视频流，请检查 RTSP 路径和认证信息",
@@ -277,7 +291,8 @@ def capture_video_screenshot(
 
     Args:
         camera_name: 摄像头名称（自动填充）
-        save_path:   保存目录路径（默认 snapshots/）
+        save_path:   保存目录或完整 .jpg 文件路径（默认 snapshots/ 并自动
+                     生成含时间戳的文件名；事件联动快照传入预生成的完整路径）
 
     Returns:
         ScreenshotResult:
@@ -290,15 +305,21 @@ def capture_video_screenshot(
     import time
 
     # ── Step 1: 确定保存路径 ──
+    # save_path 可为目录（自动生成带时间戳的文件名）或完整 .jpg 文件路径
+    # （事件联动快照预生成路径后传入，落盘文件名与事件记录保持一致）
     if save_path is None:
         snapshot_dir = os.path.join(os.path.dirname(__file__), "..", "..", "snapshots")
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        file_path = os.path.join(snapshot_dir, f"{camera_name}_{timestamp}.jpg")
+    elif save_path.lower().endswith((".jpg", ".jpeg")):
+        file_path = save_path
+        snapshot_dir = os.path.dirname(os.path.abspath(save_path))
     else:
         snapshot_dir = save_path
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        file_path = os.path.join(snapshot_dir, f"{camera_name}_{timestamp}.jpg")
 
     os.makedirs(snapshot_dir, exist_ok=True)
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{camera_name}_{timestamp}.jpg"
-    file_path = os.path.join(snapshot_dir, filename)
 
     # ── Step 2: 获取设备连接信息并直接打开视频流 ──
     # 优化: 直接从 _connected_devices 获取连接信息并打开 RTSP 流，
@@ -312,6 +333,7 @@ def capture_video_screenshot(
                 "ip": cached.ip,
                 "rtsp_port": cached.rtsp_port,
                 "rtsp_path": cached.rtsp_path,
+                "rtsp_sub_path": cached.rtsp_sub_path,
                 "username": cached.username,
                 "password": cached.password,
                 "connection_type": cached.connection_type,
@@ -349,34 +371,32 @@ def capture_video_screenshot(
     else:
         ip = conn_info.get("ip", "")
         rtsp_port = conn_info.get("rtsp_port", 554)
-        rtsp_path = conn_info.get("rtsp_path", "/stream1")
         username = conn_info.get("username", "")
         password = conn_info.get("password", "")
 
         from .device_mgmt import _build_rtsp_url
-        rtsp_url = _build_rtsp_url(ip, rtsp_port, rtsp_path, username, password)
 
-        cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+        # 端点只用连接信息里的主、子码流互备（/md0_0、/md0_1），不盲试通用
+        # 路径列表——猜测端点掩盖配置错误，且每次失败都要白等一次连接超时
+        paths = []
+        for p in (conn_info.get("rtsp_path") or "/md0_0",
+                  conn_info.get("rtsp_sub_path") or "/md0_1"):
+            if p and p not in paths:
+                paths.append(p)
 
-        # 如果主路径失败，尝试备选路径（含创维摄像头路径）
-        if not cap.isOpened():
+        for rtsp_path in paths:
+            rtsp_url = _build_rtsp_url(ip, rtsp_port, rtsp_path, username, password)
+            cap = _open_rtsp_capture(rtsp_url)
+            if cap.isOpened():
+                break
             cap.release()
-            alt_paths = ["/Streaming/Channels/101", "/h264/ch1/main/av_stream", "/live",
-                         "/stream0", "/md0_0", "/stream1", "/md0_1"]
-            for alt in alt_paths:
-                if alt == rtsp_path:
-                    continue
-                alt_url = _build_rtsp_url(ip, rtsp_port, alt, username, password)
-                cap = cv2.VideoCapture(alt_url, cv2.CAP_FFMPEG)
-                if cap.isOpened():
-                    break
-                cap.release()
-            else:
-                return ScreenshotResult(
-                    success=False,
-                    file_path=file_path,
-                    error_message=f"无法从 {ip}:{rtsp_port} 打开视频流，请检查 RTSP 路径和认证信息",
-                )
+        else:
+            return ScreenshotResult(
+                success=False,
+                file_path=file_path,
+                error_message=f"无法从 {ip}:{rtsp_port} 打开视频流（已尝试 {'、'.join(paths)}），"
+                              f"请检查 RTSP 路径和认证信息",
+            )
 
     # 等待并读取多帧以确保获取稳定画面（丢弃前 5 帧）
     for _ in range(5):
@@ -721,7 +741,7 @@ def toggle_recording(
         else:
             ip = conn_info.get("ip", "")
             rtsp_port = conn_info.get("rtsp_port", 554)
-            rtsp_path = conn_info.get("rtsp_path", "/stream1")
+            rtsp_path = conn_info.get("rtsp_path", "/md0_0")
             username = conn_info.get("username", "")
             password = conn_info.get("password", "")
             rtsp_url = _build_rtsp_url(ip, rtsp_port, rtsp_path, username, password)

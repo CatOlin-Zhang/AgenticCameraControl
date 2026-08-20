@@ -3,7 +3,7 @@ Toolkit 6: IPC 事件接收 (Guardian Mode Foundation)
 
 工具清单：
   - manage_camera_events  统一事件入口（唯一 MCP 工具），action 切换工作模式:
-      start — 启动指定摄像头的事件监听（双协议，后台线程）
+      start — 启动指定摄像头的事件监听（创维私有协议，后台线程）
       stop  — 停止事件监听
       poll  — 读取未消费事件（磁盘存储 + 消费游标）
       wait  — 长轮询阻塞等待新事件（默认/上限 60s）
@@ -11,21 +11,23 @@ Toolkit 6: IPC 事件接收 (Guardian Mode Foundation)
       wait_for_events 为各模式的内部实现，保留导出供二次开发直接调用，
       但不作为 MCP 工具单独暴露（降低 MCP schema 负载）
 
-双协议事件源：
-  1. ONVIF Event Service — CreatePullPointSubscription + PullMessages 循环
-     （创维 ONVIF 端口实测 2000）
-  2. 创维私有协议 — 报警消息通过 RTSP interleaved 通道 0x65 上报（alarm.py 实测）：
-     建立 RTSP 会话后（User-Agent 须为 "skyworth"），对 SDP 每个视频轨道
-     逐一 SETUP（interleaved=0-1, 2-3...），设备识别 UA 后在同一 TCP 连接的
-     channel 0x65 上推送报警 JSON（~94 字节，可能是纯 JSON 或 RTP 包裹）：
-       {"ser":"alarm","alm":"MP","dat":"01:16 5:01:2026 -07-30 1",
-        "dir":0,"fn":"","fmt":"JPEG"}
-     兼容 serv/ser、date/dat 两套字段名（不同固件版本）。
-     alm 取值: MD/MP移动/HD人形/VGR区域/VGL越界/VS遮挡/VD车辆/HTD高温/LTD低温
+私有协议事件源（唯一通道，不使用 ONVIF）：
+  创维私有协议 — 报警消息通过 RTSP interleaved 通道 0x65 上报（alarm.py 实测）：
+  建立 RTSP 会话后（User-Agent 须为 "skyworth"），对 SDP 每个视频轨道
+  逐一 SETUP（interleaved=0-1, 2-3...），设备识别 UA 后在同一 TCP 连接的
+  channel 0x65 上推送报警 JSON（~94 字节，可能是纯 JSON 或 RTP 包裹）：
+    {"ser":"alarm","alm":"MP","dat":"01:16 5:01:2026 -07-30 1",
+     "dir":0,"fn":"","fmt":"JPEG"}
+  兼容 serv/ser、date/dat 两套字段名（不同固件版本）。
+  alm 取值: MD/MP移动/HD人形/VGR区域/VGL越界/VS遮挡/VD车辆/HTD高温/LTD低温
+
+监听端点（真相源 config.yaml / CameraConfig.rtsp_path）：
+  主码流 /md0_0（报警流——设备实测仅在此流会话上推送报警）、子码流 /md0_1。
+  连接态字典仅提供 ip/端口/凭据，不作为端点来源（避免连接态与配置态双源不一致）。
 
 落盘存储（单一真相源，见 TODOlist.md Guardian Mode）：
-  - 原始协议消息（ONVIF NotificationMessage / 私有协议报警 JSON）不落盘、
-    不转发；经 _process_event_message() 加工成 schema 1.0 格式后写入：
+  - 原始协议消息（私有协议报警 JSON）不落盘、不转发；
+    经 _process_event_message() 加工成 schema 1.0 格式后写入：
   - events/camera_events.txt — 每事件一行 schema 1.0 JSON，追加写
   - events/events_cursor.json  — 各消费游标（按相机记录已消费的行号）
   - events/monitor_state.json  — 监听意图（start 记录 / stop 清除）：MCP 进程
@@ -43,12 +45,16 @@ schema 1.0 落盘格式（camera_name / severity / tags 为可选字段）：
 
 去重（debounce）：
   - 同一 (camera, 归一化 topic) 在去重窗口（默认 5s）内只落盘一条，
-    跨协议重复（ONVIF 与私有协议同时上报同一动侦）同样被合并
-  - 快照按相机限流：窗口内同机只截一张，防止磁盘被爆发事件刷爆
+    设备端对同一动侦的重复推送同样被合并
+  - 快照按相机固定间隔采样（_SNAPSHOT_MIN_INTERVAL，默认 30s 一张）：
+    事件是义务，快照是抽样——连续告警场景下画面几乎不变，密拍无信息量
+    且徒增设备负载。快照异步执行（后台线程 + 预生成路径），绝不阻塞
+    监听线程：同步快照曾导致报警通道 socket 停读，设备 30s send
+    timeout 杀会话，重连窗口内报警全丢。
 
 安全边界：
   - 后台线程仅用于事件监听，且只在用户通过 start_event_monitor 显式
-    启用后才启动；行为限于报警订阅 + 写入 snapshots/ 与 events/ 白名单路径
+    启用后才启动；行为限于报警会话 + 写入 snapshots/ 与 events/ 白名单路径
   - 自动恢复不新增授权面：monitor_state.json 只在用户显式 start 时写入、
     stop 时清除，恢复动作仅重建用户尚未撤销的监听，不会自行开启新监听
 """
@@ -58,18 +64,11 @@ import socket
 import struct
 import threading
 import time
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
-
-try:
-    import requests as _requests_lib
-except ImportError:
-    _requests_lib = None
 
 
 # ──────────────────────────────────────────────
@@ -84,7 +83,8 @@ MONITOR_STATE_PATH = EVENTS_DIR / "monitor_state.json"   # 监听意图（start 
 
 EVENT_SCHEMA_VERSION = "1.0"      # 落盘消息的 schema 版本
 
-DEFAULT_DEBOUNCE_SECONDS = 5.0    # 去重/快照限流窗口
+DEFAULT_DEBOUNCE_SECONDS = 5.0    # 去重窗口
+_SNAPSHOT_MIN_INTERVAL = 30.0     # 联动快照固定采样间隔（秒）：事件是义务，快照是抽样
 WAIT_TIMEOUT_CAP = 60.0           # wait_for_events 阻塞上限（对齐 MCP 客户端 stdio 超时）
 _STORE_MAX_READ = 10000           # 单次最多读取的存储行数（防止超大文件拖垮）
 _RESUME_RETRY_SECONDS = 60.0      # 自动恢复失败后的重试冷却（防止离线相机被频繁探测）
@@ -94,7 +94,7 @@ SK_ALARM_CHANNEL = 0x65           # 101（创维），杰高用 0x63=99
 # RTSP User-Agent：设备端检查此值，仅 "skyworth" / "Jabsco" 推送报警
 SK_RTSP_USER_AGENT = "skyworth"
 
-# 私有协议 alm 代码 → 归一化 topic（与 ONVIF 侧共用同一命名空间，跨协议去重的前提）
+# 私有协议 alm 代码 → 归一化 topic
 SK_ALM_TOPIC_MAP = {
     "MD": "motion",           # 移动侦测
     "MP": "motion",           # 移动侦测（部分固件用 MP）
@@ -106,24 +106,6 @@ SK_ALM_TOPIC_MAP = {
     "HTD": "high_temp",       # 高温侦测
     "LTD": "low_temp",        # 低温侦测
 }
-
-# ONVIF Topic 关键字 → 归一化 topic（按顺序匹配，先命中先得）
-_ONVIF_TOPIC_RULES: List[Tuple[str, str]] = [
-    ("tamper", "tamper"),
-    ("shield", "tamper"),
-    ("motion", "motion"),
-    ("human", "human"),
-    ("people", "human"),
-    ("person", "human"),
-    ("line", "line_crossing"),
-    ("crossed", "line_crossing"),
-    ("field", "region_intrusion"),
-    ("intrusion", "region_intrusion"),
-    ("vehicle", "vehicle"),
-]
-
-# PullMessages 里表示"事件是否激活"的布尔字段名（小写比较）
-_ONVIF_BOOL_ITEM_NAMES = {"ismotion", "state", "istamper", "isinside", "logicalstate", "alarm"}
 
 # event_type → severity（schema 可选字段，缺省按此映射）
 EVENT_SEVERITY_MAP = {
@@ -454,7 +436,7 @@ def _process_event_message(
 ) -> Dict[str, Any]:
     """消息处理逻辑：把协议原始消息加工成 schema 1.0 落盘格式。
 
-    原始协议字段（ONVIF Topic 全文、私有协议 fn/num/data 等）处理完即丢弃，
+    原始协议字段（私有协议 fn/num/data 等）处理完即丢弃，
     仅提炼出 label / confidence；落盘内容严格等于 schema 1.0 字段集。
     """
     dt = datetime.now().astimezone()
@@ -486,17 +468,6 @@ def _process_event_message(
 #  Topic 归一化
 # ──────────────────────────────────────────────
 
-def _normalize_onvif_topic(raw_topic: str) -> str:
-    """把 ONVIF Topic（如 tns1:RuleEngine/CellMotionDetector/Motion）归一化"""
-    low = (raw_topic or "").lower()
-    for keyword, topic in _ONVIF_TOPIC_RULES:
-        if keyword in low:
-            return topic
-    # 兜底：取路径最后一段
-    tail = re.split(r"[/:]", raw_topic.strip())[-1] if raw_topic.strip() else "unknown"
-    return tail.lower() or "unknown"
-
-
 def _normalize_private_topic(alm: str) -> str:
     """把私有协议 alm 代码归一化"""
     return SK_ALM_TOPIC_MAP.get((alm or "").strip().upper(), (alm or "unknown").lower())
@@ -507,18 +478,16 @@ def _normalize_private_topic(alm: str) -> str:
 # ──────────────────────────────────────────────
 
 class _CameraEventMonitor:
-    """单相机双协议事件监听器。
+    """单相机私有协议事件监听器。
 
-    - ONVIF 通道: PullPoint 订阅 + PullMessages 长轮询线程
-    - 私有通道:   RTSP 会话内报警 JSON 推送监听线程
-    两通道产生的事件统一经 _emit() 去重后落盘。
+    RTSP 会话（User-Agent=skyworth）内报警 JSON 推送监听线程，
+    事件经 _emit() 去重后落盘。会话握手失败/断线由外层退避重连。
     """
 
     def __init__(
         self,
         camera_name: str,
         ip: str,
-        onvif_port: int,
         rtsp_port: int,
         rtsp_path: str,
         username: str,
@@ -527,9 +496,8 @@ class _CameraEventMonitor:
     ):
         self.camera_name = camera_name
         self.ip = ip
-        self.onvif_port = onvif_port
         self.rtsp_port = rtsp_port
-        self.rtsp_path = rtsp_path or "/stream2"
+        self.rtsp_path = rtsp_path or "/md0_0"
         self.username = username
         self.password = password
         self.debounce = max(0.5, float(debounce_seconds))
@@ -537,9 +505,10 @@ class _CameraEventMonitor:
         self._stop_event = threading.Event()
         self._threads: List[threading.Thread] = []
         self._channels: Dict[str, bool] = {}          # 协议通道 → 是否激活
-        self._subscription_url: str = ""              # ONVIF PullPoint 订阅地址
+        self._rtsp_session_id: str = ""               # 当前 RTSP 会话 ID（保活用）
+        self._last_error: str = ""                    # 最近一次会话建立/读写失败原因
         self._last_emit: Dict[Tuple[str, str], float] = {}   # (camera, topic) → 上次落盘时间
-        self._last_snapshot: float = 0.0              # 上次联动快照时间（按相机限流）
+        self._last_snapshot: float = 0.0              # 上次联动快照时间（固定间隔采样）
         self._suppressed_count = 0                    # 被去重合并掉的事件数
         self._emitted_count = 0                       # 已落盘事件数
         self._lock = threading.Lock()
@@ -554,6 +523,8 @@ class _CameraEventMonitor:
         return {
             "running": self.running,
             "channels": dict(self._channels),
+            "rtsp_session": bool(self._rtsp_session_id),
+            "last_error": self._last_error,
             "emitted": self._emitted_count,
             "suppressed": self._suppressed_count,
             "debounce_seconds": self.debounce,
@@ -561,44 +532,29 @@ class _CameraEventMonitor:
 
     # ── 启动 / 停止 ──
 
-    def start(self, protocols: str = "both") -> List[str]:
-        """启动监听通道。protocols: both / onvif / private。返回激活的通道列表。"""
-        active = []
+    def start(self) -> List[str]:
+        """启动私有协议监听线程。返回激活的通道列表。
 
-        if protocols in ("both", "onvif", "auto"):
-            if self._try_create_subscription():
-                self._channels["onvif"] = True
-                t = threading.Thread(
-                    target=self._onvif_pull_loop,
-                    name=f"EventMonitor-onvif-{self.camera_name}",
-                    daemon=True,
-                )
-                t.start()
-                self._threads.append(t)
-                active.append("onvif")
-            else:
-                self._channels["onvif"] = False
-
-        if protocols in ("both", "private", "auto"):
-            # auto 语义: ONVIF 订阅成功时私有通道仍启动（跨协议去重兜底漏报）
-            if self._probe_tcp(self.ip, self.rtsp_port):
-                self._channels["private"] = True
-                t = threading.Thread(
-                    target=self._private_rtsp_alarm_loop,
-                    name=f"EventMonitor-private-{self.camera_name}",
-                    daemon=True,
-                )
-                t.start()
-                self._threads.append(t)
-                active.append("private")
-            else:
-                self._channels["private"] = False
-
+        注意: _channels["private"] 不在此处置真——握手真实化后，
+        只有 RTSP 会话完整建立（DESCRIBE/SETUP/PLAY 全 200）才置真。
+        """
+        active: List[str] = []
+        if self._probe_tcp(self.ip, self.rtsp_port):
+            t = threading.Thread(
+                target=self._private_rtsp_alarm_loop,
+                name=f"EventMonitor-private-{self.camera_name}",
+                daemon=True,
+            )
+            t.start()
+            self._threads.append(t)
+            active.append("private")
+        else:
+            self._channels["private"] = False
+            self._last_error = f"RTSP 端口 {self.rtsp_port} TCP 不可达"
         return active
 
     def stop(self) -> None:
         self._stop_event.set()
-        self._try_unsubscribe()
         for t in self._threads:
             t.join(timeout=3)
         self._threads = []
@@ -613,7 +569,7 @@ class _CameraEventMonitor:
         except OSError:
             return False
 
-    # ── 去重 + 落盘（两协议共用出口） ──
+    # ── 去重 + 落盘 ──
 
     def _emit(
         self,
@@ -625,20 +581,20 @@ class _CameraEventMonitor:
         key = (self.camera_name, topic)
 
         with self._lock:
-            # 去重：同 (camera, topic) 窗口内只落盘一条（跨协议同样命中）
+            # 去重：同 (camera, topic) 窗口内只落盘一条（设备端重复推送同样命中）
             if now - self._last_emit.get(key, 0.0) < self.debounce:
                 self._suppressed_count += 1
                 return
             self._last_emit[key] = now
 
-            # 快照限流：窗口内同机只截一张
-            take_snapshot = (now - self._last_snapshot) >= self.debounce
+            # 快照采样：固定间隔外才截一张（事件是义务，快照是抽样）
+            take_snapshot = (now - self._last_snapshot) >= _SNAPSHOT_MIN_INTERVAL
             if take_snapshot:
                 self._last_snapshot = now
 
         snapshot_path = ""
         if take_snapshot:
-            snapshot_path = self._capture_snapshot()
+            snapshot_path = self._schedule_snapshot()
 
         # 消息处理：原始协议消息不落盘，加工成 schema 1.0 后写入存储
         event = _process_event_message(
@@ -652,195 +608,33 @@ class _CameraEventMonitor:
         with self._lock:
             self._emitted_count += 1
 
-    def _capture_snapshot(self) -> str:
-        """事件联动快照（同进程内部调用，不经 Agent）。失败不阻断事件落盘。"""
-        try:
-            from .stream import capture_video_screenshot
-            result = capture_video_screenshot(self.camera_name)
-            if result.success:
-                return result.file_path
-        except Exception:
-            pass
-        return ""
+    def _schedule_snapshot(self) -> str:
+        """预生成快照路径并异步抓图（后台线程，绝不阻塞监听线程）。
 
-    # ══════════════════════════════════════════
-    #  通道 1: ONVIF PullPoint
-    # ══════════════════════════════════════════
+        事件落盘带预生成路径；快照失败仅表现为该文件不存在。
+        同步快照曾阻塞监听线程 → 报警通道 socket 停读 → 设备 30s
+        send timeout 杀会话，故必须异步。
+        """
+        import os
+        snapshot_dir = os.path.join(os.path.dirname(__file__), "..", "..", "snapshots")
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        file_path = os.path.join(snapshot_dir, f"{self.camera_name}_{ts}.jpg")
 
-    _CREATE_SUBSCRIPTION_BODY = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" '
-        'xmlns:tev="http://www.onvif.org/ver10/events/wsdl">'
-        '<soap:Header/><soap:Body>'
-        '<tev:CreatePullPointSubscription>'
-        '<tev:InitialTerminationTime>PT600S</tev:InitialTerminationTime>'
-        '</tev:CreatePullPointSubscription>'
-        '</soap:Body></soap:Envelope>'
-    )
-
-    _PULL_MESSAGES_BODY = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" '
-        'xmlns:tev="http://www.onvif.org/ver10/events/wsdl">'
-        '<soap:Header/><soap:Body>'
-        '<tev:PullMessages>'
-        '<tev:Timeout>PT10S</tev:Timeout>'
-        '<tev:MessageLimit>32</tev:MessageLimit>'
-        '</tev:PullMessages>'
-        '</soap:Body></soap:Envelope>'
-    )
-
-    _UNSUBSCRIBE_BODY = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" '
-        'xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2">'
-        '<soap:Header/><soap:Body><wsnt:Unsubscribe/></soap:Body></soap:Envelope>'
-    )
-
-    # 事件服务候选路径（创维实测 device_service 同端口提供 event 服务）
-    _EVENT_SERVICE_PATHS = ["/onvif/event_service", "/onvif/Events", "/onvif/device_service"]
-
-    def _try_create_subscription(self) -> bool:
-        """创建 PullPoint 订阅，成功则记录订阅地址"""
-        if not self.onvif_port or _requests_lib is None:
-            return False
-        from .device_mgmt import _onvif_post_with_auth
-        for path in self._EVENT_SERVICE_PATHS:
+        def _worker() -> None:
             try:
-                status, body = _onvif_post_with_auth(
-                    self.ip, self.onvif_port, path,
-                    self._CREATE_SUBSCRIPTION_BODY,
-                    self.username, self.password, timeout=8.0,
-                )
+                from .stream import capture_video_screenshot
+                capture_video_screenshot(self.camera_name, save_path=file_path)
             except Exception:
-                continue
-            if status != 200 or "SubscriptionReference" not in body:
-                continue
-            addr = self._parse_subscription_address(body)
-            if addr:
-                self._subscription_url = addr
-                return True
-        return False
+                pass  # 快照失败不产生任何影响（文件不存在即失败）
 
-    @staticmethod
-    def _parse_subscription_address(body: str) -> str:
-        """从 CreatePullPointSubscriptionResponse 提取订阅 Address"""
-        try:
-            root = ET.fromstring(body)
-        except ET.ParseError:
-            return ""
-        for el in root.iter():
-            if el.tag.endswith("SubscriptionReference"):
-                for child in el.iter():
-                    if child.tag.endswith("Address") and (child.text or "").strip():
-                        return child.text.strip()
-        return ""
-
-    def _onvif_pull_loop(self) -> None:
-        """PullMessages 长轮询循环；订阅失效时自动重建"""
-        from .device_mgmt import _onvif_post_with_auth
-        consecutive_failures = 0
-
-        while not self._stop_event.is_set():
-            if not self._subscription_url:
-                if not self._try_create_subscription():
-                    self._channels["onvif"] = False
-                    if self._stop_event.wait(30.0):
-                        return
-                    continue
-                self._channels["onvif"] = True
-
-            parsed = urlparse(self._subscription_url)
-            sub_ip = parsed.hostname or self.ip
-            sub_port = parsed.port or self.onvif_port
-            sub_path = parsed.path or "/onvif/event_service"
-
-            try:
-                status, body = _onvif_post_with_auth(
-                    sub_ip, sub_port, sub_path,
-                    self._PULL_MESSAGES_BODY,
-                    self.username, self.password, timeout=15.0,
-                )
-            except Exception:
-                status, body = 0, ""
-
-            if status == 200 and "Envelope" in body:
-                consecutive_failures = 0
-                self._handle_pull_response(body)
-            else:
-                consecutive_failures += 1
-                if consecutive_failures >= 3:
-                    # 订阅过期/失效 → 丢弃并重建
-                    self._subscription_url = ""
-                    consecutive_failures = 0
-                self._stop_event.wait(2.0)
-
-    def _handle_pull_response(self, body: str) -> None:
-        """解析 PullMessagesResponse 中的 NotificationMessage 并逐条上报"""
-        try:
-            root = ET.fromstring(body)
-        except ET.ParseError:
-            return
-
-        for msg in root.iter():
-            if not msg.tag.endswith("NotificationMessage"):
-                continue
-
-            raw_topic = ""
-            prop_op = ""
-            items: Dict[str, str] = {}
-            for el in msg.iter():
-                if el.tag.endswith("Topic") and (el.text or "").strip():
-                    raw_topic = el.text.strip()
-                elif el.tag.endswith("SimpleItem"):
-                    name = el.get("Name", "")
-                    if name:
-                        items[name] = el.get("Value", "")
-                if el.get("PropertyOperation"):
-                    prop_op = el.get("PropertyOperation", "")
-
-            # 订阅（重）建立时设备推送 Initialized 状态快照（非真实事件），必须忽略：
-            # 否则 DigitalInput 等常开布尔项（LogicalState=true）每次订阅重建都会被误报
-            init_snapshot = prop_op.strip().lower() == "initialized"
-
-            # 布尔状态项：只上报"激活"沿（true/1），忽略清除沿；无布尔项则直接上报
-            bool_values = [
-                v.strip().lower() for k, v in items.items()
-                if k.strip().lower() in _ONVIF_BOOL_ITEM_NAMES
-            ]
-            cleared = bool(bool_values) and not any(v in ("true", "1") for v in bool_values)
-            skipped = init_snapshot or cleared
-            topic = _normalize_onvif_topic(raw_topic)
-
-            if skipped:
-                continue
-
-            self._emit(
-                topic=topic,
-                source="onvif",
-                detail=items,
-            )
-
-    def _try_unsubscribe(self) -> None:
-        """停止时尽力注销订阅（失败静默，订阅会自行超时）"""
-        if not self._subscription_url or _requests_lib is None:
-            return
-        try:
-            from .device_mgmt import _onvif_post_with_auth
-            parsed = urlparse(self._subscription_url)
-            _onvif_post_with_auth(
-                parsed.hostname or self.ip,
-                parsed.port or self.onvif_port,
-                parsed.path or "/onvif/event_service",
-                self._UNSUBSCRIBE_BODY,
-                self.username, self.password, timeout=5.0,
-            )
-        except Exception:
-            pass
-        self._subscription_url = ""
+        t = threading.Thread(
+            target=_worker, name=f"EventSnapshot-{self.camera_name}", daemon=True
+        )
+        t.start()
+        return file_path
 
     # ══════════════════════════════════════════
-    #  通道 2: 创维私有协议（RTSP 通道报警上报）
+    #  创维私有协议（RTSP 通道报警上报，唯一事件通道）
     # ══════════════════════════════════════════
 
     def _private_rtsp_alarm_loop(self) -> None:
@@ -856,11 +650,13 @@ class _CameraEventMonitor:
             try:
                 sock = self._open_rtsp_alarm_session()
                 self._channels["private"] = True
+                self._last_error = ""
                 session_start = time.time()
                 self._read_alarm_stream(sock)
             except Exception as e:
-                pass
+                self._last_error = f"{type(e).__name__}: {e}"
             finally:
+                self._rtsp_session_id = ""
                 if sock is not None:
                     try:
                         sock.close()
@@ -885,7 +681,11 @@ class _CameraEventMonitor:
         - User-Agent 须为 "skyworth"（设备端检查，DESCRIBE 前即设好）
         - 解析 SDP 中所有 a=control: 轨道，逐一 SETUP（每轨道 interleaved=0-1,2-3...）
         - 设备识别 User-Agent 后在同一会话的私有通道 0x65 推送报警 JSON
-        - 支持 Basic 与 Digest 鉴权；DESCRIBE/SETUP/PLAY 失败时降级
+        - 支持 Basic 与 Digest 鉴权
+
+        握手真实化: DESCRIBE/SETUP/PLAY 任一失败即抛 RuntimeError
+        （外层循环退避重连），不再返回半成品会话——半成品会话会让
+        状态虚报为"已连接"却永远收不到报警。
         """
         import base64
         import hashlib
@@ -962,8 +762,8 @@ class _CameraEventMonitor:
             describe = send_req("DESCRIBE", base_url, "Accept: application/sdp\r\n")
         describe_ok = bool(describe) and "200" in describe.splitlines()[0]
         if not describe_ok:
-            self._rtsp_session_id = ""
-            return sock
+            status_line = describe.splitlines()[0] if describe else "无响应"
+            raise RuntimeError(f"DESCRIBE {base_url} 失败: {status_line}")
 
         # ── 解析 SDP 所有轨道（对齐 alarm.py _parse_sdp_tracks） ──
         track_urls: List[str] = []
@@ -1023,16 +823,19 @@ class _CameraEventMonitor:
                     session_id = sid
                 interleaved_base += 2  # 下一个轨道用下两个 interleaved 通道
 
-        # ── PLAY（使用第一个轨道 URL，附带 Session + Range） ──
-        if session_id:
-            play_target = track_urls[0] if track_urls else base_url
-            send_req(
-                "PLAY", play_target,
-                f"Session: {session_id}\r\nRange: npt=0.000-\r\n",
-            )
-            self._rtsp_session_id = session_id
-        else:
-            self._rtsp_session_id = ""
+        # ── PLAY（使用第一个轨道 URL，附带 Session + Range）──
+        if not session_id:
+            raise RuntimeError("SETUP 未建立会话（无 Session 头或状态非 200）")
+
+        play_target = track_urls[0] if track_urls else base_url
+        play = send_req(
+            "PLAY", play_target,
+            f"Session: {session_id}\r\nRange: npt=0.000-\r\n",
+        )
+        play_status = play.splitlines()[0] if play else "无响应"
+        if "200" not in play_status:
+            raise RuntimeError(f"PLAY {play_target} 失败: {play_status}")
+        self._rtsp_session_id = session_id
 
         return sock
 
@@ -1172,7 +975,11 @@ def _monitor_status_summary() -> Dict[str, Any]:
 # ──────────────────────────────────────────────
 
 def _load_monitor_state() -> Dict[str, Dict[str, Any]]:
-    """加载已落盘的监听意图 {camera: {protocols, debounce_seconds, enabled_at}}"""
+    """加载已落盘的监听意图 {camera: {debounce_seconds, enabled_at}}
+
+    旧版本写入的 protocols 字段（"both"/"onvif"）读取时直接忽略——
+    事件通道已收敛为私有协议单通道。
+    """
     if not MONITOR_STATE_PATH.exists():
         return {}
     try:
@@ -1190,11 +997,10 @@ def _save_monitor_state(state: Dict[str, Dict[str, Any]]) -> None:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-def _record_monitor_intent(camera_name: str, protocols: str, debounce_seconds: float) -> None:
+def _record_monitor_intent(camera_name: str, debounce_seconds: float) -> None:
     """start 成功后记录监听意图（用户授权的持久化凭证，直到显式 stop）"""
     state = _load_monitor_state()
     state[camera_name] = {
-        "protocols": protocols,
         "debounce_seconds": debounce_seconds,
         "enabled_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
@@ -1218,7 +1024,7 @@ def resume_persisted_monitors() -> Dict[str, str]:
     失败的相机进入 _RESUME_RETRY_SECONDS 冷却，避免离线设备被每次 poll 阻塞式探测。
 
     Returns:
-        {camera: "resumed" | "already_running" | "cooldown" | "failed: <原因>"}
+        {camera: "resumed" | "already_running" | "cooldown" | "cancelled" | "failed: <原因>"}
     """
     # 非阻塞互斥：已有恢复在进行（如 server 启动线程）时直接跳过，
     # 避免同一相机被并发拉起两份监听，也避免 poll/wait 被启动恢复阻塞
@@ -1245,7 +1051,6 @@ def resume_persisted_monitors() -> Dict[str, str]:
 
             result = start_event_monitor(
                 camera_name,
-                protocols=str(spec.get("protocols", "both")),
                 debounce_seconds=float(spec.get("debounce_seconds", DEFAULT_DEBOUNCE_SECONDS)),
                 _resuming=True,
             )
@@ -1266,43 +1071,36 @@ def resume_persisted_monitors() -> Dict[str, str]:
 
 def start_event_monitor(
     camera_name: str,
-    protocols: str = "both",
     debounce_seconds: float = DEFAULT_DEBOUNCE_SECONDS,
     _resuming: bool = False,
 ) -> EventMonitorResult:
     """
     启动指定摄像头的事件监听（后台线程，用户显式开启）。
 
-    双协议同时监听：ONVIF PullPoint 订阅 + 创维私有协议 RTSP 通道报警，
-    两侧事件按 (camera, 归一化 topic) 在去重窗口内合并，避免跨协议重复。
-    事件到达时同进程联动快照（窗口内同机只截一张），经消息处理层加工成
-    schema 1.0 格式后落盘到 events/camera_events.txt（单一真相源，跨 session 可读）。
+    创维私有协议单通道：RTSP 会话（User-Agent=skyworth）监听 interleaved
+    通道 0x65 的报警 JSON。监听端点取 config.yaml 的主码流路径
+    （CameraConfig.rtsp_path，SK 设备为 /md0_0 报警流）——连接态字典仅提供
+    ip/端口/凭据，不作为端点来源。事件经去重后落盘，联动快照按固定间隔
+    异步采样（不阻塞监听线程）。
 
     启动成功后监听意图落盘到 events/monitor_state.json：MCP 进程被宿主回收后，
     server 重启 / poll / wait 会据此自动恢复监听，直到用户显式 stop。
 
-    安全约束: 显式提示 — 后台线程仅在用户确认后启动；行为限于报警订阅 +
+    安全约束: 显式提示 — 后台线程仅在用户确认后启动；行为限于报警会话 +
               snapshots/ 与 events/ 白名单路径写入
 
     Args:
         camera_name:      摄像头名称（须已注册于 config.yaml 或已连接）
-        protocols:        监听协议: "both"(默认) / "onvif" / "private"
-        debounce_seconds: 去重与快照限流窗口（秒，默认 5.0）
+        debounce_seconds: 去重窗口（秒，默认 5.0）
         _resuming:        内部参数：resume_persisted_monitors 自动恢复时为 True，
                           不重复写入监听意图
 
     Returns:
         EventMonitorResult:
-            - success: 是否至少启动了一个协议通道
-            - active_channels: 已激活的通道列表 ["onvif", "private"]
-            - error_message: 全部通道启动失败时的原因
+            - success: 监听线程是否已启动（会话握手结果见 poll/wait 返回的 monitors 状态）
+            - active_channels: 已启动的通道列表 ["private"]
+            - error_message: 启动失败时的原因
     """
-    if protocols not in ("both", "onvif", "private", "auto"):
-        return EventMonitorResult(
-            success=False, camera_name=camera_name,
-            error_message=f"无效的 protocols 参数: {protocols}（可选 both/onvif/private）",
-        )
-
     with _monitors_lock:
         existing = _monitors.get(camera_name)
         if existing and existing.running:
@@ -1312,52 +1110,52 @@ def start_event_monitor(
                 error_message="监听已在运行，无需重复启动",
             )
 
-    # 取连接信息：优先内存连接态，其次 config.yaml
-    from .device_mgmt import _connected_devices, _find_cached_camera, _probe_onvif_port
+    # 取连接信息：ip/端口/凭据优先内存连接态，其次 config.yaml
+    from .device_mgmt import _connected_devices, _find_cached_camera
     conn = _connected_devices.get(camera_name)
+    cached = _find_cached_camera(camera_name)
     if conn:
         ip = conn.get("ip", "")
-        onvif_port = int(conn.get("port", 0) or 0)
         rtsp_port = int(conn.get("rtsp_port", 554) or 554)
-        rtsp_path = conn.get("rtsp_sub_path", "") or conn.get("rtsp_path", "/stream2")
         username = conn.get("username", "admin")
         password = conn.get("password", "")
-    else:
-        cached = _find_cached_camera(camera_name)
-        if not cached or not cached.ip:
-            return EventMonitorResult(
-                success=False, camera_name=camera_name,
-                error_message=f"设备 {camera_name} 未连接且 config.yaml 中无配置，"
-                              f"请先调用 connect_device()",
-            )
+    elif cached and cached.ip:
         ip = cached.ip
-        onvif_port = cached.port
         rtsp_port = cached.rtsp_port
-        rtsp_path = cached.rtsp_sub_path or cached.rtsp_path
         username = cached.username
         password = cached.password
+    else:
+        return EventMonitorResult(
+            success=False, camera_name=camera_name,
+            error_message=f"设备 {camera_name} 未连接且 config.yaml 中无配置，"
+                          f"请先调用 connect_device()",
+        )
 
-    # ONVIF 端口未知时探测（创维实测 2000）
-    if not onvif_port and protocols in ("both", "onvif", "auto"):
-        onvif_port = _probe_onvif_port(ip)
+    # 监听端点真相源：config.yaml 主码流路径（SK 设备报警流 /md0_0）。
+    # 连接态字典历史上缺 rtsp_sub_path 键导致端点落到 /stream1（普通视频流，
+    # 设备不推报警），故端点一律从 CameraConfig 取，连接态仅作未注册兜底。
+    if cached and cached.rtsp_path:
+        rtsp_path = cached.rtsp_path
+    elif conn:
+        rtsp_path = conn.get("rtsp_path", "") or "/md0_0"
+    else:
+        rtsp_path = "/md0_0"
 
     monitor = _CameraEventMonitor(
         camera_name=camera_name,
         ip=ip,
-        onvif_port=onvif_port,
         rtsp_port=rtsp_port,
         rtsp_path=rtsp_path,
         username=username,
         password=password,
         debounce_seconds=debounce_seconds,
     )
-    active = monitor.start(protocols)
+    active = monitor.start()
 
     if not active:
         return EventMonitorResult(
             success=False, camera_name=camera_name,
-            error_message=f"所有协议通道启动失败（ONVIF 端口 {onvif_port or '未知'} 订阅失败，"
-                          f"RTSP 端口 {rtsp_port} 不可达）",
+            error_message=f"私有协议监听启动失败（RTSP {ip}:{rtsp_port} TCP 不可达）",
         )
 
     with _monitors_lock:
@@ -1365,7 +1163,7 @@ def start_event_monitor(
 
     # 监听意图落盘：进程被回收后可自动恢复（自动恢复路径不重复写入）
     if not _resuming:
-        _record_monitor_intent(camera_name, protocols, debounce_seconds)
+        _record_monitor_intent(camera_name, debounce_seconds)
 
     return EventMonitorResult(
         success=True, camera_name=camera_name,
@@ -1377,7 +1175,7 @@ def stop_event_monitor(
     camera_name: str,
 ) -> EventMonitorResult:
     """
-    停止指定摄像头的事件监听，注销 ONVIF 订阅并关闭 RTSP 报警会话；
+    停止指定摄像头的事件监听，关闭 RTSP 报警会话；
     同时清除已落盘的监听意图，后续进程重启不再自动恢复。
 
     安全约束: 无特殊约束
@@ -1507,7 +1305,6 @@ def wait_for_events(
 def manage_camera_events(
     action: "EventAction",
     camera_name: Optional[str] = None,
-    protocols: str = "both",
     debounce_seconds: float = DEFAULT_DEBOUNCE_SECONDS,
     limit: int = 100,
     timeout_seconds: float = 60.0,
@@ -1515,7 +1312,7 @@ def manage_camera_events(
     """
     统一事件入口（唯一注册的 MCP 工具），通过 action 切换工作模式：
 
-      - START: 启动监听（需 camera_name；参数 protocols / debounce_seconds）
+      - START: 启动监听（需 camera_name；参数 debounce_seconds）
       - STOP:  停止监听（需 camera_name）
       - POLL:  读取未消费事件并推进游标（camera_name 可选；参数 limit）
       - WAIT:  长轮询阻塞等待新事件（camera_name 可选；参数 timeout_seconds）
@@ -1532,7 +1329,7 @@ def manage_camera_events(
                 error_message=f"action={action.value} 需要 camera_name 参数",
             )
         if action == EventAction.START:
-            return start_event_monitor(camera_name, protocols, debounce_seconds)
+            return start_event_monitor(camera_name, debounce_seconds)
         return stop_event_monitor(camera_name)
 
     if action == EventAction.POLL:

@@ -8,12 +8,13 @@ Alarm/event subscription, snapshot linkage, and on-disk event store — exposed 
 
 ## Architecture
 
-**Dual-protocol event sources** (same pattern as PTZ):
+**Single event source — Skyworth private protocol** (no ONVIF; the former ONVIF pull-point channel has been removed):
 
-1. **ONVIF Event Service** — `CreatePullPointSubscription` + `PullMessages` long-poll loop (ONVIF port auto-probed if unknown). Only the *active* edge of boolean state items (`IsMotion=true`, `State=true`, …) is reported; clear edges are ignored.
-2. **Skyworth private protocol** — alarm messages are pushed **over a persistent RTSP session** (vendor-specific channel). The listener keeps the session open and scans the connection for alarm messages:
+1. **Skyworth private protocol** — alarm messages are pushed **over a persistent RTSP session**: after `DESCRIBE` / `SETUP` / `PLAY` with `User-Agent: skyworth`, the device reports alarm JSON (~94 bytes) on interleaved channel `0x65`. Any non-200 handshake step aborts into a reconnect backoff (2 s → 30 s exponential cap). The listener status exposes `rtsp_session` and `last_error`, so failed handshakes are visible instead of silently half-open.
 
-**Alarm codes → normalized topics** (shared namespace with ONVIF, prerequisite for cross-protocol dedup):
+**Listening endpoint (single source of truth):** the alarm session is opened on the main stream path from `config.yaml` (`CameraConfig.rtsp_path` — `/md0_0` on SK devices, the alarm stream; sub stream is `/md0_1`). The in-memory connection dict supplies only ip/port/credentials, never endpoints.
+
+**Alarm codes → normalized topics:**
 
 | `alm` | Topic | Meaning | | `alm` | Topic | Meaning |
 |-------|-------|---------|-|-------|-------|---------|
@@ -22,7 +23,7 @@ Alarm/event subscription, snapshot linkage, and on-disk event store — exposed 
 | `VGR` | `region_intrusion` | Region intrusion | | `HTD` | `high_temp` | High temperature |
 | `VGL` | `line_crossing` | Line crossing | | `LTD` | `low_temp` | Low temperature |
 
-**Deduplication:** events with the same `(camera, normalized topic)` within the debounce window (default 5 s) are merged into one record — this also collapses cross-protocol duplicates (ONVIF and private protocol reporting the same motion burst). Snapshot capture is rate-limited per camera to one per window.
+**Deduplication:** events with the same `(camera, normalized topic)` within the debounce window (default 5 s) are merged into one record. **Snapshots are sampled, not triggered:** at most one snapshot per camera per fixed 30 s interval — every alarm is recorded, but the picture is a sample. Snapshot capture runs on a background thread with a pre-generated path and never blocks the listening loop (a synchronous snapshot once stalled the alarm socket and the device killed the session after its 30 s send timeout).
 
 **On-disk event store:** after processing (raw protocol fields are dropped; a schema 1.0 JSON line is produced), the event is appended to `events/camera_events.txt`. The in-memory queue is only a hot cache; `poll` / `wait` always read the disk store, so backlog survives MCP server restarts and is readable from fresh sessions. **Schema, paths, write semantics, and the consumer contract** are defined in [references/EVENT_INTEGRATION.md](../EVENT_INTEGRATION.md) — read that file when writing any external consumer (other skills, forwarders, dashboards).
 
@@ -30,13 +31,13 @@ Alarm/event subscription, snapshot linkage, and on-disk event store — exposed 
 
 ---
 
-## `manage_camera_events(action, camera_name=None, protocols="both", debounce_seconds=5.0, limit=100, timeout_seconds=60)`
+## `manage_camera_events(action, camera_name=None, debounce_seconds=5.0, limit=100, timeout_seconds=60)`
 
 **The single MCP entry point for all event operations** — the `action` parameter switches the working mode.
 
 | `action` | Mode | Returns | Relevant parameters |
 |----------|------|---------|--------------------|
-| `start` | Start the background listener | `EventMonitorResult` | `camera_name` (required), `protocols`, `debounce_seconds` |
+| `start` | Start the background listener | `EventMonitorResult` | `camera_name` (required), `debounce_seconds` |
 | `stop` | Stop the listener | `EventMonitorResult` | `camera_name` (required) |
 | `poll` | Read unconsumed events, advance cursor | `PendingEventsResult` | `camera_name` (optional filter), `limit` |
 | `wait` | Long-poll block for new events | `PendingEventsResult` | `camera_name` (optional filter), `timeout_seconds` |
@@ -51,8 +52,8 @@ Start the background event listener for a camera. **Requires explicit user confi
 |--------|--------|
 | **Safety** | Explicit Prompt — background thread starts only after user enablement; behavior limited to alarm subscription + writes into `snapshots/` and `events/` whitelist paths |
 | **Returns** | `EventMonitorResult` (see field table below) |
-| **Parameters** | `camera_name`: camera identifier (must be registered or connected). `protocols`: `"both"` (default) / `"onvif"` / `"private"`. `debounce_seconds`: dedup & snapshot rate-limit window. |
-| **Agent behavior** | `success=True` with partial `active_channels` (e.g. only `["private"]`) is normal — report which channels are active. If both channels fail, relay `error_message`. |
+| **Parameters** | `camera_name`: camera identifier (must be registered or connected). `debounce_seconds`: dedup window (snapshot sampling is a fixed 30 s interval, independent of this value). |
+| **Agent behavior** | `success=True` means the listener thread started; the RTSP handshake result surfaces later in the `monitors` status returned by `poll` / `wait` (`rtsp_session`, `last_error`). If start fails outright, relay `error_message`. |
 
 **EventMonitorResult return fields:**
 
@@ -61,14 +62,14 @@ Start the background event listener for a camera. **Requires explicit user confi
 | `success` | bool | Whether the operation succeeded |
 | `camera_name` | string | Camera identifier |
 | `running` | bool | Whether the listener is now running |
-| `active_channels` | list[string] | Active protocol channels (e.g. `["onvif", "private"]` or `["private"]`) |
+| `active_channels` | list[string] | Active protocol channels (`["private"]` once the RTSP alarm session is fully established) |
 | `error_message` | string | Failure reason (empty on success) |
 
 ---
 
 ### `action="stop"`
 
-Stop the listener, unsubscribe the ONVIF pull point, and close the RTSP alarm session. Also clears the persisted monitoring intent — the listener will **not** auto-resume after future process restarts.
+Stop the listener and close the RTSP alarm session. Also clears the persisted monitoring intent — the listener will **not** auto-resume after future process restarts.
 
 | Aspect | Detail |
 |--------|--------|
@@ -96,7 +97,7 @@ Return unconsumed events (with snapshot paths) and advance the persisted per-cam
 | `success` | bool | Whether the operation succeeded |
 | `events` | list | List of `CameraEvent` objects (see field table below) |
 | `remaining` | int | Number of unconsumed events still in the store |
-| `monitors` | dict | Status of each listener (keyed by camera name) |
+| `monitors` | dict | Status of each listener (keyed by camera name): `running`, `channels`, `rtsp_session`, `last_error`, `emitted`, `suppressed`, `debounce_seconds` |
 | `error_message` | string | Failure reason (empty on success) |
 
 **CameraEvent fields** (each item in `events`):
@@ -114,7 +115,7 @@ Return unconsumed events (with snapshot paths) and advance the persisted per-cam
 | `message` | string | Ready-to-use notification body |
 | `label` | string or null | Target class (person/car/truck…); `null` when unavailable |
 | `confidence` | float or null | Confidence score 0–1; `null` when protocol doesn't provide it |
-| `snapshot_path` | string | Absolute snapshot path; **may be empty** (rate-limited) |
+| `snapshot_path` | string | Absolute snapshot path; **may be empty** (sampled at a fixed 30 s interval, captured asynchronously — a missing file means the background capture failed) |
 | `tags` | list[string] | Currently always `["guardian"]` |
 
 ---

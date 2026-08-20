@@ -71,7 +71,7 @@ Skill package root = the directory containing `SKILL.md`. If the skill is instal
 | `message` | string | Ready-to-use notification body (includes time and snapshot status) |
 | `label` | string \| null | Target class (person/car/truck…); `null` when extraction is unavailable |
 | `confidence` | number \| null | Confidence score 0–1; `null` when the protocol does not provide it |
-| `snapshot_path` | string | Absolute snapshot path; **may be empty string** (no snapshot captured within the rate-limit window) — send text-only in that case |
+| `snapshot_path` | string | Absolute snapshot path; **may be empty string** (snapshots are sampled at a fixed 30 s interval — empty means no sample was due; a missing file means the asynchronous capture failed) — send text-only in either case |
 | `tags` | string[] | Optional. Currently always `["guardian"]` |
 
 ## 5. Consumer Integration Guidelines
