@@ -57,7 +57,7 @@
 
 | # | 工具名 | 功能 | 关键参数 |
 |---|--------|------|----------|
-| 16 | `manage_camera_events` | 统一事件入口（action 切换四种模式） | action(start\|stop\|poll\|wait), camera_name, protocols, debounce_seconds, limit, timeout_seconds |
+| 16 | `manage_camera_events` | 统一事件入口（action 切换四种模式） | action(start\|stop\|poll\|wait), camera_name, debounce_seconds, limit, timeout_seconds |
 
 ### 2.5 补光控制 — `illumination.py`
 
@@ -75,8 +75,8 @@
 
 | # | 工具名 | 功能 | 关键参数 |
 |---|--------|------|----------|
-| 19 | `query_tracking_capabilities` | 查询侦测追踪能力及当前配置值 | camera_name(必填), detect_type(human\|vehicle\|area\|all) |
-| 20 | `set_tracking` | 开启/关闭侦测追踪功能 | camera_name(必填), detect_type(human\|vehicle\|area), enable, tracking, sensitivity_level |
+| 19 | `query_tracking_capabilities` | 查询侦测追踪能力及当前配置值 | camera_name(必填), detect_type(human\|vehicle\|area\|motion\|line\|all) |
+| 20 | `set_tracking` | 开启/关闭侦测追踪功能 | camera_name(必填), detect_type(human\|vehicle\|area\|motion\|line), enable, tracking, sensitivity_level |
 
 ---
 

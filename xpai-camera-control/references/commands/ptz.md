@@ -70,14 +70,15 @@ Get current PTZ position, range, and movement state.
 
 ---
 
-### `calibrate_ptz(camera_name) -> CalibrateResult`
+### `calibrate_ptz(camera_name, action: str = "set_home") -> CalibrateResult`
 
-Execute PTZ physical calibration (return to home position and re-calibrate zero point). Takes 10–30 seconds.
+Execute PTZ physical calibration or return to stored home position.
 
 | Aspect | Detail |
 |--------|--------|
 | **Safety** | Explicit Prompt |
 | **Returns** | `CalibrateResult` (see field table below) |
+| **Parameters** | `camera_name`: camera identifier. `action`: `"set_home"` (execute firmware-level calibration and store home position, ~10-30s) or `"go_home"` (move precisely to stored home position). Default: `"set_home"`. |
 
 **CalibrateResult return fields:**
 

@@ -56,22 +56,22 @@ Capture a single frame from the current video stream and save as JPEG.
 
 ---
 
-### `toggle_recording(camera_name, action, save_path=None) -> RecordingResult`
+### `toggle_recording(camera_name, action, save_path=None, duration=None) -> RecordingResult`
 
-Start or stop local video recording.
+Start, stop, or query the status of local video recording.
 
 | Aspect | Detail |
 |--------|--------|
 | **Safety** | Explicit Prompt + Code Validation |
 | **Returns** | `RecordingResult` (see field table below) |
-| **Parameters** | `camera_name`: camera identifier. `action`: `"start"` or `"stop"`. `save_path`: output file path (optional). |
+| **Parameters** | `camera_name`: camera identifier. `action`: `"start"`, `"stop"`, or `"status"`. `save_path`: recording directory (optional; defaults to `vido/`). `duration`: recording duration in seconds (optional, auto-stops when set; only for `start`). |
 
 **RecordingResult return fields:**
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `success` | bool | Whether the operation succeeded |
-| `is_recording` | bool | Current recording state (`true` after start, `false` after stop) |
+| `is_recording` | bool | Current recording state (`true` after start, `false` after stop/status query) |
 | `file_path` | string | Recording file path (populated on stop) |
 | `duration_seconds` | float | Recorded duration in seconds (populated on stop) |
 | `error_message` | string | Failure reason (empty on success) |

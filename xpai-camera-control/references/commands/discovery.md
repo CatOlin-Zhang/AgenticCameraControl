@@ -18,4 +18,3 @@ Skyworth private protocol discovery — `scripts/toolkit/discovery.py`
 
 Results are normalized into a unified `DiscoveredDevice` structure. Skyworth-specific fields (SN, subtype, channels, MAC, etc.) are populated under `sky_*` prefixed attributes when the Skyworth protocol is used.
 
-**TCP command channel** and **background discovery listener** are internal implementation details used by higher-level tools (`connect_device`, `control_ptz`, etc.). They are not exposed via MCP and must not be called directly.

@@ -1,24 +1,6 @@
 """
 创维私有设备发现模块 (Skyworth Private Discovery Protocol)
 
-协议说明:
-  - IPC 在组播地址 239.230.236.230:9008 监听客户端 UDP 命令
-  - 工具端发送 SK_DISCOVERY_SEARCH 搜索命令（广播/组播）
-  - IPC 将 SK_DISCOVERY_SEARCH_R 响应返回给工具端的 9028 端口
-  - NVR 接收响应的端口为 9018，工具端为 9028
-
-端口映射:
-  9008: IPC 接收 UDP 命令
-  9010: IPC 接收 TCP 命令 (HTTP 协议头)
-  9012: IPC 接收 OTA 数据
-  9018: IPC 发送给 NVR 的 UDP 命令端口
-  9028: IPC 发送给工具端的 UDP 命令端口
-  8004: IPC 接收对讲数据
-
-TCP 通道:
-  POST /xiaopaitech/device_service HTTP/1.1
-  Content-Type: application/json; charset=utf-8
-  Authorization: Basic <base64(user:pass)>
 """
 
 import json

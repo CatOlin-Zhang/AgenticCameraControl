@@ -2,7 +2,7 @@
 
 Detailed workflow examples with MCP tool-call sequences. This file supplements the concise instructions in `SKILL.md`.
 
-> **⚠️ MCP-Only Interaction.** Every example below is an **MCP tool invocation** (tool name + JSON arguments) against the running `scripts/mcp_server.py` — **not** Python code to execute. Never import `scripts.toolkit` or write standalone scripts to reproduce these flows; doing so bypasses the skill's security constraints and the server's in-memory connection state. See [SKILL.md — MCP-Only Interaction](../SKILL.md#mcp-only-interaction-hard-rule).
+> **MCP-Only Interaction.** Every example below is an **MCP tool invocation** (tool name + JSON arguments) against the running `scripts/mcp_server.py` — **not** Python code to execute. Never import `scripts.toolkit` or write standalone scripts to reproduce these flows; doing so bypasses the skill's security constraints and the server's in-memory connection state. See [SKILL.md — MCP-Only Interaction](../SKILL.md#mcp-only-interaction-hard-rule).
 
 Notation used below: `tool_name(arg1=value, arg2=value)` describes a single MCP tool call with its JSON arguments; `→` describes the returned result fields.
 

@@ -8,11 +8,11 @@ Alarm/event subscription, snapshot linkage, and on-disk event store — exposed 
 
 ## Architecture
 
-**Single event source — Skyworth private protocol** (no ONVIF; the former ONVIF pull-point channel has been removed):
+**Single event source — Skyworth private protocol** :
 
 1. **Skyworth private protocol** — alarm messages are pushed **over a persistent RTSP session**: after `DESCRIBE` / `SETUP` / `PLAY` with `User-Agent: skyworth`, the device reports alarm JSON (~94 bytes) on interleaved channel `0x65`. Any non-200 handshake step aborts into a reconnect backoff (2 s → 30 s exponential cap). The listener status exposes `rtsp_session` and `last_error`, so failed handshakes are visible instead of silently half-open.
 
-**Listening endpoint (single source of truth):** the alarm session is opened on the main stream path from `config.yaml` (`CameraConfig.rtsp_path` — `/md0_0` on SK devices, the alarm stream; sub stream is `/md0_1`). The in-memory connection dict supplies only ip/port/credentials, never endpoints.
+**Listening endpoint:** the alarm session is opened on the main stream path from `config.yaml` (`CameraConfig.rtsp_path` — `/md0_0` on SK devices, the alarm stream; sub stream is `/md0_1`). The in-memory connection dict supplies only ip/port/credentials, never endpoints.
 
 **Alarm codes → normalized topics:**
 

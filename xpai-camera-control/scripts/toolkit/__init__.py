@@ -10,8 +10,6 @@ XPAI Camera Control — Toolkit 工具集
   6. image_settings — 图像参数设置（SK 私有协议优先，ONVIF Imaging 回退）
   7. tracking       — 侦测追踪控制（人形追踪/车辆追踪/区域检测，SK HTTP 私有协议）
 
-注意: discovery.py 为内部实现模块，其函数（send_tcp_command、
-discover_sky_devices 等）不在此导出，Agent 通过 MCP 工具间接使用。
 """
 
 # ── stream ──

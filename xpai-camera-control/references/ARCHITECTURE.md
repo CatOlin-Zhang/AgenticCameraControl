@@ -11,6 +11,8 @@ Toolkit modules (exposed via MCP tools):
   ptz           — PTZ control (ONVIF + private protocol dual-channel)
   events        — Event/alarm receiving (Skyworth private RTSP-channel push), schema 1.0 store
   illumination  — Illumination mode query & control (Skyworth private protocol + ONVIF Imaging fallback)
+  image_settings— Image parameter query & control (Skyworth private protocol + ONVIF Imaging fallback)
+  tracking      — Detection & tracking query & control (Skyworth private protocol only)
 
 Internal modules (not exposed, accessed only through MCP tools above):
   discovery     — Skyworth private protocol discovery & TCP command channel
@@ -29,12 +31,15 @@ Before ONVIF authentication, `connect_device` verifies the real ONVIF port inter
 ```
 1. Agent → calls connect_device(cam_name)
    └─ Tool reads username/password from config.yaml automatically
-   └─ Tool retries ONVIF WS-UsernameToken authentication up to 3 times (1s interval)
+   └─ Three-channel verification: TCP 9010 + ONVIF + RTSP (password must pass RTSP auth)
+   └─ Retries up to 3 times (1s interval)
    └─ Success → ConnectResult(success=True, auth_method="password")
    └─ No user interaction required
-   └─ All retries fail → Tool removes the camera from config.yaml (_remove_camera_config)
-      → ConnectResult(success=False, status="failed", needs_password=True)
-      → Agent must re-discover via search_devices() and re-connect
+   └─ All retries fail → Tool attempts cloud re-authorization (if SN available)
+      ├─ Cloud succeeds → auto-connect with cloud password, credentials persisted
+      ├─ Cloud fails or no SN → Tool removes registration from config.yaml
+         → ConnectResult(success=False, status="needs_password", needs_password=True)
+         → Agent prompts user for password
 ```
 
 ### Flow for Password-Required Cameras (No Cached Credentials — Cloud Auth Auto-Triggered)
@@ -69,7 +74,7 @@ Before ONVIF authentication, `connect_device` verifies the real ONVIF port inter
 ```
 1. Agent → calls connect_device(camera_name, password=user_input, ip=..., rtsp_port=...)
    └─ Single attempt with user-provided password (no retry, no cache cleanup)
-   └─ Tool attempts ONVIF WS-UsernameToken auth → TCP channel fallback
+   └─ Three-channel verification: TCP 9010 + ONVIF + RTSP (password must pass RTSP auth)
    └─ Success → registers to config.yaml → ConnectResult(success=True)
    └─ Failure → ConnectResult(success=False, status="failed", needs_password=True)
 ```
@@ -157,9 +162,9 @@ When WS-Discovery fails (firewall, non-ONVIF cameras, wrong subnet):
 
 | Type | Auth | Agent Behavior |
 |------|------|---------------|
-| Password-Required (cached) | ONVIF WS-UsernameToken from config.yaml (retry 3x) | Auto-connect — no user input needed. All retries fail → registration auto-removed, re-discover needed |
+| Password-Required (cached) | Three-channel verification (TCP 9010 + ONVIF + RTSP) from config.yaml (retry 3x) | Auto-connect — no user input needed. All retries fail → cloud re-auth attempted (if SN available) → still fails → registration auto-removed, Agent prompts for password |
 | Password-Required (uncached, cloud auth) | Cloud authorization auto-triggered inside `connect_device` | Tool handles cloud auth internally. Agent handles returned status: `success` / `needs_password` / `auth_rejected` / `cloud_pwd_failed` |
-| Password-Required (uncached, user password) | User provides password → ONVIF WS-UsernameToken auth | Agent detects `needs_password` → prompts user → connects with password → registers credentials |
+| Password-Required (uncached, user password) | User provides password → three-channel verification (TCP + ONVIF + RTSP) | Agent detects `needs_password` → prompts user → connects with password → registers credentials |
 | Direct-Connect | None | Auto-connect — RTSP probe returns 200 OK |
 
 ## Cloud Authorization Flow (Internal)

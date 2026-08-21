@@ -1,6 +1,4 @@
 """
-Toolkit 5: 设备管理与维护
-
 工具清单：
   - get_registered_cameras  从 config.yaml 加载已注册摄像头配置
   - register_camera         将摄像头信息写入 config.yaml（持久化凭据）

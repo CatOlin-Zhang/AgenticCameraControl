@@ -240,7 +240,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
   "success": false,
   "auth_method": "",
   "status": "cloud_pwd_failed",
-  "error_message": "云端下发的密码无法通过设备 客厅摄像头(192.168.1.100) 的验证（TCP/ONVIF 连接成功但 RTSP 认证失败（密码可能对 RTSP 无效）），设备可能修改过密码或存在凭据隔离。请输入正确密码。",
+  "error_message": "云端下发的密码无法通过设备 客厅摄像头(192.168.1.100) 的验证（TCP/ONVIF 连接成功但 RTSP 认证失败（密码可能对 RTSP 无效）），设备可能修改过局域网密码或存在凭据隔离。请输入正确局域网密码。",
   "needs_password": true,
   "onvif_port": 0
 }
@@ -266,58 +266,5 @@ Disconnect a camera and release all resources (ONVIF connection, session state).
 | `success` | bool | Whether the disconnect succeeded |
 | `session_released` | bool | Whether the cloud session was released |
 | `error_message` | string | Failure reason (empty on success) |
-
----
-
-### `poll_auth_status(camera_name) -> AuthStatusResult`
-
-> **Deprecated as external MCP tool.** Cloud authorization is now fully handled internally by `connect_device` when called with `sn_code`. This section is retained for reference only.
-
-Poll the cloud authorization status for a device.
-
-| Aspect | Detail |
-|--------|--------|
-| **Safety** | None (read-only query) |
-| **Returns** | `AuthStatusResult` (see field table below) |
-| **Parameters** | `camera_name`: camera identifier or SN code |
-
-**AuthStatusResult return fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `status` | string | Authorization status: `PENDING` / `AUTHORIZED` / `REJECTED` / `ERROR` |
-| `camera_name` | string | Camera identifier |
-| `message` | string | Human-readable status description |
-
-**Agent behavior:**
-- `AUTHORIZED` → credentials auto-persisted to config.yaml; call `connect_device()` to complete connection
-- `REJECTED` → user declined authorization in the app; inform user
-- `PENDING` → continue polling
-- `ERROR` → report error to user
-
----
-
-### `big_connect(name="") -> AuthOrchestrateResult`
-
-> **Deprecated as external MCP tool.** Cloud authorization is now fully handled internally by `connect_device` when called with `sn_code`. This section is retained for reference only.
-
-One-call cloud authorization flow: initiates authorization request + polls status + auto-connects on success. Credentials are automatically written to config.yaml upon authorization.
-
-| Aspect | Detail |
-|--------|--------|
-| **Safety** | None (blocking call, waits for user confirmation) |
-| **Returns** | `AuthOrchestrateResult` (see field table below) |
-| **Parameters** | `name`: camera name (optional; empty = auto-select if only one device) |
-
-**AuthOrchestrateResult return fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `success` | bool | Whether the full flow succeeded |
-| `status` | string | `authorized` / `rejected` / `timeout` / `error` / `no_devices` / `needs_selection` / `no_sn` / `cloud_error` |
-| `camera_name` | string | Camera identifier |
-| `sn` | string | Device serial number |
-| `error_message` | string | Failure reason (empty on success) |
-| `available_cameras` | list | Camera list (only when `status="needs_selection"`) |
 
 ---
