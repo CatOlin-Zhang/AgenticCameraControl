@@ -4,7 +4,7 @@ description: Discover, connect, and control Skyworth cameras on the local networ
 license: MIT
 compatibility: Requires Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. Cameras must be on the same LAN for discovery.
 metadata:
-  version: "0.6.0"
+  version: "0.7.0"
 ---
 
 # Camera Control Skill
