@@ -144,7 +144,7 @@ TOOLS = [
     ),
     Tool(
         name="toggle_recording",
-        description="启动、停止或查询本地 MP4 录像。action=start 开始录像（可选 duration 秒数自动停止）；action=stop 停止并返回文件路径和时长；action=status 查询当前录像状态。默认保存到 vido/ 目录。",
+        description="启动、停止或查询本地 MP4 录像。action=start 开始录像（可选 duration 秒数自动停止）；action=stop 停止并返回文件路径和时长；action=status 查询当前录像状态。默认保存到 video/ 目录。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -154,7 +154,7 @@ TOOLS = [
                     "enum": ["start", "stop", "status"],
                     "description": "start = 开始录像 / stop = 停止录像 / status = 查询录像状态",
                 },
-                "save_path": {"type": "string", "description": "录像保存目录（默认 vido/）"},
+                "save_path": {"type": "string", "description": "录像保存目录（默认 video/）"},
                 "duration": {
                     "type": "number",
                     "description": "录像时长（秒），仅 start 时有效；设置后后台自动停止，无需手动调 stop",

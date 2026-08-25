@@ -117,7 +117,7 @@ AgenticCameraControl/
 │   │   └── EVENT_INTEGRATION.md  # 事件存储集成契约
 │   ├── events/                   # 事件持久化目录
 │   ├── snapshots/                # 截图保存目录
-│   ├── video/                    # 录像保存目录（运行时自动创建，默认 vido/）
+│   ├── video/                    # 录像保存目录（运行时自动创建，默认 video/）
 │   ├── SKILL.md                  # Agent 技能描述文件
 │   ├── config.yaml               # 摄像头配置（运行时自动生成）
 │   └── requirements.txt          # Python 依赖
@@ -149,10 +149,10 @@ AgenticCameraControl/
 | 承诺            | 说明                                                             |
 |---------------|----------------------------------------------------------------|
 | 请求-响应模式       | 工具默认为同步请求-响应；唯一例外是事件监听后台线程，仅在用户显式开启后运行，且行为限于报警订阅与白名单路径写入，可随时关闭 |
-| 使用阶段仅局域网通信    | 使用阶段所有网络流量限于局域网内，无外网通信；为保障用户安全，连接阶段会与远程服务器确认连接状态        |
-| 文件写入受限        | 仅写入 `config.yaml`、`snapshots/`、`vido/`、`events/`              |
+| 使用阶段仅局域网通信    | 使用阶段所有网络流量限于局域网内，无外网通信；为保障用户安全，连接阶段会与远程服务器确认连接状态               |
+| 文件写入受限        | 仅写入 `config.yaml`、`snapshots/`、`video/`、`events/`              |
 | 无系统修改         | 不修改注册表、环境变量、系统服务                                               |
-| 无进程派生         | 不启动子进程或外部程序（Agent 框架下的定时任务与守护进程不在此限制内）                          |
+| 无进程派生         | 不启动子进程或外部程序（Agent 框架下的定时任务与守护进程不在此限制内）                         |
 
 ### 配置
 
@@ -173,7 +173,7 @@ AgenticCameraControl/
 ### 兼容性与社区
 
 - 本技能包已在 WorkBuddy 与 OpenClaw 中完成功能与兼容性测试，欢迎创作者和使用者提供反馈。如在安装到您自建的 Agent 时遇到问题，请在项目评论区留言。
-- 所有摄像头拍摄的截图、录制的视频和事件记录均保存在本地文件夹（`snapshots/`、`vido/`、`events/`）中，您可以对这些数据进行进一步处理，也欢迎在社区或评论区分享您的使用创意。
+- 所有摄像头拍摄的截图、录制的视频和事件记录均保存在本地文件夹（`snapshots/`、`video/`、`events/`）中，您可以对这些数据进行进一步处理，也欢迎在社区或评论区分享您的使用创意。
 - 如果您有更好的创意或修改建议，欢迎在项目评论区留下想法，优秀的建议将被纳入后续版本更新。
 
 ---
@@ -278,7 +278,7 @@ AgenticCameraControl/
 │   │   └── EVENT_INTEGRATION.md  # Event storage integration contract
 │   ├── events/                   # Event persistence directory
 │   ├── snapshots/                # Screenshot directory
-│   ├── video/                    # Recording directory (auto-created, default vido/)
+│   ├── video/                    # Recording directory (auto-created, default video/)
 │   ├── SKILL.md                  # Agent skill description file
 │   ├── config.yaml               # Camera config (auto-generated at runtime)
 │   └── requirements.txt          # Python dependencies
@@ -310,10 +310,10 @@ This skill package operates within strict security constraints to ensure no unex
 | Guarantee                          | Description                                                                                                                                                                                                                                      |
 |------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Request-response by default        | Tools are synchronous request-response. The only exception is the event listener background thread, which runs only after explicit user enablement, is limited to alarm subscription plus whitelist-path writes, and can be stopped at any time. |
-| LAN-only during usage              | All network traffic stays within the local network during usage; during the connection phase, the system communicates with a remote server to verify connection status for user security.                                                         |
-| Restricted file writes             | Only writes to `config.yaml`, `snapshots/`, `vido/`, and `events/`                                                                                                                                                                              |
+| LAN-only during usage              | All network traffic stays within the local network during usage; during the connection phase, the system communicates with a remote server to verify connection status for user security.                                                        |
+| Restricted file writes             | Only writes to `config.yaml`, `snapshots/`, `video/`, and `events/`                                                                                                                                                                              |
 | No system modifications            | No registry changes, environment variable modifications, or system service installations.                                                                                                                                                        |
-| No process spawning                | No subprocesses or external programs are launched (scheduled tasks and daemons under Agent frameworks are not subject to this restriction).                                                                                                       |
+| No process spawning                | No subprocesses or external programs are launched (scheduled tasks and daemons under Agent frameworks are not subject to this restriction).                                                                                                      |
 
 ### Configuration
 
@@ -334,7 +334,7 @@ Camera configurations are stored in `xpai-camera-control/config.yaml`. Credentia
 ### Compatibility & Community
 
 - This skill package has been tested for functionality and compatibility on WorkBuddy and OpenClaw. Feedback from creators and users is welcome. If you encounter issues installing this Skill in your self-built Agent, please leave a comment in the project discussion.
-- All camera screenshots, recordings, and event logs are stored locally in (`snapshots/`, `vido/`, `events/`). You can further process this data and are encouraged to share your use cases in the community or comment section.
+- All camera screenshots, recordings, and event logs are stored locally in (`snapshots/`, `video/`, `events/`). You can further process this data and are encouraged to share your use cases in the community or comment section.
 - If you have ideas or suggestions for improvement, feel free to share them in the project comment section. Outstanding suggestions may be incorporated into future releases.
 
 ---

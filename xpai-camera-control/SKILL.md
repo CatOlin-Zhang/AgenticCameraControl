@@ -111,7 +111,7 @@ After a successful connection, perform streaming operations:
 - `manage_storage_status()` — queries disk usage and configures storage path/format/policy
 - `start_webrtc_stream()` / `stop_webrtc_stream()` — converts RTSP to WebRTC for browser-based live preview, returns HTTP access URL
 
-Screenshot files are saved to `snapshots/` directory by default; recordings go to `vido/`.
+Screenshot files are saved to `snapshots/` directory by default; recordings go to `video/`.
 
 **Result delivery (when user wants to "see" a camera):**
 After capturing a screenshot and fetching the stream URL, the Agent **MUST** deliver both results to the user:

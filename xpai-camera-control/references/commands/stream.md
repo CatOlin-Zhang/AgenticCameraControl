@@ -60,11 +60,11 @@ Capture a single frame from the current video stream and save as JPEG.
 
 Start, stop, or query the status of local video recording.
 
-| Aspect | Detail |
-|--------|--------|
-| **Safety** | Explicit Prompt + Code Validation |
-| **Returns** | `RecordingResult` (see field table below) |
-| **Parameters** | `camera_name`: camera identifier. `action`: `"start"`, `"stop"`, or `"status"`. `save_path`: recording directory (optional; defaults to `vido/`). `duration`: recording duration in seconds (optional, auto-stops when set; only for `start`). |
+| Aspect | Detail                                                                                                                                                                                                                                          |
+|--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Safety** | Explicit Prompt + Code Validation                                                                                                                                                                                                               |
+| **Returns** | `RecordingResult` (see field table below)                                                                                                                                                                                                       |
+| **Parameters** | `camera_name`: camera identifier. `action`: `"start"`, `"stop"`, or `"status"`. `save_path`: recording directory (optional; defaults to `video/`). `duration`: recording duration in seconds (optional, auto-stops when set; only for `start`). |
 
 **RecordingResult return fields:**
 

@@ -340,7 +340,7 @@ OpenCV's `cv2.imwrite()` and `cv2.VideoWriter()` silently fail when the file pat
 - **Screenshots:** Using `cv2.imencode()` + `numpy.tofile()` instead of `cv2.imwrite()`
 - **Recordings:** Writing to a temporary file via `tempfile.mkstemp()` (ASCII path), then moving to the final destination on stop
 
-If `save_path` is provided, ensure it is writable. The default `snapshots/` and `vido/` directories are created automatically.
+If `save_path` is provided, ensure it is writable. The default `snapshots/` and `video/` directories are created automatically.
 
 ### Same-process connection requirement
 

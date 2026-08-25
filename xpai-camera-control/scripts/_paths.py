@@ -35,7 +35,7 @@ def get_skill_root() -> Path:
 
 
 def get_data_dir() -> Path:
-    """数据目录（config.yaml / snapshots / vido / events）。
+    """数据目录（config.yaml / snapshots / video / events）。
 
     与 get_skill_root() 相同：
     - 开发模式 = 源码项目根
