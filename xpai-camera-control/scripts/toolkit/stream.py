@@ -565,10 +565,150 @@ class _CameraRecState:
     file_path: str = ""
     transport: str = ""
     timer: Optional[threading.Timer] = None
+    log_handle: Any = None              # stderr 日志文件句柄，STOP 后关闭防泄漏
 
 
 # camera_name → 录像状态（支持多台摄像头同时录像）
 _recording_states: Dict[str, _CameraRecState] = {}
+
+
+# ── 录像状态持久化（跨 MCP 进程回收存活） ──
+# 宿主回收/重启 MCP 进程后，内存 _recording_states 与自动停止定时器全部丢失：
+# 防重入守卫失效（重试造成重复录像）、STATUS 谎报未录像、孤儿录像无法停止。
+# 因此 start 时落盘，后续以 pid 存活（且进程名为 ffmpeg）判定真实状态，
+# 死条目自动清理。与 events/monitor_state.json 同一模式。
+
+_VIDEO_DIR = Path(__file__).resolve().parent.parent.parent / "video"
+_REC_STATE_FILE = _VIDEO_DIR / "recording_state.json"
+
+
+def _load_rec_state_file() -> Dict[str, dict]:
+    """读取 recording_state.json，文件不存在或损坏时返回空字典。"""
+    try:
+        with open(_REC_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_rec_state_file(states: Dict[str, dict]) -> None:
+    try:
+        os.makedirs(_VIDEO_DIR, exist_ok=True)
+        with open(_REC_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(states, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass  # 落盘失败不阻断录像本身，退化为仅内存状态
+
+
+def _persist_rec_start(camera_name: str, pid: int, file_path: str,
+                       stop_at: Optional[float]) -> None:
+    states = _load_rec_state_file()
+    states[camera_name] = {
+        "pid": pid,
+        "file_path": file_path,
+        "start_time": time.time(),
+        "stop_at": stop_at,
+    }
+    _write_rec_state_file(states)
+
+
+def _persist_rec_remove(camera_name: str) -> None:
+    states = _load_rec_state_file()
+    if camera_name in states:
+        states.pop(camera_name)
+        _write_rec_state_file(states)
+
+
+def _rec_pid_alive(pid: int) -> bool:
+    """pid 存活且进程名为 ffmpeg（防 PID 复用误判）。"""
+    try:
+        import psutil
+        proc = psutil.Process(pid)
+        return proc.is_running() and "ffmpeg" in proc.name().lower()
+    except Exception:
+        return False
+
+
+def _get_live_persisted_recording(camera_name: str) -> Optional[dict]:
+    """查询持久化录像条目；仅当 ffmpeg 进程仍存活时返回，死条目自动清理。"""
+    states = _load_rec_state_file()
+    entry = states.get(camera_name)
+    if not entry:
+        return None
+    pid = entry.get("pid", 0)
+    if isinstance(pid, int) and pid > 0 and _rec_pid_alive(pid):
+        return entry
+    # ffmpeg 已退出（宿主杀进程 / -t 兜底到期 / 崩溃）→ 清理死条目
+    states.pop(camera_name, None)
+    _write_rec_state_file(states)
+    return None
+
+
+def _stop_orphan_recording(camera_name: str, entry: dict) -> "RecordingResult":
+    """停止进程重启前遗留的孤儿 ffmpeg（无 Popen 句柄，只有 pid）。"""
+    pid = entry["pid"]
+    file_path = entry.get("file_path", "")
+    start_time = entry.get("start_time") or time.time()
+
+    # 发送跨平台中断信号让 ffmpeg 优雅封包（与 _send_ffmpeg_interrupt 同逻辑）
+    try:
+        if _IS_WINDOWS:
+            os.kill(pid, signal.CTRL_BREAK_EVENT)
+        else:
+            os.kill(pid, signal.SIGINT)
+    except OSError:
+        pass
+
+    deadline = time.time() + 15
+    while time.time() < deadline and _rec_pid_alive(pid):
+        time.sleep(0.5)
+    if _rec_pid_alive(pid):
+        try:
+            import psutil
+            psutil.Process(pid).kill()
+        except Exception:
+            pass
+
+    _persist_rec_remove(camera_name)
+
+    actual_duration = _get_video_duration(file_path) if file_path else None
+    elapsed = time.time() - start_time
+    reported_duration = actual_duration if actual_duration is not None else round(elapsed, 2)
+
+    if not file_path or not os.path.isfile(file_path) or os.path.getsize(file_path) == 0:
+        return RecordingResult(
+            success=False, is_recording=False,
+            duration_seconds=reported_duration,
+            error_message="录像文件为空或不存在，录像可能未成功启动",
+        )
+    # 录像成功且日志为空则删除（有内容说明发生过异常，留作诊断）
+    _remove_log_if_empty(file_path)
+    return RecordingResult(
+        success=True, is_recording=False,
+        file_path=file_path,
+        duration_seconds=reported_duration,
+    )
+
+
+def _read_log_tail(log_path: str, n: int = 300) -> str:
+    """读取 ffmpeg 日志末尾 n 字节（启动失败诊断用）。文件不存在返回空串。"""
+    try:
+        with open(log_path, "rb") as f:
+            data = f.read()  # -loglevel error 下日志极小，整读切片比 seek 简单
+        return data[-n:].decode(errors="replace")
+    except OSError:
+        return ""
+
+
+def _remove_log_if_empty(video_path: str) -> None:
+    """录像成功且日志为空时删除 .log（无错误发生）；有内容则保留作诊断。"""
+    log_path = os.path.splitext(video_path)[0] + ".log"
+    try:
+        if os.path.isfile(log_path) and os.path.getsize(log_path) == 0:
+            os.remove(log_path)
+    except OSError:
+        pass
 
 
 def _get_video_duration(file_path: str) -> Optional[float]:
@@ -642,6 +782,16 @@ def toggle_recording(
                 duration_seconds=round(elapsed, 2),
                 auto_stop=state.timer is not None,
             )
+        # 内存状态兜底（进程被宿主回收后丢失）：持久化条目在且 ffmpeg 存活则如实上报
+        persisted = _get_live_persisted_recording(camera_name)
+        if persisted:
+            elapsed = time.time() - persisted.get("start_time", time.time())
+            return RecordingResult(
+                success=True, is_recording=True,
+                file_path=persisted.get("file_path", ""),
+                duration_seconds=round(elapsed, 2),
+                auto_stop=persisted.get("stop_at") is not None,
+            )
         return RecordingResult(
             success=True, is_recording=False,
             error_message="当前没有正在进行的录像",
@@ -651,6 +801,10 @@ def toggle_recording(
     if action == RecordingAction.STOP:
         state = _recording_states.get(camera_name)
         if not state or state.process is None:
+            # 内存状态兜底（进程被宿主回收后丢失）：按持久化条目停止孤儿 ffmpeg
+            persisted = _get_live_persisted_recording(camera_name)
+            if persisted:
+                return _stop_orphan_recording(camera_name, persisted)
             return RecordingResult(
                 success=False, is_recording=False,
                 error_message="当前没有正在进行的录像",
@@ -668,8 +822,10 @@ def toggle_recording(
         # 发送跨平台中断信号让 ffmpeg 优雅关闭（封包 moov atom）
         _send_ffmpeg_interrupt(proc)
 
+        # 60s 宽限：+faststart 收尾要重写整个文件，慢速共享目录（/mnt/hgfs 等）
+        # 上 10 分钟以上的文件可能超过 15s，超时误杀会丢掉 moov 造成文件损坏
         try:
-            proc.wait(timeout=15)
+            proc.wait(timeout=60)
         except subprocess.TimeoutExpired:
             try:
                 proc.kill()
@@ -677,13 +833,21 @@ def toggle_recording(
             except Exception:
                 pass
 
+        # 关闭 stderr 日志句柄防泄漏
+        if state.log_handle is not None:
+            try:
+                state.log_handle.close()
+            except OSError:
+                pass
+
         # 使用 ffprobe 获取视频文件精确时长（替代 wall-clock elapsed，避免关闭时间被计入）
         actual_duration = _get_video_duration(file_path)
         elapsed = time.time() - start_time
         reported_duration = actual_duration if actual_duration is not None else round(elapsed, 2)
 
-        # 清理该摄像头的录像状态
+        # 清理该摄像头的录像状态（内存 + 持久化）
         _recording_states.pop(camera_name, None)
+        _persist_rec_remove(camera_name)
 
         # 验证输出文件
         if not os.path.isfile(file_path) or os.path.getsize(file_path) == 0:
@@ -692,6 +856,9 @@ def toggle_recording(
                 duration_seconds=reported_duration,
                 error_message="录像文件为空或不存在，录像可能未成功启动",
             )
+
+        # 录像成功且日志为空则删除（有内容说明发生过异常，留作诊断）
+        _remove_log_if_empty(file_path)
 
         return RecordingResult(
             success=True, is_recording=False,
@@ -713,6 +880,17 @@ def toggle_recording(
             if existing.timer is not None:
                 existing.timer.cancel()
             _recording_states.pop(camera_name, None)
+
+        # 持久化防重入（进程被宿主回收后内存状态丢失）：
+        # 检查重启前的孤儿 ffmpeg 是否仍在录像，避免重试造成重复录像
+        persisted = _get_live_persisted_recording(camera_name)
+        if persisted:
+            return RecordingResult(
+                success=False, is_recording=True,
+                file_path=persisted.get("file_path", ""),
+                error_message=f"摄像头 {camera_name} 正在录像（文件: {persisted.get('file_path', '')}），"
+                              f"若为重试调用则无需重复启动；如需重新录像请先调用 stop",
+            )
 
         # 检查 ffmpeg 是否可用
         ffmpeg_path = _resolve_binary("ffmpeg")
@@ -792,6 +970,8 @@ def toggle_recording(
             # 构造 ffmpeg 命令
             ffmpeg_cmd = [
                 ffmpeg_path, "-y",
+                "-loglevel", "error",   # 只输出真错误（日志文件是诊断黑匣子，别被进度刷屏淹没）
+                "-nostats",             # 关掉每 0.5s 的进度统计输出
                 "-rtsp_transport", transport,
                 "-timeout", "5000000",
                 "-i", rtsp_url,
@@ -803,12 +983,26 @@ def toggle_recording(
                 ffmpeg_cmd += ["-t", str(ffmpeg_timeout)]
             ffmpeg_cmd.append(file_path)
 
-            popen_kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # stderr 重定向到与视频同名的 .log（不能用 PIPE：无人读管道时缓冲写满
+            # 会阻塞 ffmpeg 主线程，导致录像冻结、SIGINT 无法收尾、文件损坏；
+            # Linux 上宿主进程死亡还会因管道断裂触发 SIGPIPE 连坐杀掉录像）。
+            # 文件写入无缓冲上限问题，且日志成为提前停止的诊断黑匣子。
+            log_path = os.path.splitext(file_path)[0] + ".log"
+            try:
+                log_handle = open(log_path, "wb")
+            except OSError:
+                log_handle = None
+            popen_kwargs = dict(
+                stdout=subprocess.DEVNULL,
+                stderr=log_handle if log_handle is not None else subprocess.DEVNULL,
+            )
             if _IS_WINDOWS:
                 popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
             try:
                 proc = subprocess.Popen(ffmpeg_cmd, **popen_kwargs)
             except FileNotFoundError:
+                if log_handle is not None:
+                    log_handle.close()
                 return RecordingResult(
                     success=False, is_recording=False,
                     error_message="ffmpeg 未安装",
@@ -822,22 +1016,31 @@ def toggle_recording(
             time.sleep(2)
             health_check_delay = time.time() - popen_time  # 实际健康检查耗时（≈2s）
             if proc.poll() is not None:
-                _, stderr = proc.communicate()
-                last_error = (stderr.decode(errors="replace") or "")[-300:]
-                if os.path.exists(file_path):
-                    os.remove(file_path)
+                # 先关句柄再删文件（Windows 上删除被打开的文件会 PermissionError）
+                if log_handle is not None:
+                    log_handle.close()
+                    log_handle = None
+                last_error = _read_log_tail(log_path, 300)
+                for p in (file_path, log_path):
+                    try:
+                        if os.path.exists(p):
+                            os.remove(p)
+                    except OSError:
+                        pass  # Windows 上子进程 fd 副本可能未释放，删除失败不阻断重试
                 continue
 
             if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
                 state = _CameraRecState(
                     process=proc, start_time=_recording_start_time,
                     file_path=file_path, transport=transport,
+                    log_handle=log_handle,
                 )
                 _recording_states[camera_name] = state
                 print(f"[recording] 录像已启动: {file_path} (transport={transport})",
                       file=sys.stderr)
 
                 # 设置自动停止定时器（扣除 health check 已消耗的时间）
+                stop_at = None
                 if duration is not None and duration > 0:
                     compensated = max(
                         duration + _RECORDING_STARTUP_COMPENSATION - health_check_delay,
@@ -849,9 +1052,13 @@ def toggle_recording(
                     )
                     state.timer.daemon = True
                     state.timer.start()
+                    stop_at = time.time() + compensated
                     print(f"[recording] 已设置自动停止定时器: {compensated:.1f}s 后自动停止"
                           f"（含启动补偿，已扣除 {health_check_delay:.1f}s 健康检查延迟）",
                           file=sys.stderr)
+
+                # 持久化录像状态（宿主回收进程后防重入 / STATUS / STOP 不失效）
+                _persist_rec_start(camera_name, proc.pid, file_path, stop_at)
 
                 return RecordingResult(
                     success=True, is_recording=True,
@@ -865,12 +1072,16 @@ def toggle_recording(
                 state = _CameraRecState(
                     process=proc, start_time=_recording_start_time,
                     file_path=file_path, transport=transport,
+                    log_handle=log_handle,
                 )
                 _recording_states[camera_name] = state
                 print(f"[recording] 录像已启动（等待关键帧）: {file_path} (transport={transport})",
                       file=sys.stderr)
 
+                # 慢路径实际已等 2s 健康检查 + 8s 关键帧，重取真实延迟补偿定时器
+                stop_at = None
                 if duration is not None and duration > 0:
+                    health_check_delay = time.time() - popen_time
                     compensated = max(
                         duration + _RECORDING_STARTUP_COMPENSATION - health_check_delay,
                         1.0,
@@ -881,9 +1092,13 @@ def toggle_recording(
                     )
                     state.timer.daemon = True
                     state.timer.start()
+                    stop_at = time.time() + compensated
                     print(f"[recording] 已设置自动停止定时器: {compensated:.1f}s 后自动停止"
                           f"（含启动补偿，已扣除 {health_check_delay:.1f}s 健康检查延迟）",
                           file=sys.stderr)
+
+                # 持久化录像状态（与快路径一致，否则防重入 / STATUS / 孤儿停止不生效）
+                _persist_rec_start(camera_name, proc.pid, file_path, stop_at)
 
                 return RecordingResult(
                     success=True, is_recording=True,
@@ -897,8 +1112,16 @@ def toggle_recording(
                 proc.wait(timeout=3)
             except Exception:
                 proc.kill()
-            if os.path.exists(file_path):
-                os.remove(file_path)
+            # 先关句柄再删文件（同健康检查失败路径）
+            if log_handle is not None:
+                log_handle.close()
+                log_handle = None
+            for p in (file_path, log_path):
+                try:
+                    if os.path.exists(p):
+                        os.remove(p)
+                except OSError:
+                    pass
             last_error = f"transport={transport} 启动后无数据输出"
 
         return RecordingResult(

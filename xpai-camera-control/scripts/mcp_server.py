@@ -15,6 +15,8 @@ import os
 import json
 import asyncio
 import argparse
+
+import anyio
 from typing import Any, Dict
 
 # Ensure the project root is on sys.path so `scripts.xxx` imports work
@@ -144,7 +146,7 @@ TOOLS = [
     ),
     Tool(
         name="toggle_recording",
-        description="启动、停止或查询本地 MP4 录像。action=start 开始录像（可选 duration 秒数自动停止）；action=stop 停止并返回文件路径和时长；action=status 查询当前录像状态。默认保存到 video/ 目录。",
+        description="启动、停止或查询本地 MP4 录像。action=start 开始录像（可选 duration 秒数自动停止）；action=stop 停止并返回文件路径和时长；action=status 查询当前录像状态。默认保存到 video/ 目录。多台设备同时录像时请逐台调用（每台间隔 2-3 秒），避免并发启动失败。长时间录像（超过 10 分钟）可能因网络或设备波动而无声中断：若宿主具备定时任务能力，长录像期间请每隔 5 分钟左右用 action=status 巡检；若不具备，启动前须告知用户此风险，且在用户询问进度时先用 action=status 核实实际状态再回答，发现已停止则重新调用 start 续录。录像异常（启动失败/中途停止）时，可查看与视频同名的 .log 文件（正常录制完成且无异常时会自动删除）获取 ffmpeg 退出原因。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -588,7 +590,9 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any] | None) -> list[
     """Handle a tool invocation and return results."""
     try:
         args = arguments or {}
-        result = _call_tool(name, args)
+        # toolkit 是同步阻塞代码（ffprobe 探测、sleep 健康检查等），丢进线程池执行，
+        # 避免阻塞事件循环导致无法响应宿主 ping、被误判连接死亡而强制重启进程
+        result = await anyio.to_thread.run_sync(_call_tool, name, args)
         return [TextContent(
             type="text",
             text=json.dumps(result, ensure_ascii=False, indent=2),

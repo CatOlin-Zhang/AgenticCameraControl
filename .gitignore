@@ -3,13 +3,21 @@ __pycache__/
 *.pyc
 *.pyo
 
+# IDE
+.idea/
+
+# 运行时设备注册配置（含凭据，绝不入库）
+config.yaml
+
+# 运行时事件落盘目录（Guardian Mode 事件存储与消费游标）
+xpai-camera-control/events/
+
+# 运行时日志
+*.log
+
+# Internal only
 /Toolkit
 /_toolkit_backup
 /RELEASE_MEMO.md
 /TODOlist.md
 /SKILL_TECHNICAL_REFERENCE.md
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
