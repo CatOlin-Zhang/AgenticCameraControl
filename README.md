@@ -149,10 +149,14 @@ AgenticCameraControl/
 | 承诺            | 说明                                                             |
 |---------------|----------------------------------------------------------------|
 | 请求-响应模式       | 工具默认为同步请求-响应；唯一例外是事件监听后台线程，仅在用户显式开启后运行，且行为限于报警订阅与白名单路径写入，可随时关闭 |
+<<<<<<< HEAD
 | 使用阶段仅局域网通信    | 使用阶段所有网络流量限于局域网内，无外网通信；为保障用户安全，连接阶段会与远程服务器确认连接状态        |
+=======
+| 使用阶段仅局域网通信    | 使用阶段所有网络流量限于局域网内，无外网通信；为保障用户安全，连接阶段会与远程服务器确认连接状态               |
+>>>>>>> origin
 | 文件写入受限        | 仅写入 `config.yaml`、`snapshots/`、`video/`、`events/`              |
 | 无系统修改         | 不修改注册表、环境变量、系统服务                                               |
-| 无进程派生         | 不启动子进程或外部程序（Agent 框架下的定时任务与守护进程不在此限制内）                          |
+| 无进程派生         | 不启动子进程或外部程序（Agent 框架下的定时任务与守护进程不在此限制内）                         |
 
 ### 配置
 
@@ -310,10 +314,14 @@ This skill package operates within strict security constraints to ensure no unex
 | Guarantee                          | Description                                                                                                                                                                                                                                      |
 |------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Request-response by default        | Tools are synchronous request-response. The only exception is the event listener background thread, which runs only after explicit user enablement, is limited to alarm subscription plus whitelist-path writes, and can be stopped at any time. |
+<<<<<<< HEAD
 | LAN-only during usage              | All network traffic stays within the local network during usage; during the connection phase, the system communicates with a remote server to verify connection status for user security.                                                         |
+=======
+| LAN-only during usage              | All network traffic stays within the local network during usage; during the connection phase, the system communicates with a remote server to verify connection status for user security.                                                        |
+>>>>>>> origin
 | Restricted file writes             | Only writes to `config.yaml`, `snapshots/`, `video/`, and `events/`                                                                                                                                                                              |
 | No system modifications            | No registry changes, environment variable modifications, or system service installations.                                                                                                                                                        |
-| No process spawning                | No subprocesses or external programs are launched (scheduled tasks and daemons under Agent frameworks are not subject to this restriction).                                                                                                       |
+| No process spawning                | No subprocesses or external programs are launched (scheduled tasks and daemons under Agent frameworks are not subject to this restriction).                                                                                                      |
 
 ### Configuration
 
