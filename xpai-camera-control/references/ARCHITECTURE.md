@@ -10,8 +10,8 @@ Toolkit modules (exposed via MCP tools):
   stream        — Audio/video streaming, snapshot, recording, storage
   ptz           — PTZ control (ONVIF + private protocol dual-channel)
   events        — Event/alarm receiving (Skyworth private RTSP-channel push), schema 1.0 store
-  illumination  — Illumination mode query & control (Skyworth private protocol + ONVIF Imaging fallback)
-  image_settings— Image parameter query & control (Skyworth private protocol + ONVIF Imaging fallback)
+  illumination  — Illumination mode query & control (Skyworth private protocol only)
+  image_settings— Image parameter query & control (Skyworth private protocol only)
   tracking      — Detection & tracking query & control (Skyworth private protocol only)
 
 Internal modules (not exposed, accessed only through MCP tools above):
@@ -340,7 +340,7 @@ OpenCV's `cv2.imwrite()` and `cv2.VideoWriter()` silently fail when the file pat
 - **Screenshots:** Using `cv2.imencode()` + `numpy.tofile()` instead of `cv2.imwrite()`
 - **Recordings:** Writing to a temporary file via `tempfile.mkstemp()` (ASCII path), then moving to the final destination on stop
 
-If `save_path` is provided, ensure it is writable. The default `snapshots/` and `vido/` directories are created automatically.
+If `save_path` is provided, ensure it is writable. The default `snapshots/` and `video/` directories are created automatically.
 
 ### Same-process connection requirement
 

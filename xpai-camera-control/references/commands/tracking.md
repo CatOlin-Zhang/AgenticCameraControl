@@ -29,64 +29,17 @@ Five detection types are supported, each with its own protocol section:
 
 Each detection type has three vendor-specific commands (query capability, read current, write) handled internally by the tool. The Agent interacts only through the `query_tracking_capabilities` and `set_tracking` MCP tools.
 
-### Common parameters across detection types
+### Settable parameters
+
+Only **3 parameters** are exposed for query and set (same set across all detection types):
 
 | Parameter | Type | Values | Applicable To | Description |
 |-----------|------|--------|---------------|-------------|
 | `enable` | int | 0/1 | all | Enable/disable this detection feature |
 | `tracking` | int | 0/1 | human, vehicle, motion | Enable/disable auto-tracking (area/line does not support tracking) |
 | `level` | int | 0–3 | all | Sensitivity level: 0=off, 1=low, 2=medium, 3=high |
-| `indoor` | int | 0–2 | human, motion, line | Scene mode: 0=outdoor, 1=indoor, 2=outdoor-person-vehicle |
-| `screenenable` | int | 0/1 | human | Target marker overlay on video |
-| `blink` | int | 0/1 | human, motion, line | Bounding-box/line blink effect |
-| `drag` | int | 0/1 | vehicle | Target marker display |
-| `alarm_enable` | int | 0/1 | human, vehicle, motion | Audio alarm on detection |
-| `alarm_type` | int | — | human, vehicle, motion | Alarm type selector |
-| `white_light` | int | 0/1 | human, vehicle, motion, line | White-light alarm on detection |
-| `duration` | int | — | human, vehicle, motion, line | White-light duration (seconds) |
-| `timestrategy` | int/string | — | human, vehicle, motion, line | Detection schedule |
-| `humandistance` | int | — | human | Min human size threshold |
-| `thresh` | int | — | area, motion, line | Sensitivity threshold |
-| `distance` | int | — | vehicle | Min target size threshold |
-| `object` | string | `vehicle` | vehicle | Target type selector (auto-injected by tool) |
-| `trigger` | string/int | — | vehicle | Trigger target type |
-| `idenable` | int | 0/1 | vehicle | License plate detection toggle |
-| `mbdesc` | string | — | motion, area | Detection region grid description |
 
-**Area-detection-specific parameters** (region/line configuration):
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `x0`/`y0` | int | Line start coordinates |
-| `x1`/`y1` | int | Line end coordinates |
-| `x2`/`y2` | int | Direction start coordinates |
-| `x3`/`y3` | int | Direction end coordinates |
-| `dir` | int | Detection direction: 0=enter, 1=leave, 2=both |
-| `enter_alarm_enable` | int | Enter-region alarm toggle |
-| `enter_alarm_type` | int | Enter-region alarm type |
-| `leave_alarm_enable` | int | Leave-region alarm toggle |
-| `leave_alarm_type` | int | Leave-region alarm type |
-| `mbdesc` | string | Region description |
-
-**Motion-detection-specific parameters** (移动侦测，协议 5.8):
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `mbdesc` | string | Detection region grid: 18 rows x 32 cols, each char 1=selected/0=not, rows comma-separated |
-| `tracking` | int | Motion tracking: 0=off, 1=on |
-
-**Line-crossing-detection-specific parameters** (越界侦测，协议 5.9):
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `x0`/`y0` | int | Line start coordinates (1–1920 / 1–1080) |
-| `x1`/`y1` | int | Line end coordinates |
-| `dx0`/`dy0` | int | Direction point A coordinates |
-| `dx1`/`dy1` | int | Direction point B coordinates |
-| `AtoB_alarm_enable` | int | A-to-B direction alarm toggle: 0=off, 1=on |
-| `AtoB_alarm_type` | int | A-to-B alarm type |
-| `BtoA_alarm_enable` | int | B-to-A direction alarm toggle: 0=off, 1=on |
-| `BtoA_alarm_type` | int | B-to-A alarm type |
+> The remaining protocol fields (scene mode `indoor`, target marker overlay `screenenable`/`drag`, box blink, audio alarm toggles/types, white-light alarm, detection schedule `timestrategy`, size thresholds, region/line coordinates, region grid `mbdesc`, license-plate toggle, etc.) are not exposed — they are read as part of the baseline and passed through unchanged on write.
 
 **Set behavior:** same as illumination — the device requires the **full parameter set** when writing. The tool reads current settings first, merges only the user-specified parameters, then sends the complete set. The Agent only needs to pass the parameters it wants to change.
 

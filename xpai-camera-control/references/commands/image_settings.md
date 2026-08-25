@@ -10,13 +10,13 @@ Camera image parameter query and adjustment — exposed as the single MCP tool `
 
 ## Architecture
 
-Image settings follow a **dual-protocol strategy** (same pattern as Illumination / PTZ):
+Image settings use the **Skyworth private protocol only** (TCP channel; same pattern as Illumination — no ONVIF fallback, because ONVIF Imaging covers only the 4 continuous parameters and cannot do `flip`).
 
-### Primary — Skyworth Private Protocol (TCP channel)
+### Skyworth Private Protocol (TCP channel)
 
-For Skyworth cameras, the private protocol provides full image control via vendor-specific TCP commands (capability query, read settings, write settings — handled internally by the tool).
+The private protocol provides full image control via vendor-specific TCP commands (capability query, read settings, write settings — handled internally by the tool).
 
-This protocol exposes **9 controllable parameters**:
+This protocol exposes **5 controllable parameters**:
 
 **Continuous parameters:**
 
@@ -32,33 +32,10 @@ This protocol exposes **9 controllable parameters**:
 | Parameter | Type | Values | Description |
 |-----------|------|--------|-------------|
 | `flip` | int | 0–3 | Image flip: 0=normal, 1=diagonal, 2=horizontal, 3=vertical |
-| `whitebalance` | int | 0–4 | White balance: 0=auto, 1=white-light, 2=incandescent, 3=natural, 4=warm |
 
-**Boolean toggle parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `wdr` | bool (0/1) | Wide Dynamic Range toggle |
-| `face_mode` | bool (0/1) | Face clarity optimization toggle |
-| `plate_mode` | bool (0/1) | License plate clarity optimization toggle |
-
-**Special action:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `restore_default` | bool | When `true`, sets the protocol `default` field to 1, resetting all image parameters to factory defaults |
+> The remaining firmware fields (`whitebalance`, `wdr`, `face_mode`, `plate_mode`, `default`) are not exposed — they are read as part of the baseline and passed through unchanged on write.
 
 **Set behavior:** the device requires the **full parameter set** when writing. The tool handles this internally — it first reads current settings, merges only the user-specified parameters, then sends the complete set. The Agent only needs to pass the parameters it wants to change.
-
-### Fallback — ONVIF Imaging Service (ver20)
-
-For non-Skyworth devices (or firmware that does not implement the private image commands), the tool falls back to ONVIF:
-
-1. `GetImagingSettings` → read current `Brightness`/`Contrast`/`ColorSaturation`/`Sharpness`
-2. `GetOptions` → read parameter min/max ranges
-3. `SetImagingSettings` → write changed parameters
-
-ONVIF fallback provides coarser control — **only 4 parameters**: `brightness`, `contrast`, `saturation`, `sharpness`. The remaining parameters (`flip`, `whitebalance`, `wdr`, `face_mode`, `plate_mode`) are SK-private-protocol only.
 
 ---
 
@@ -84,7 +61,7 @@ Query the device's image parameter capabilities and all current values.
 | **Agent behavior** | Report capabilities (with ranges and current values) to the user. If capabilities is empty, the device does not support image settings. |
 
 **Returns** `ImageQueryResult` with:
-- `channel`: `"sk"` or `"onvif"` (which protocol was used)
+- `channel`: `"sk"` (protocol channel used)
 - `capabilities`: list of parameter descriptions with ranges and current values (e.g. `[{"name": "brightness", "type": "int", "specs": {"min": "1", "max": "255"}, "current": 128, "current_text": "128"}, ...]`)
 - `current`: raw dict of all current parameter values from the device
 
@@ -108,12 +85,7 @@ Change one or more image parameters. **Requires explicit user confirmation.**
 | `contrast` | int | device-reported |
 | `saturation` | int | device-reported |
 | `sharpness` | int | device-reported |
-| `flip` | int | 0–3 |
-| `whitebalance` | int | 0–4 |
-| `wdr` | bool | true/false |
-| `face_mode` | bool | true/false |
-| `plate_mode` | bool | true/false |
-| `restore_default` | bool | true to reset all to factory defaults |
+| `flip` | int | 0–3 (0=normal, 1=diagonal, 2=horizontal, 3=vertical) |
 
 ---
 
@@ -123,7 +95,7 @@ Change one or more image parameters. **Requires explicit user confirmation.**
 |-------|------|-------------|
 | `ok` | bool | Whether the operation succeeded |
 | `camera` | string | Camera name |
-| `channel` | string | `"sk"` or `"onvif"` |
+| `channel` | string | `"sk"` |
 | `capabilities` | list | Parameter capability descriptions (name, type, specs with min/max, current value, current_text) |
 | `current` | dict | Raw device current parameter values |
 | `error_code` | string | Error code on failure |
@@ -136,7 +108,7 @@ Change one or more image parameters. **Requires explicit user confirmation.**
 |-------|------|-------------|
 | `ok` | bool | Whether the operation succeeded |
 | `camera` | string | Camera name |
-| `channel` | string | `"sk"` or `"onvif"` |
+| `channel` | string | `"sk"` |
 | `updated` | dict | Fields that were changed, with post-write readback values |
 | `current` | dict | Full current parameter state after the change |
 | `error_code` | string | Error code on failure |
@@ -149,7 +121,7 @@ Change one or more image parameters. **Requires explicit user confirmation.**
 
 | `error_code` | Cause |
 |--------------|-------|
-| `DEVICE_UNREACHABLE` | Both SK TCP 9010 and ONVIF are unreachable — verify camera is online |
+| `DEVICE_UNREACHABLE` | SK TCP 9010 unreachable — verify camera is online |
 | `OPTION_QUERY_FAILED` | Capability query rejected by device |
 | `CURRENT_QUERY_FAILED` | Current-value query rejected by device |
 | `SET_FAILED` | Device rejected the write command |

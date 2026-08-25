@@ -618,7 +618,7 @@ def toggle_recording(
     Args:
         camera_name:    摄像头名称
         action:         RecordingAction.START 开始 / STOP 停止 / STATUS 查询
-        save_path:      录像保存目录（默认 vido/）
+        save_path:      录像保存目录（默认 video/）
         rtsp_transport: "tcp"/"udp" 单次，或可迭代对象表示重试顺序，None=默认 [tcp, udp]
         duration:       录像时长（秒），仅在 START 时有效；设置后后台定时器自动停止
 
@@ -748,7 +748,7 @@ def toggle_recording(
 
         # 确定保存目录
         recording_dir = save_path or str(
-            Path(__file__).resolve().parent.parent.parent / "vido"
+            Path(__file__).resolve().parent.parent.parent / "video"
         )
         try:
             os.makedirs(recording_dir, exist_ok=True)
@@ -954,7 +954,7 @@ def manage_storage_status(
 
     # ── 确保有默认配置 ──
     if camera_name not in _storage_config:
-        default_dir = os.path.join(os.path.dirname(__file__), "..", "..", "vido")
+        default_dir = os.path.join(os.path.dirname(__file__), "..", "..", "video")
         _storage_config[camera_name] = {
             "path": default_dir,
             "format": "mp4",
