@@ -10,13 +10,9 @@ Camera illumination mode query and adjustment — exposed as the single MCP tool
 
 ## Architecture
 
-Illumination control follows a **dual-protocol strategy** (same pattern as PTZ):
+Illumination control uses the **Skyworth Private Protocol only** (TCP channel, port 9010, dynamic-token HTTP): capability query, read settings, write settings — handled internally by the tool.
 
-### Primary — Skyworth Private Protocol (TCP channel)
-
-For Skyworth cameras, the private protocol provides full illumination control via vendor-specific TCP commands (capability query, read settings, write settings — handled internally by the tool).
-
-This protocol exposes **15 controllable parameters** across two dimensions:
+This protocol exposes **2 controllable parameters**:
 
 **Day/Night mode** (`daynightmode`):
 
@@ -36,55 +32,22 @@ This protocol exposes **15 controllable parameters** across two dimensions:
 | 1 | 红外模式 | Infrared (IR) |
 | 2 | 智能夜视 | Smart night vision (auto-switch) |
 
-**Brightness & sensitivity parameters:**
+Both parameters accept either the integer value or a string alias (`day`/`night`/`auto`/`timer`/`smart` for daynightmode, `color`/`ir`/`smart` for filllightmode, plus the Chinese equivalents 白天/夜晚/自动/定时/智能、全彩/红外/智能夜视).
 
-| Parameter | Type | Range | Description |
-|-----------|------|-------|-------------|
-| `duration` | int | 5–60 | Smart night vision white light duration (seconds) |
-| `brightnessmode` | int | 0–1 | White light brightness mode: 0=auto, 1=manual |
-| `brightness` | int | 1–100 | White light manual brightness |
-| `irmode` | int | 0–1 | IR brightness mode: 0=auto, 1=manual |
-| `irbrightness` | int | 1–100 | IR manual brightness |
-| `whiteonvalue` | int | 0–100 | White light on-sensitivity |
-| `whiteoffvalue` | int | 0–100 | White light off-sensitivity |
-| `ironvalue` | int | 0–100 | IR on-sensitivity |
-| `iroffvalue` | int | 0–100 | IR off-sensitivity |
-
-**Timer parameters** (active when `daynightmode=3`):
-
-| Parameter | Type | Range | Description |
-|-----------|------|-------|-------------|
-| `begintime` | int | 0–86399 | Timer start time (seconds from midnight) |
-| `endtime` | int | 0–172799 | Timer end time (seconds from midnight) |
-| `repeatdays` | string | — | Repeat days (e.g. `"sun,mon,tue,wed,thu,fri,sat,"`) |
-| `enable` | int | 0–1 | Timer enable: 0=off, 1=on |
+> The remaining firmware fields (white-light brightness, IR brightness, sensitivity values, timer schedule, etc.) are not exposed — they are read as part of the baseline and passed through unchanged on write (most devices only support the two modes above).
 
 **Set behavior:** the device requires the **full parameter set** when writing. The tool handles this internally — it first reads current settings, merges only the user-specified parameters, then sends the complete set. The Agent only needs to pass the parameters it wants to change.
 
-### Fallback — ONVIF Imaging Service (ver20)
-
-For non-Skyworth devices (no TCP connection available), the tool falls back to ONVIF:
-
-1. `GetMoveOptions` → detect supported illumination modes
-2. `GetImagingSettings` → read current `IlluminationConfiguration.Mode`
-3. `SetImagingSettings` → write mode (only `IlluminationConfiguration.Mode` is touched)
-
-ONVIF fallback provides coarser control (mode string only, e.g. `OFF`/`AUTO`/`ON`).
-
-### Capability probing at connect time
-
-`connect_device()` calls `probe_illumination_capability()` after a successful connection. The probe tries TCP first, then ONVIF. Results are persisted to `config.yaml` as `illumination_modes`. The probe is non-blocking: failures are silently ignored.
-
 ---
 
-## `manage_illumination(camera_name, action, **params) -> IlluminationResult`
+## `manage_illumination(camera_name, action, **params) -> FilllightQueryResult | FilllightSetResult`
 
 **The single MCP entry point for all illumination operations.**
 
 | `action` | Mode | Returns |
 |----------|------|---------|
-| `get` | Query capability & current settings | `IlluminationResult` |
-| `set` | Set illumination parameters | `IlluminationResult` |
+| `get` | Query capability & current settings | `FilllightQueryResult` |
+| `set` | Set illumination parameters | `FilllightSetResult` |
 
 ---
 
@@ -96,14 +59,12 @@ Query the device's illumination capability and all current settings.
 |--------|--------|
 | **Safety** | None (read-only query) |
 | **Parameters** | `camera_name` only |
-| **Agent behavior** | Report `current_settings` and `capabilities` to the user. If `capabilities` is empty, the device does not support illumination control. |
+| **Agent behavior** | Report `capabilities` and `current` to the user. If `capabilities` is empty, the device does not support illumination control. |
 
-**Returns** `IlluminationResult` with:
-- `protocol`: `"sky_private"` or `"onvif"` (which protocol was used)
-- `current_settings`: dict of all current parameter values (e.g. `{"daynightmode": 2, "filllightmode": 1, "brightness": 80, ...}`)
-- `capabilities`: list of parameter descriptions with ranges (e.g. `[{"name": "daynightmode", "type": "int", "min": 0, "max": 4, "desc": "0:off,1:on,2:auto,3:timer,4:smart"}, ...]`)
-- `current_mode`: human-readable daynight mode name (e.g. `"自动模式"`)
-- `supported_modes`: list of daynight mode descriptions for backward compatibility
+**Returns** `FilllightQueryResult` with:
+- `channel`: protocol channel used (`"sk"`)
+- `capabilities`: list of parameter descriptions with ranges and current values (e.g. `[{"name": "daynightmode", "label": "开灯设置（日夜模式）", "type": "int", "min": 0, "max": 4, "current": 2, "current_text": "自动模式", "options": {...}}, ...]`)
+- `current`: current values of the exposed parameters only (e.g. `{"daynightmode": 2, "filllightmode": 1}`)
 
 ---
 
@@ -114,42 +75,56 @@ Change one or more illumination parameters. **Requires explicit user confirmatio
 | Aspect | Detail |
 |--------|--------|
 | **Safety** | Explicit Prompt — hardware setting change; confirm with the user |
-| **Parameters** | `camera_name` + any subset of the 15 illumination parameters |
-| **Agent behavior** | Call `get` first to retrieve `capabilities` and validate parameter ranges, then call `set` with only the parameters the user wants to change. Report `previous_settings` → `current_settings` transition. |
+| **Parameters** | `camera_name` + any subset of the 2 illumination parameters |
+| **Agent behavior** | Call `get` first to retrieve `capabilities` and validate parameter ranges, then call `set` with only the parameters the user wants to change. Report `updated` fields after change. |
 
 **All settable parameters** (all optional — specify only what you want to change):
 
 | Parameter | Type | Range |
 |-----------|------|-------|
-| `daynightmode` | int | 0–4 |
-| `filllightmode` | int | 0–2 |
-| `duration` | int | 5–60 |
-| `brightnessmode` | int | 0–1 |
-| `brightness` | int | 1–100 |
-| `begintime` | int | 0–86399 |
-| `endtime` | int | 0–172799 |
-| `repeatdays` | string | weekday list |
-| `enable` | int | 0–1 |
-| `irmode` | int | 0–1 |
-| `irbrightness` | int | 1–100 |
-| `whiteonvalue` | int | 0–100 |
-| `whiteoffvalue` | int | 0–100 |
-| `ironvalue` | int | 0–100 |
-| `iroffvalue` | int | 0–100 |
+| `daynightmode` | int / string alias | 0–4 |
+| `filllightmode` | int / string alias | 0–2 |
 
 ---
 
-## IlluminationResult return fields
+## FilllightQueryResult return fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `success` | bool | Whether the operation succeeded |
-| `action` | string | `"get"` or `"set"` |
-| `protocol` | string | `"sky_private"` or `"onvif"` |
-| `current_settings` | dict | All current parameter values |
-| `previous_settings` | dict | Settings before change (only for `set`) |
-| `capabilities` | list | Parameter capability descriptions (only for `get`) |
-| `current_mode` | string | Human-readable daynight mode name |
-| `previous_mode` | string | Mode before change (only for `set`) |
-| `supported_modes` | list[string] | Daynight mode descriptions (backward compat) |
-| `error_message` | string | Failure reason (empty on success) |
+| `ok` | bool | Whether the operation succeeded |
+| `camera` | string | Camera name |
+| `channel` | string | Protocol channel used (`"sk"`) |
+| `capabilities` | list | Parameter capability descriptions (name, label, type, min/max, current value, current_text, options) |
+| `current` | dict | Current values of the exposed parameters only |
+| `error_code` | string | Error code on failure |
+| `message` | string | Human-readable status message |
+| `hint` | string | Suggested next step on failure |
+
+## FilllightSetResult return fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ok` | bool | Whether the operation succeeded |
+| `camera` | string | Camera name |
+| `channel` | string | Protocol channel used (`"sk"`) |
+| `updated` | dict | Fields that were changed, with post-write readback values |
+| `current` | dict | Current values of the exposed parameters only after the change |
+| `verified` | bool | Whether the change was confirmed by readback (SK channel always reads back) |
+| `error_code` | string | Error code on failure |
+| `message` | string | Human-readable status message |
+| `hint` | string | Suggested next step on failure |
+
+---
+
+## Error codes
+
+| `error_code` | Cause |
+|--------------|-------|
+| `DEVICE_UNREACHABLE` | SK TCP 9010 unreachable — verify camera is online; retry after 2-3 s (transient port flapping) |
+| `OPTION_QUERY_FAILED` | Capability query rejected by device |
+| `CURRENT_QUERY_FAILED` | Current-value query rejected by device |
+| `SET_FAILED` | Device rejected the write command |
+| `PARAM_NOT_SUPPORTED` | Requested parameter not supported by this camera |
+| `PARAM_OUT_OF_RANGE` | Parameter value outside allowed range |
+| `INVALID_PARAM_TYPE` | Wrong type for parameter (e.g. unrecognized string alias) |
+| `NO_PARAMS` | No parameters were passed to set |

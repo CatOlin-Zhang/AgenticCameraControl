@@ -360,7 +360,7 @@ TOOLS = [
     # ── Image Settings (图像参数设置) ──
     Tool(
         name="manage_image_settings",
-        description="查询或设置摄像头画面参数：亮度(brightness)、对比度(contrast)、饱和度(saturation)、锐度(sharpness)（多数设备仅需这四项调节）。与 manage_illumination（控制物理补光灯/夜视模式）不同，本工具调节画面成像参数。",
+        description="查询或设置摄像头画面参数：亮度(brightness)、对比度(contrast)、饱和度(saturation)、锐度(sharpness)、图像翻转(flip: 0正常/1对角翻转/2水平翻转/3垂直翻转)。纯SK私有协议单通道，无ONVIF回退。与 manage_illumination（控制物理补光灯/夜视模式）不同，本工具调节画面成像参数。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -388,6 +388,11 @@ TOOLS = [
                 "sharpness": {
                     "type": "integer",
                     "description": "锐度",
+                },
+                "flip": {
+                    "type": "integer",
+                    "enum": [0, 1, 2, 3],
+                    "description": "图像翻转：0-正常、1-对角翻转、2-水平翻转、3-垂直翻转",
                 },
             },
             "required": ["action", "camera_name"],

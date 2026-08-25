@@ -10,8 +10,8 @@ Toolkit modules (exposed via MCP tools):
   stream        — Audio/video streaming, snapshot, recording, storage
   ptz           — PTZ control (ONVIF + private protocol dual-channel)
   events        — Event/alarm receiving (Skyworth private RTSP-channel push), schema 1.0 store
-  illumination  — Illumination mode query & control (Skyworth private protocol + ONVIF Imaging fallback)
-  image_settings— Image parameter query & control (Skyworth private protocol + ONVIF Imaging fallback)
+  illumination  — Illumination mode query & control (Skyworth private protocol only)
+  image_settings— Image parameter query & control (Skyworth private protocol only)
   tracking      — Detection & tracking query & control (Skyworth private protocol only)
 
 Internal modules (not exposed, accessed only through MCP tools above):

@@ -17,7 +17,7 @@ Trigger this skill when the user:
 - Requests pan, tilt, camera movement, or PTZ calibration
 - Asks to watch/guard a camera or check for motion, human, tamper, or other alarm events
 - Wants to adjust illumination mode (IR light, white light, night vision, auto-switch)
-- Wants to adjust image parameters (brightness, contrast, saturation, sharpness, flip, white balance, WDR)
+- Wants to adjust image parameters (brightness, contrast, saturation, sharpness, image flip)
 - Wants to view camera feed in a browser via WebRTC live preview
 - Wants to enable/disable detection or tracking features (human tracking, vehicle tracking, area detection, motion detection, line-crossing detection)
 - Mentions ONVIF, RTSP, IP camera, webcam, or specific camera brands
@@ -143,8 +143,8 @@ The following tools extend the skill's functionality beyond the core workflow. T
 | Tool | What it does | Prerequisite | Reference |
 |------|-------------|-------------|----------|
 | `manage_camera_events` | Alarm event receiving (motion, human, vehicle, tamper, …) with linked snapshots. Actions: `start` / `stop` / `poll` / `wait`. | Camera connected via `connect_device()` | [commands/events.md](references/commands/events.md) |
-| `manage_illumination` | Query & adjust camera illumination (15 parameters: daynight/filllight mode, brightness, timer, sensitivity). Dual-protocol: Skyworth private (TCP channel) + ONVIF fallback. Actions: `get` / `set`. | Camera connected; capability auto-probed at connect time and cached in `config.yaml` (`illumination_modes`) | [commands/illumination.md](references/commands/illumination.md) |
-| `manage_image_settings` | Query & adjust image parameters (brightness, contrast, saturation, sharpness, flip, whitebalance, wdr, face/plate mode). Dual-channel: Skyworth private (TCP channel) preferred, ONVIF Imaging fallback. Actions: `get` / `set`. | Camera connected | — |
+| `manage_illumination` | Query & adjust camera illumination (2 parameters: daynight mode, fill light mode — integer value or string alias). Skyworth private protocol (TCP channel) only, no ONVIF fallback. Actions: `get` / `set`. | Camera connected | [commands/illumination.md](references/commands/illumination.md) |
+| `manage_image_settings` | Query & adjust image parameters (brightness, contrast, saturation, sharpness, flip: 0=normal/1=diagonal/2=horizontal/3=vertical). Skyworth private protocol (TCP channel) only, no ONVIF fallback. Actions: `get` / `set`. | Camera connected | [commands/image_settings.md](references/commands/image_settings.md) |
 | `query_tracking_capabilities` | Query detection & tracking capabilities (human/vehicle/area/motion/line-crossing) with current values and parameter ranges. | Camera connected | — |
 | `set_tracking` | Enable/disable detection & tracking features (human tracking, vehicle tracking, area detection, motion detection, line-crossing detection). | Camera connected; modifies hardware settings | — |
 
@@ -174,7 +174,7 @@ The following tools extend the skill's functionality beyond the core workflow. T
 
 ## Gotchas
 
-- **TCP private-protocol port flaps intermittently (DEVICE_UNREACHABLE) even though the device is online.** → **Action:** for illumination / image / tracking tools, retry the same call up to 3 times at 2-3 s intervals; do not conclude offline or reconnect. Report only after all retries fail (tracking has no ONVIF fallback).
+- **TCP private-protocol port flaps intermittently (DEVICE_UNREACHABLE) even though the device is online.** → **Action:** for illumination / image / tracking tools (all Skyworth-private-protocol only, no ONVIF fallback), retry the same call up to 3 times at 2-3 s intervals; do not conclude offline or reconnect. Report only after all retries fail.
 - **ONVIF port is not always 80.** → **Action:** always use `onvif_port` from `search_devices()` / config.yaml; never hardcode port 80. Skyworth cameras typically use a non-standard ONVIF port (auto-probed by `connect_device`).
 - **`GetStreamUri` returns bare RTSP URLs without credentials.** → **Action:** always use the `stream_url` returned by `get_audio_video_stream()` — the toolkit auto-injects credentials. Never manually construct RTSP URLs.
 - **Chinese characters in Windows paths cause `cv2.imwrite()` to silently fail.** → **Action:** no manual workaround needed — the toolkit handles this internally. If you pass a custom `save_path`, prefer ASCII-only paths.
@@ -211,11 +211,10 @@ The following tools extend the skill's functionality beyond the core workflow. T
 3. Loop: manage_camera_events(action="wait", timeout_seconds=60)
    → see commands/events.md for full details
 
-# Illumination — requires camera connected; capability auto-probed at connect
-# Dual-protocol: Skyworth private (15 params) or ONVIF fallback (mode only)
+# Illumination — requires camera connected; Skyworth private protocol only (2 params)
 1. connect_device(camera_name="前门")                          → success=true
-2. manage_illumination(action="get", camera_name="前门")       → current_settings + capabilities
-3. If supported → manage_illumination(action="set", daynightmode=2, brightness=80, ...)  → user confirms first!
+2. manage_illumination(action="get", camera_name="前门")       → capabilities + current
+3. If supported → manage_illumination(action="set", daynightmode=2)  → user confirms first!
    → see commands/illumination.md for full parameter list
 
 # Cloud authorization — handled internally by connect_device
