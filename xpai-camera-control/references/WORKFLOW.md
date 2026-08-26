@@ -251,10 +251,10 @@ Receive alarm events (motion, human, vehicle, tamper, line-crossing, …) with l
 
 ### Illumination Mode Control (`manage_illumination`)
 
-Query and adjust camera illumination parameters. Dual-protocol: Skyworth private (TCP channel, 15 parameters) + ONVIF Imaging fallback (mode only). Single tool, `action` switches mode: `get` / `set`.
+Query and adjust camera illumination parameters. Dual-protocol: Skyworth private (TCP channel) + ONVIF Imaging fallback (mode only). Single tool, `action` switches mode: `get` / `set`.
 
 | Aspect | Detail |
 |--------|--------|
 | **Prerequisite** | Camera connected via `connect_device()`; capability auto-probed at connect time and cached in `config.yaml` as `illumination_modes` |
 | **Safety** | `action="set"` modifies a hardware setting — requires explicit user confirmation. Always call `get` first to retrieve `capabilities` (parameter ranges), then call `set` with only the parameters to change |
-| **Detailed reference** | [commands/illumination.md](commands/illumination.md) — full parameter table (15 params), return fields, dual-protocol details |
+| **Detailed reference** | [commands/illumination.md](commands/illumination.md) — full parameter table, return fields, error codes |

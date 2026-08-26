@@ -10,7 +10,7 @@ Camera illumination mode query and adjustment — exposed as the single MCP tool
 
 ## Architecture
 
-Illumination control uses the **Skyworth Private Protocol only** (TCP channel, port 9010, dynamic-token HTTP): capability query, read settings, write settings — handled internally by the tool.
+Illumination control uses the **Skyworth Private Protocol only** (TCP channel): capability query, read settings, write settings — all handled internally by the tool.
 
 This protocol exposes **2 controllable parameters**:
 
@@ -109,7 +109,7 @@ Change one or more illumination parameters. **Requires explicit user confirmatio
 | `channel` | string | Protocol channel used (`"sk"`) |
 | `updated` | dict | Fields that were changed, with post-write readback values |
 | `current` | dict | Current values of the exposed parameters only after the change |
-| `verified` | bool | Whether the change was confirmed by readback (SK channel always reads back) |
+| `verified` | bool | Whether the change was confirmed by readback (this channel always reads back) |
 | `error_code` | string | Error code on failure |
 | `message` | string | Human-readable status message |
 | `hint` | string | Suggested next step on failure |
@@ -120,7 +120,7 @@ Change one or more illumination parameters. **Requires explicit user confirmatio
 
 | `error_code` | Cause |
 |--------------|-------|
-| `DEVICE_UNREACHABLE` | SK TCP 9010 unreachable — verify camera is online; retry after 2-3 s (transient port flapping) |
+| `DEVICE_UNREACHABLE` | Private-protocol TCP channel unreachable — verify camera is online; retry after 2-3 s (transient port flapping) |
 | `OPTION_QUERY_FAILED` | Capability query rejected by device |
 | `CURRENT_QUERY_FAILED` | Current-value query rejected by device |
 | `SET_FAILED` | Device rejected the write command |
