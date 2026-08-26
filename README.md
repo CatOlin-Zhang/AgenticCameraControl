@@ -111,7 +111,6 @@ AgenticCameraControl/
 │   │   └── __init__.py
 │   ├── references/               # 技术参考文档
 │   │   ├── commands/             # 各模块工具签名与参数说明
-│   │   ├── ARCHITECTURE.md       # 系统架构
 │   │   ├── CONFIG.md             # config.yaml 完整 schema
 │   │   ├── WORKFLOW.md           # 工作流详解
 │   │   └── EVENT_INTEGRATION.md  # 事件存储集成契约
@@ -149,11 +148,7 @@ AgenticCameraControl/
 | 承诺            | 说明                                                             |
 |---------------|----------------------------------------------------------------|
 | 请求-响应模式       | 工具默认为同步请求-响应；唯一例外是事件监听后台线程，仅在用户显式开启后运行，且行为限于报警订阅与白名单路径写入，可随时关闭 |
-<<<<<<< HEAD
 | 使用阶段仅局域网通信    | 使用阶段所有网络流量限于局域网内，无外网通信；为保障用户安全，连接阶段会与远程服务器确认连接状态        |
-=======
-| 使用阶段仅局域网通信    | 使用阶段所有网络流量限于局域网内，无外网通信；为保障用户安全，连接阶段会与远程服务器确认连接状态               |
->>>>>>> origin
 | 文件写入受限        | 仅写入 `config.yaml`、`snapshots/`、`video/`、`events/`              |
 | 无系统修改         | 不修改注册表、环境变量、系统服务                                               |
 | 无进程派生         | 不启动子进程或外部程序（Agent 框架下的定时任务与守护进程不在此限制内）                         |
@@ -167,6 +162,23 @@ AgenticCameraControl/
 - 摄像头与主机须在同一局域网
 - 截图/录像功能依赖 `opencv-python`
 - MCP Server 仅支持 stdio 传输
+
+### 依赖
+
+- `onvif-zeep` — ONVIF 协议（SOAP / WS-Discovery）
+- `opencv-python` — 视频采集与处理
+- `requests` — HTTP 客户端（设备探测）
+- `psutil` — 网络接口枚举（局域网扫描）
+- `pyyaml` — config.yaml 读写（凭据持久化）
+
+完整依赖列表见 `xpai-camera-control/requirements.txt`。
+
+### 会话规则
+
+| 规则 | 值 |
+|------|------|
+| 空闲超时 | **30 秒** — 用户停止交互后 Agent 应断开连接释放控制权 |
+| 并发控制 | FIFO：同一时间仅一个 Agent 拥有完全控制权，其余为只读 |
 
 ### Agent 集成与使用建议
 
@@ -276,7 +288,6 @@ AgenticCameraControl/
 │   │   └── __init__.py
 │   ├── references/               # Technical reference docs
 │   │   ├── commands/             # Per-module tool signatures & parameters
-│   │   ├── ARCHITECTURE.md       # System architecture
 │   │   ├── CONFIG.md             # config.yaml full schema
 │   │   ├── WORKFLOW.md           # Workflow details
 │   │   └── EVENT_INTEGRATION.md  # Event storage integration contract
@@ -314,11 +325,7 @@ This skill package operates within strict security constraints to ensure no unex
 | Guarantee                          | Description                                                                                                                                                                                                                                      |
 |------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Request-response by default        | Tools are synchronous request-response. The only exception is the event listener background thread, which runs only after explicit user enablement, is limited to alarm subscription plus whitelist-path writes, and can be stopped at any time. |
-<<<<<<< HEAD
 | LAN-only during usage              | All network traffic stays within the local network during usage; during the connection phase, the system communicates with a remote server to verify connection status for user security.                                                         |
-=======
-| LAN-only during usage              | All network traffic stays within the local network during usage; during the connection phase, the system communicates with a remote server to verify connection status for user security.                                                        |
->>>>>>> origin
 | Restricted file writes             | Only writes to `config.yaml`, `snapshots/`, `video/`, and `events/`                                                                                                                                                                              |
 | No system modifications            | No registry changes, environment variable modifications, or system service installations.                                                                                                                                                        |
 | No process spawning                | No subprocesses or external programs are launched (scheduled tasks and daemons under Agent frameworks are not subject to this restriction).                                                                                                      |
@@ -332,6 +339,23 @@ Camera configurations are stored in `xpai-camera-control/config.yaml`. Credentia
 - Cameras and host must be on the same local network
 - Screenshot/recording features require `opencv-python`
 - MCP Server supports stdio transport only
+
+### Dependencies
+
+- `onvif-zeep` — ONVIF protocol (SOAP / WS-Discovery)
+- `opencv-python` — Video capture and processing
+- `requests` — HTTP client (device probing)
+- `psutil` — Network interface enumeration (LAN scanning)
+- `pyyaml` — config.yaml read/write (credential persistence)
+
+See `xpai-camera-control/requirements.txt` for the full dependency list.
+
+### Session Rules
+
+| Rule | Value |
+|------|-------|
+| Idle timeout | **30 seconds** — Agent must disconnect and release control when user stops interacting |
+| Concurrent control | FIFO: only one agent has full control; others are view-only |
 
 ### Agent Integration & Usage Tips
 
