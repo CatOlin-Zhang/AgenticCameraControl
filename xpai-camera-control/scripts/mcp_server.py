@@ -252,7 +252,6 @@ TOOLS = [
             "required": ["camera_name"],
         },
     ),
-    # 注意: move_to_position 已降级为内部函数 (_move_to_position)，不作为 MCP 工具暴露。
     Tool(
         name="stop_ptz",
         description="立即紧急停止云台所有正在进行的移动。",
@@ -504,9 +503,7 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
         return _serialize(tk.connect_device(**args))
     elif name == "disconnect_device":
         return _serialize(tk.disconnect_device(**args))
-    # ── Cloud Auth ──
-    # 注意: poll_auth_status / big_connect 已降为内部函数，
-    # 云端授权由 connect_device 内部自动处理。
+
     # ── Stream ──
     elif name == "get_audio_video_stream":
         return _serialize(tk.get_audio_video_stream(**args))
@@ -539,7 +536,7 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     # ── Events ──
     elif name == "manage_camera_events":
         args = dict(args)
-        args.pop("protocols", None)  # 兼容旧客户端仍传 protocols（ONVIF 已删，单私有协议通道）
+        args.pop("protocols", None)
         args["action"] = EventAction(args["action"])
         return _serialize(tk.manage_camera_events(**args))
 
