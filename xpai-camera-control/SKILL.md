@@ -22,15 +22,16 @@ Trigger this skill when the user:
 - Wants to enable/disable detection or tracking features (human tracking, vehicle tracking, area detection, motion detection, line-crossing detection)
 - Mentions ONVIF, RTSP, IP camera, webcam, or specific camera brands
 
-## Running Mode: MCP Server
+## Running Mode: MCP Server (stdio transport)
 
-Run `scripts/mcp_server.py` as a standalone MCP server that exposes all camera control functions as MCP tools via stdio transport. Compatible with any MCP client (Claude Desktop, etc.).
+`scripts/mcp_server.py` runs as an MCP server using **stdio transport only**. It is **not** a network service — no port is opened and there is no `localhost` URL to connect to. Instead, the MCP client (Claude Desktop, etc.) **launches the script as a child process** (via the config below) and exchanges JSON-RPC messages over the process's stdin/stdout. The Agent interacts with all camera control tools exclusively through this stdio channel; per-session connection state lives in the memory of that child process.
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Run MCP server
+# Run MCP server (normally you don't run this manually —
+# the MCP client spawns it as a child process per the config below)
 python scripts/mcp_server.py
 ```
 
