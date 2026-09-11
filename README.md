@@ -88,7 +88,7 @@ Server 通过 stdio 传输协议与 MCP 客户端通信，兼容 Claude Desktop 
 | 源码包（本仓库） | `scripts/toolkit/` 为 `.py` 源码，任意平台安装依赖后直接运行 |
 | 分发包（构建产物） | `toolkit` 编译为各平台二进制（Windows `.pyd` / macOS、Linux `.so`），按 Python 扩展名后缀共存于同一包内，同一包在三平台直接运行 |
 
-分发包由 `xpai-build/build_toolkit.py` 构建（敏感常量混淆 + Cython 编译），详见 [build_readme.md](xpai-build/build_readme.md)。
+分发包由内部构建流程生成（敏感常量混淆 + Cython 编译），构建工具不随本仓库分发。
 
 ### 项目结构
 
@@ -120,7 +120,6 @@ AgenticCameraControl/
 │   ├── SKILL.md                  # Agent 技能描述文件
 │   ├── config.yaml               # 摄像头配置（运行时自动生成）
 │   └── requirements.txt          # Python 依赖
-├── xpai-build/                   # 构建工具（源码混淆 + Cython 编译，不进分发包）
 └── README.md
 ```
 
@@ -273,7 +272,7 @@ A **single skill package** design — no need to pick a directory per platform:
 | Source package (this repo) | `scripts/toolkit/` ships as `.py` source; runs on any platform after installing dependencies |
 | Distribution package (build artifact) | `toolkit` compiled to per-platform binaries (Windows `.pyd` / macOS & Linux `.so`), coexisting in the same package via Python extension suffixes — one package runs on all three platforms |
 
-The distribution package is built by `xpai-build/build_toolkit.py` (sensitive-constant obfuscation + Cython compilation); see [build_readme.md](xpai-build/build_readme.md).
+The distribution package is produced by an internal build pipeline (sensitive-constant obfuscation + Cython compilation); the build tooling is not distributed with this repository.
 
 ### Project Structure
 
