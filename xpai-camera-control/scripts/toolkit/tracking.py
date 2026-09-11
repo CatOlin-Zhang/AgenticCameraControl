@@ -1,10 +1,11 @@
-import os
-import sys
-import time
-import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
+
+try:
+    from . import sk_proto
+except ImportError:
+    import sk_proto
 
 try:
     from .device_mgmt import resolve_target, CameraConfig
@@ -13,7 +14,7 @@ except ImportError:
 
 try:
     from .illumination import (
-        _sk_http_query_ex,
+        _envelope,
         _sk_err,
         _sk_resolve_camera,
         _coerce_int,
@@ -21,22 +22,18 @@ try:
     )
 except ImportError:
     from illumination import (
-        _sk_http_query_ex,
+        _envelope,
         _sk_err,
         _sk_resolve_camera,
         _coerce_int,
         _merge_capabilities,
     )
 
-
 class TrackingAction(str, Enum):
-
     QUERY = "get"
     SET = "set"
 
-
 class DetectType(str, Enum):
-
     HUMAN = "human"
     VEHICLE = "vehicle"
     AREA = "area"
@@ -44,32 +41,10 @@ class DetectType(str, Enum):
     LINE = "line"
     ALL = "all"
 
-
 _SK_TRACKING_PORT = 9010
 _SK_TRACKING_TIMEOUT = 3.0
-_SK_OK_CODE = "C0000"
 
 _SETTABLE_FIELDS = {"enable", "tracking", "level"}
-
-_SK_CMD_HUMAN_OPTION = "SK_SETTING_GET_HUMANDETECT_OPTION"
-_SK_CMD_HUMAN_GET = "SK_SETTING_GET_HUMANDETECT"
-_SK_CMD_HUMAN_SET = "SK_SETTING_SET_HUMANDETECT"
-
-_SK_CMD_VEHICLE_OPTION = "SK_SETTING_GET_OBJECTDETECT_OPTION"
-_SK_CMD_VEHICLE_GET = "SK_SETTING_GET_OBJECTDETECT"
-_SK_CMD_VEHICLE_SET = "SK_SETTING_SET_OBJECTDETECT"
-
-_SK_CMD_AREA_OPTION = "SK_SETTING_GET_VGRECTDETECT_OPTION"
-_SK_CMD_AREA_GET = "SK_SETTING_GET_VGRECTDETECT"
-_SK_CMD_AREA_SET = "SK_SETTING_SET_VGRECTDETECT"
-
-_SK_CMD_MOTION_OPTION = "SK_SETTING_GET_MOTIONDETECT_OPTION"
-_SK_CMD_MOTION_GET = "SK_SETTING_GET_MOTIONDETECT"
-_SK_CMD_MOTION_SET = "SK_SETTING_SET_MOTIONDETECT"
-
-_SK_CMD_LINE_OPTION = "SK_SETTING_GET_VGLINEDETECT_OPTION"
-_SK_CMD_LINE_GET = "SK_SETTING_GET_VGLINEDETECT"
-_SK_CMD_LINE_SET = "SK_SETTING_SET_VGLINEDETECT"
 
 _TRACKING_LABELS = {
     "enable": "使能开关",
@@ -91,7 +66,7 @@ _TRACKING_LABELS = {
     "object": "目标类型",
     "trigger": "触发目标",
     "idenable": "车牌检测",
-    # 区域侦测专有
+
     "x0": "界线起点X", "y0": "界线起点Y",
     "x1": "界线终点X", "y1": "界线终点Y",
     "x2": "方向起点X", "y2": "方向起点Y",
@@ -101,7 +76,7 @@ _TRACKING_LABELS = {
     "enter_alarm_type": "进入报警类型",
     "leave_alarm_enable": "离开报警",
     "leave_alarm_type": "离开报警类型",
-    # 越界侦测专有
+
     "dx0": "方向起点X(A点)", "dy0": "方向起点Y(A点)",
     "dx1": "方向终点X(B点)", "dy1": "方向终点Y(B点)",
     "AtoB_alarm_enable": "A到B报警",
@@ -130,7 +105,6 @@ _TRACKING_VALUE_TEXTS = {
 
 @dataclass
 class TrackingQueryResult:
-
     ok: bool
     camera: str = ""
     channel: str = "sk"
@@ -149,10 +123,8 @@ class TrackingQueryResult:
     hint: str = ""
     needs_input: List[str] = field(default_factory=list)
 
-
 @dataclass
 class TrackingSetResult:
-
     ok: bool
     camera: str = ""
     channel: str = "sk"
@@ -164,277 +136,178 @@ class TrackingSetResult:
     hint: str = ""
     needs_input: List[str] = field(default_factory=list)
 
-
-_TRACK_DEBUG = os.environ.get("TRACK_DEBUG", "1") == "1"
-
-
-def _log(*args) -> None:
-    if _TRACK_DEBUG:
-        print("[tracking]", *args, file=sys.stderr)
-
-
 _RESP_HEAD = {"service_type", "msg_id", "cmd_name", "ver", "code", "msg",
               "channel", "sequence"}
 
 def _sk_human_option(cam) -> Dict[str, Any]:
-
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_HUMAN_OPTION, {},
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_get_option(
+        sk_proto.DETECT_HUMAN, cam.ip, cam.sn_code, cam.username, cam.password,
+        _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 查人形侦测能力失败（status={status}）")
         return {"ok": False, "status": status}
     caps = resp.get("humandetect")
-    _ok = resp.get("code") == _SK_OK_CODE and isinstance(caps, list)
-    if _ok:
-        _log(f"SK 人形侦测能力 {len(caps)} 项: "
-             f"{[c.get('name') for c in caps if isinstance(c, dict)]}")
-    else:
-        _log(f"SK 人形侦测能力响应异常 code={resp.get('code')}")
+    _ok = sk_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
     return {"ok": _ok, "capabilities": caps if isinstance(caps, list) else [],
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
-
 def _sk_human_cur(cam) -> Dict[str, Any]:
-
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_HUMAN_GET, {},
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_get(
+        sk_proto.DETECT_HUMAN, cam.ip, cam.sn_code, cam.username, cam.password,
+        _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 查人形侦测当前值失败（status={status}）")
         return {"ok": False, "status": status}
     current = {k: v for k, v in resp.items() if k not in _RESP_HEAD}
-    _ok = resp.get("code") == _SK_OK_CODE
-    _log(f"SK 人形侦测当前值 code={resp.get('code')}: "
-         f"{current if _ok else '（code 非 C0000）'}")
+    _ok = sk_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "current": current,
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
-
 def _sk_human_set(cam, payload: Dict[str, Any]) -> Dict[str, Any]:
-
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_HUMAN_SET, payload,
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_set(
+        sk_proto.DETECT_HUMAN, cam.ip, cam.sn_code, cam.username, cam.password,
+        payload, _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 人形侦测设置失败（status={status}）")
         return {"ok": False, "status": status}
-    _ok = resp.get("code") == _SK_OK_CODE
-    _log(f"SK 人形侦测设置 code={resp.get('code')}")
+    _ok = sk_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "code": resp.get("code", ""), "msg": resp.get("msg", ""),
             "status": status, "raw": resp}
 
-
 def _sk_vehicle_option(cam) -> Dict[str, Any]:
-
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_VEHICLE_OPTION,
-        {"object": "vehicle"},
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_get_option(
+        sk_proto.DETECT_VEHICLE, cam.ip, cam.sn_code, cam.username, cam.password,
+        _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 查车辆侦测能力失败（status={status}）")
         return {"ok": False, "status": status}
     caps = resp.get("objectdetect")
-    _ok = resp.get("code") == _SK_OK_CODE and isinstance(caps, list)
-    if _ok:
-        _log(f"SK 车辆侦测能力 {len(caps)} 项: "
-             f"{[c.get('name') for c in caps if isinstance(c, dict)]}")
-    else:
-        _log(f"SK 车辆侦测能力响应异常 code={resp.get('code')}")
+    _ok = sk_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
     return {"ok": _ok, "capabilities": caps if isinstance(caps, list) else [],
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
-
 def _sk_vehicle_cur(cam) -> Dict[str, Any]:
-
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_VEHICLE_GET,
-        {"object": "vehicle"},
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_get(
+        sk_proto.DETECT_VEHICLE, cam.ip, cam.sn_code, cam.username, cam.password,
+        _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 查车辆侦测当前值失败（status={status}）")
         return {"ok": False, "status": status}
     current = {k: v for k, v in resp.items() if k not in _RESP_HEAD}
-    _ok = resp.get("code") == _SK_OK_CODE
-    _log(f"SK 车辆侦测当前值 code={resp.get('code')}: "
-         f"{current if _ok else '（code 非 C0000）'}")
+    _ok = sk_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "current": current,
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
-
 def _sk_vehicle_set(cam, payload: Dict[str, Any]) -> Dict[str, Any]:
-
-    merged = {"object": "vehicle"}
-    merged.update(payload)
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_VEHICLE_SET, merged,
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_set(
+        sk_proto.DETECT_VEHICLE, cam.ip, cam.sn_code, cam.username, cam.password,
+        payload, _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 车辆侦测设置失败（status={status}）")
         return {"ok": False, "status": status}
-    _ok = resp.get("code") == _SK_OK_CODE
-    _log(f"SK 车辆侦测设置 code={resp.get('code')}")
+    _ok = sk_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "code": resp.get("code", ""), "msg": resp.get("msg", ""),
             "status": status, "raw": resp}
 
 def _sk_area_option(cam) -> Dict[str, Any]:
-
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_AREA_OPTION, {},
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_get_option(
+        sk_proto.DETECT_REGION, cam.ip, cam.sn_code, cam.username, cam.password,
+        _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 查区域侦测能力失败（status={status}）")
         return {"ok": False, "status": status}
     caps = resp.get("vgrectdetect")
-    _ok = resp.get("code") == _SK_OK_CODE and isinstance(caps, list)
-    if _ok:
-        _log(f"SK 区域侦测能力 {len(caps)} 项: "
-             f"{[c.get('name') for c in caps if isinstance(c, dict)]}")
-    else:
-        _log(f"SK 区域侦测能力响应异常 code={resp.get('code')}")
+    _ok = sk_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
     return {"ok": _ok, "capabilities": caps if isinstance(caps, list) else [],
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
-
 def _sk_area_cur(cam) -> Dict[str, Any]:
-
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_AREA_GET, {},
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_get(
+        sk_proto.DETECT_REGION, cam.ip, cam.sn_code, cam.username, cam.password,
+        _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 查区域侦测当前值失败（status={status}）")
         return {"ok": False, "status": status}
     current = {k: v for k, v in resp.items() if k not in _RESP_HEAD}
-    _ok = resp.get("code") == _SK_OK_CODE
-    _log(f"SK 区域侦测当前值 code={resp.get('code')}: "
-         f"{current if _ok else '（code 非 C0000）'}")
+    _ok = sk_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "current": current,
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
-
 def _sk_area_set(cam, payload: Dict[str, Any]) -> Dict[str, Any]:
-
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_AREA_SET, payload,
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_set(
+        sk_proto.DETECT_REGION, cam.ip, cam.sn_code, cam.username, cam.password,
+        payload, _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 区域侦测设置失败（status={status}）")
         return {"ok": False, "status": status}
-    _ok = resp.get("code") == _SK_OK_CODE
-    _log(f"SK 区域侦测设置 code={resp.get('code')}")
+    _ok = sk_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "code": resp.get("code", ""), "msg": resp.get("msg", ""),
             "status": status, "raw": resp}
 
 def _sk_motion_option(cam) -> Dict[str, Any]:
-
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_MOTION_OPTION, {},
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_get_option(
+        sk_proto.DETECT_MOTION, cam.ip, cam.sn_code, cam.username, cam.password,
+        _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 查移动侦测能力失败（status={status}）")
         return {"ok": False, "status": status}
     caps = resp.get("motiondetect")
-    _ok = resp.get("code") == _SK_OK_CODE and isinstance(caps, list)
-    if _ok:
-        _log(f"SK 移动侦测能力 {len(caps)} 项: "
-             f"{[c.get('name') for c in caps if isinstance(c, dict)]}")
-    else:
-        _log(f"SK 移动侦测能力响应异常 code={resp.get('code')}")
+    _ok = sk_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
     return {"ok": _ok, "capabilities": caps if isinstance(caps, list) else [],
             "code": resp.get("code", ""), "status": status, "raw": resp}
-
 
 def _sk_motion_cur(cam) -> Dict[str, Any]:
-
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_MOTION_GET, {},
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_get(
+        sk_proto.DETECT_MOTION, cam.ip, cam.sn_code, cam.username, cam.password,
+        _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 查移动侦测当前值失败（status={status}）")
         return {"ok": False, "status": status}
     current = {k: v for k, v in resp.items() if k not in _RESP_HEAD}
-    _ok = resp.get("code") == _SK_OK_CODE
-    _log(f"SK 移动侦测当前值 code={resp.get('code')}: "
-         f"{current if _ok else '（code 非 C0000）'}")
+    _ok = sk_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "current": current,
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
-
 def _sk_motion_set(cam, payload: Dict[str, Any]) -> Dict[str, Any]:
-
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_MOTION_SET, payload,
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_set(
+        sk_proto.DETECT_MOTION, cam.ip, cam.sn_code, cam.username, cam.password,
+        payload, _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 移动侦测设置失败（status={status}）")
         return {"ok": False, "status": status}
-    _ok = resp.get("code") == _SK_OK_CODE
-    _log(f"SK 移动侦测设置 code={resp.get('code')}")
+    _ok = sk_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "code": resp.get("code", ""), "msg": resp.get("msg", ""),
             "status": status, "raw": resp}
 
-
 def _sk_line_option(cam) -> Dict[str, Any]:
-
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_LINE_OPTION, {},
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_get_option(
+        sk_proto.DETECT_LINE, cam.ip, cam.sn_code, cam.username, cam.password,
+        _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 查越界侦测能力失败（status={status}）")
         return {"ok": False, "status": status}
     caps = resp.get("vglinedetect")
-    _ok = resp.get("code") == _SK_OK_CODE and isinstance(caps, list)
-    if _ok:
-        _log(f"SK 越界侦测能力 {len(caps)} 项: "
-             f"{[c.get('name') for c in caps if isinstance(c, dict)]}")
-    else:
-        _log(f"SK 越界侦测能力响应异常 code={resp.get('code')}")
+    _ok = sk_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
     return {"ok": _ok, "capabilities": caps if isinstance(caps, list) else [],
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
-
 def _sk_line_cur(cam) -> Dict[str, Any]:
-
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_LINE_GET, {},
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_get(
+        sk_proto.DETECT_LINE, cam.ip, cam.sn_code, cam.username, cam.password,
+        _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 查越界侦测当前值失败（status={status}）")
         return {"ok": False, "status": status}
     current = {k: v for k, v in resp.items() if k not in _RESP_HEAD}
-    _ok = resp.get("code") == _SK_OK_CODE
-    _log(f"SK 越界侦测当前值 code={resp.get('code')}: "
-         f"{current if _ok else '（code 非 C0000）'}")
+    _ok = sk_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "current": current,
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
-
 def _sk_line_set(cam, payload: Dict[str, Any]) -> Dict[str, Any]:
-
-    ok, resp, status = _sk_http_query_ex(
-        cam.ip, _SK_TRACKING_PORT, _SK_CMD_LINE_SET, payload,
-        cam.sn_code, cam.username, cam.password, _SK_TRACKING_TIMEOUT)
+    ok, resp, status = _envelope(sk_proto.detect_set(
+        sk_proto.DETECT_LINE, cam.ip, cam.sn_code, cam.username, cam.password,
+        payload, _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
-        _log(f"SK 越界侦测设置失败（status={status}）")
         return {"ok": False, "status": status}
-    _ok = resp.get("code") == _SK_OK_CODE
-    _log(f"SK 越界侦测设置 code={resp.get('code')}")
+    _ok = sk_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "code": resp.get("code", ""), "msg": resp.get("msg", ""),
             "status": status, "raw": resp}
-
 
 def big_tracking_query(
     name: Optional[str] = None,
     detect_type: str = "all",
     answers: Optional[Dict[str, Any]] = None,
 ) -> TrackingQueryResult:
-
     err, cam = _sk_resolve_camera(name, answers, TrackingQueryResult)
     if err:
-        _log(f"侦测查询终止：resolve_target 失败 error_code={err.error_code}")
         return err
 
-    _log(f"===== 侦测查询开始 camera={cam.name} ip={cam.ip} type={detect_type} =====")
     dt = detect_type.lower() if detect_type else "all"
 
     result = TrackingQueryResult(ok=True, camera=cam.name, channel="sk")
@@ -446,12 +319,9 @@ def big_tracking_query(
                 return _sk_err(TrackingQueryResult, "DEVICE_UNREACHABLE",
                                  f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
                                  "确认摄像头在线、网络可达", camera=cam.name)
-            _log(f"人形侦测能力查询失败，跳过（code={opt.get('code')}）")
         else:
             cur = _sk_human_cur(cam)
-            if not cur["ok"]:
-                _log(f"人形侦测当前值查询失败，跳过（code={cur.get('code')}）")
-            else:
+            if cur["ok"]:
                 result.human_capabilities = [
                     c for c in _merge_capabilities(
                         opt["capabilities"], cur["current"],
@@ -467,12 +337,9 @@ def big_tracking_query(
                 return _sk_err(TrackingQueryResult, "DEVICE_UNREACHABLE",
                                  f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
                                  "确认摄像头在线、网络可达", camera=cam.name)
-            _log(f"车辆侦测能力查询失败，跳过（code={opt.get('code')}）")
         else:
             cur = _sk_vehicle_cur(cam)
-            if not cur["ok"]:
-                _log(f"车辆侦测当前值查询失败，跳过（code={cur.get('code')}）")
-            else:
+            if cur["ok"]:
                 result.vehicle_capabilities = [
                     c for c in _merge_capabilities(
                         opt["capabilities"], cur["current"],
@@ -488,12 +355,9 @@ def big_tracking_query(
                 return _sk_err(TrackingQueryResult, "DEVICE_UNREACHABLE",
                                  f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
                                  "确认摄像头在线、网络可达", camera=cam.name)
-            _log(f"区域侦测能力查询失败，跳过（code={opt.get('code')}）")
         else:
             cur = _sk_area_cur(cam)
-            if not cur["ok"]:
-                _log(f"区域侦测当前值查询失败，跳过（code={cur.get('code')}）")
-            else:
+            if cur["ok"]:
                 result.area_capabilities = [
                     c for c in _merge_capabilities(
                         opt["capabilities"], cur["current"],
@@ -509,12 +373,9 @@ def big_tracking_query(
                 return _sk_err(TrackingQueryResult, "DEVICE_UNREACHABLE",
                                  f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
                                  "确认摄像头在线、网络可达", camera=cam.name)
-            _log(f"移动侦测能力查询失败，跳过（code={opt.get('code')}）")
         else:
             cur = _sk_motion_cur(cam)
-            if not cur["ok"]:
-                _log(f"移动侦测当前值查询失败，跳过（code={cur.get('code')}）")
-            else:
+            if cur["ok"]:
                 result.motion_capabilities = [
                     c for c in _merge_capabilities(
                         opt["capabilities"], cur["current"],
@@ -530,12 +391,9 @@ def big_tracking_query(
                 return _sk_err(TrackingQueryResult, "DEVICE_UNREACHABLE",
                                  f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
                                  "确认摄像头在线、网络可达", camera=cam.name)
-            _log(f"越界侦测能力查询失败，跳过（code={opt.get('code')}）")
         else:
             cur = _sk_line_cur(cam)
-            if not cur["ok"]:
-                _log(f"越界侦测当前值查询失败，跳过（code={cur.get('code')}）")
-            else:
+            if cur["ok"]:
                 result.line_capabilities = [
                     c for c in _merge_capabilities(
                         opt["capabilities"], cur["current"],
@@ -550,9 +408,7 @@ def big_tracking_query(
                       f"区域={len(result.area_capabilities)}项, "
                       f"移动={len(result.motion_capabilities)}项, "
                       f"越界={len(result.line_capabilities)}项")
-    _log(f"===== 侦测查询结束 ok={result.ok} {result.message} =====")
     return result
-
 
 def big_tracking_set(
     name: Optional[str] = None,
@@ -577,7 +433,6 @@ def big_tracking_set(
 
     err, cam = _sk_resolve_camera(name, answers, TrackingSetResult)
     if err:
-        _log(f"侦测设置终止：resolve_target 失败 error_code={err.error_code}")
         return err
 
     dt = detect_type.lower() if detect_type else "human"
@@ -587,11 +442,7 @@ def big_tracking_set(
                        "支持: human(人形追踪)/vehicle(车辆追踪)/area(区域检测)/motion(移动侦测)/line(越界侦测)")
 
     if dt in ("area", "line") and tracking is not None:
-        _log(f"{dt}侦测不支持 tracking 字段，已忽略")
         updates.pop("tracking", None)
-
-    _log(f"===== 侦测设置开始 camera={cam.name} ip={cam.ip} "
-         f"type={dt} updates={updates} =====")
 
     if dt == "human":
         option_fn, cur_fn, set_fn = _sk_human_option, _sk_human_cur, _sk_human_set
@@ -643,7 +494,6 @@ def big_tracking_set(
 
     payload = dict(base["current"])
     payload.update(updates)
-    _log(f"SK {dt}侦测下发全量 payload keys={list(payload)}")
 
     set_result = set_fn(cam, payload)
     if not set_result["ok"]:
@@ -660,7 +510,6 @@ def big_tracking_set(
     full_cur = rb["current"] if rb["ok"] else dict(payload)
     cur = {k: full_cur[k] for k in _SETTABLE_FIELDS if k in full_cur}
     updated = {k: cur[k] for k in updates if k in cur}
-    _log(f"SK {dt}侦测回读确认 updated={updated}")
 
     type_names = {"human": "人形追踪", "vehicle": "车辆追踪", "area": "区域检测",
                   "motion": "移动侦测", "line": "越界侦测"}
@@ -668,7 +517,6 @@ def big_tracking_set(
         ok=True, camera=cam.name, channel="sk", detect_type=dt,
         updated=updated, current=cur,
         message=f"{type_names.get(dt, dt)}参数已生效：{updated}")
-
 
 def manage_tracking(
     action: TrackingAction = TrackingAction.QUERY,
@@ -680,7 +528,6 @@ def manage_tracking(
     sensitivity_level: Optional[int] = None,
     answers: Optional[Dict[str, Any]] = None,
 ):
-
     resolved_name = camera_name or name
     dt = detect_type or "all"
 

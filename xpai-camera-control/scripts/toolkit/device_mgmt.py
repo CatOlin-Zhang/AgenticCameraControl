@@ -1,14 +1,5 @@
-"""
-工具清单：
-  - get_registered_cameras  从 config.yaml 加载已注册摄像头配置
-  - register_camera         将摄像头信息写入 config.yaml（持久化凭据）
-  - search_devices          搜索局域网可用摄像头（支持 WS-Discovery / USB / 创维私有协议）
-  - connect_device          设备连接（自动读取 config.yaml 凭据；无凭据时提示用户输入密码）
-  - disconnect_device       断开摄像头连接并释放资源
-"""
 import base64
 import hashlib
-import hmac
 import json
 import os
 import secrets
@@ -32,184 +23,141 @@ try:
 except ImportError:
     _yaml_lib = None
 
+try:
+    from . import sk_proto
+except ImportError:
+    import sk_proto
+
 from .discovery import (
     SkDiscoveredDevice,
     SkChannelInfo,
     discover_sky_devices,
-    send_tcp_command,
     probe_device_sn,
-    SK_TCP_PORT,
     SUBTYPE_NAMES,
 )
 
-
-# ──────────────────────────────────────────────
-#  枚举类型
-# ──────────────────────────────────────────────
-
 class DiscoveryMethod(str, Enum):
-    WS_DISCOVERY = "ws_discovery"    # ONVIF WS-Discovery 局域网发现
-    SKY_DISCOVERY = "sky_discovery"  # 创维私有协议发现 (SK_DISCOVERY_SEARCH)
-    USB = "usb"                       # USB 摄像头扫描
-
+    WS_DISCOVERY = "ws_discovery"
+    SKY_DISCOVERY = "sky_discovery"
+    USB = "usb"
 
 class DeviceClass(str, Enum):
-    PASSWORD_REQUIRED = "password_required"  # 需密码登录（非免流设备）
-    DIRECT_CONNECT = "direct_connect"        # 宽带直连（免流设备）
-
+    PASSWORD_REQUIRED = "password_required"
+    DIRECT_CONNECT = "direct_connect"
 
 class AuthStatus(str, Enum):
-    PENDING = "pending"                      # 用户尚未在 APP 端确认
-    AUTHORIZED = "authorized"                # 用户已授权
-    REJECTED = "rejected"                    # 用户拒绝或超时
-    ERROR = "error"                          # 服务器错误
-
-
-# ──────────────────────────────────────────────
-#  数据结构
-# ──────────────────────────────────────────────
+    PENDING = "pending"
+    AUTHORIZED = "authorized"
+    REJECTED = "rejected"
+    ERROR = "error"
 
 @dataclass
 class DiscoveredDevice:
-    """发现的设备信息"""
-    ip: str                                   # IP 地址
-    onvif_port: int = 0                        # ONVIF 服务端口（0=未知，待连接时探测验证）
-    rtsp_port: int = 554                       # RTSP 端口
+    ip: str
+    onvif_port: int = 0
+    rtsp_port: int = 554
     device_class: DeviceClass = DeviceClass.PASSWORD_REQUIRED
-    sn_code: str = ""                          # 设备序列号
-    model: str = ""                            # 设备型号
-    manufacturer: str = ""                     # 厂商
-    supported_media: List[str] = field(default_factory=list)  # 支持的媒体设置
+    sn_code: str = ""
+    model: str = ""
+    manufacturer: str = ""
+    supported_media: List[str] = field(default_factory=list)
 
-    # ── 创维私有协议专用字段 ──
-    sky_subtype: str = ""                      # 设备子类型: 1枪机/2球机/3半球/5摇头机/6枪球
-    sky_name: str = ""                         # 设备名称 (name)
-    sky_dtype: str = ""                        # 设备类型编号 (dtype)
-    sky_hw_version: str = ""                   # 硬件版本
-    sky_sw_version: str = ""                   # 软件版本
-    sky_did: str = ""                          # 设备 ID (did)
-    sky_channels: int = 0                      # 通道数（0=非创维设备, 1=单目, 2=双目）
+    sky_subtype: str = ""
+    sky_name: str = ""
+    sky_dtype: str = ""
+    sky_hw_version: str = ""
+    sky_sw_version: str = ""
+    sky_did: str = ""
+    sky_channels: int = 0
     sky_channel_list: List[SkChannelInfo] = field(default_factory=list)
-    sky_web_port: int = 0                      # Web 端口
-    sky_udp_port: int = 0                      # UDP 命令端口
-    sky_net_type: str = ""                     # 网络类型: eth / wifi
-    sky_ip_mode: str = ""                      # IP 模式: 0=dhcp, 1=自适应, 2=手动
-    sky_mask: str = ""                         # 子网掩码
-    sky_gateway: str = ""                      # 网关
-    sky_mac: str = ""                          # MAC 地址
-    discovery_method: str = ""                 # 发现方式: ws_discovery / sky_discovery / usb
-    supported_illumination_modes: List[str] = field(default_factory=list)  # 支持的补光模式列表（连接后探测填充）
-
+    sky_web_port: int = 0
+    sky_udp_port: int = 0
+    sky_net_type: str = ""
+    sky_ip_mode: str = ""
+    sky_mask: str = ""
+    sky_gateway: str = ""
+    sky_mac: str = ""
+    discovery_method: str = ""
+    supported_illumination_modes: List[str] = field(default_factory=list)
 
 @dataclass
 class SearchResult:
-    """搜索设备返回结果"""
     success: bool
     devices: List[DiscoveredDevice] = field(default_factory=list)
     error_message: str = ""
 
-
 @dataclass
 class ConnectResult:
-    """设备连接返回结果"""
-    success: bool                              # 连接是否成功
-    auth_method: str = ""                      # 认证方式 ("password" / "direct")
-    status: str = "connected"                  # "connected" | "needs_password" | "no_sn" | "failed"
-    error_message: str = ""                    # 失败原因
-    needs_password: bool = False               # True 表示需要密码，Agent 应提示用户输入
-    onvif_port: int = 0                        # 实际验证过的 ONVIF 端口（0=未验证成功）
-
+    success: bool
+    auth_method: str = ""
+    status: str = "connected"
+    error_message: str = ""
+    needs_password: bool = False
+    onvif_port: int = 0
 
 @dataclass
 class DisconnectResult:
-    """设备断开连接返回结果"""
-    success: bool                              # 断开是否成功
-    session_released: bool = False             # 是否释放了云端会话
-    error_message: str = ""                    # 失败原因
-
+    success: bool
+    session_released: bool = False
+    error_message: str = ""
 
 @dataclass
 class CameraConfig:
-    """从 config.yaml 加载的摄像头配置"""
-    name: str                                  # 摄像头名称
-    connection_type: str = "onvif"             # "onvif" | "usb"
-    ip: str = ""                               # IP 地址
-    port: int = 0                              # ONVIF 端口（0=未知，待探测验证）
-    username: str = "admin"                    # 用户名
-    password: str = ""                         # 密码（从 config.yaml 加载，不暴露给用户）
-    rtsp_port: int = 554                       # RTSP 端口
-    rtsp_path: str = "/md0_0"                  # 主流路径（SK 设备报警流，告警随此流推送）
-    rtsp_sub_path: str = "/md0_1"              # 子流路径
-    device_class: str = ""                     # "password_required" | "direct_connect"
-    sn_code: str = ""                          # 序列号
-    pkdk: str = ""                             # 设备公钥标识
+    name: str
+    connection_type: str = "onvif"
+    ip: str = ""
+    port: int = 0
+    username: str = "admin"
+    password: str = ""
+    rtsp_port: int = 554
+    rtsp_path: str = "/md0_0"
+    rtsp_sub_path: str = "/md0_1"
+    device_class: str = ""
+    sn_code: str = ""
+    pkdk: str = ""
 
-    # USB 专用字段
-    device_index: int = 0                      # OpenCV 设备索引
-    device_model: str = ""                     # USB 设备型号
-    product_version: str = ""                  # 产品版本
+    device_index: int = 0
+    device_model: str = ""
+    product_version: str = ""
 
-    # 补光能力（连接后探测填充）
-    illumination_modes: List[str] = field(default_factory=list)  # 支持的补光模式列表
-
+    illumination_modes: List[str] = field(default_factory=list)
 
 @dataclass
 class RegisterResult:
-    """注册摄像头到 config.yaml 的返回结果"""
-    success: bool                              # 注册是否成功
-    camera_name: str = ""                      # 注册的摄像头名称
-    error_message: str = ""                    # 失败原因
-
+    success: bool
+    camera_name: str = ""
+    error_message: str = ""
 
 @dataclass
 class AuthOrchestrateResult:
-    """云端授权编排结果"""
-    success: bool                              # 授权是否成功
-    status: str = ""                           # "authorized" | "rejected" | "timeout" | "no_devices" | "needs_selection" | "no_sn" | "cloud_error" | "error"
-    camera_name: str = ""                      # 选中的摄像头名
-    sn: str = ""                               # 选中的设备 SN
-    claw_id: str = ""                          # 本次使用的 clawID / agentSkillId
-    device_pwd: str = ""                       # 授权成功时的设备密码（已自动写入 config.yaml）
-    available_cameras: List[Dict[str, str]] = field(default_factory=list)  # needs_selection 时填
-    error_message: str = ""                    # 失败原因
-
+    success: bool
+    status: str = ""
+    camera_name: str = ""
+    sn: str = ""
+    claw_id: str = ""
+    device_pwd: str = ""
+    available_cameras: List[Dict[str, str]] = field(default_factory=list)
+    error_message: str = ""
 
 @dataclass
 class AuthStatusResult:
-    """轮询远程授权服务器的返回结果"""
-    status: AuthStatus                         # 授权状态 (pending / authorized / rejected / error)
-    camera_name: str = ""                      # 摄像头名称
-    message: str = ""                          # 状态说明
-    auth_status_code: int = -1                 # 云端原始 authStatus（0=未授权 / 1=已授权 / 2=已拒绝）
-    device_pwd: str = ""                       # 云端返回的设备密码（仅 authStatus=1 时有值）
-
+    status: AuthStatus
+    camera_name: str = ""
+    message: str = ""
+    auth_status_code: int = -1
+    device_pwd: str = ""
 
 @dataclass
 class CloudAuthRequestResult:
-    """向云端发起授权请求的结果"""
-    success: bool                              # 云端是否接受请求（HTTP 200 且 R.data == true）
-    claw_id: str = ""                          # 本次使用的 clawID / agentSkillId（已持久化，重发时复用）
-    error_message: str = ""                    # 失败原因
-
+    success: bool
+    claw_id: str = ""
+    error_message: str = ""
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 
-
-# ──────────────────────────────────────────────
-#  云端授权常量
-# ──────────────────────────────────────────────
-
-_CLOUD_AUTH_URL = "https://device.skyworthdigitaliot.com/skyworthAiModel/agent/skill/v1/deviceAuthReq"  # 云端设备授权请求接口
-_CLOUD_AUTH_CHECK_URL = "https://device.skyworthdigitaliot.com/skyworthAiModel/agent/skill/v1/checkAuth"  # 云端检测授权状态接口
-_CLOUD_AUTH_POLL_URL = ""  # 云端授权状态轮询地址，留空则使用 _CLOUD_AUTH_CHECK_URL
-
-
-# ──────────────────────────────────────────────
-#  本机标识辅助函数（云端授权 claw_id 使用）
-# ──────────────────────────────────────────────
+_SK_TCP_PORT = 9010
 
 def _get_local_ip() -> str:
-    """通过临时 UDP socket 取本机出口 IP（不发包）。"""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 80))
@@ -220,9 +168,7 @@ def _get_local_ip() -> str:
         s.close()
     return ip
 
-
 def _get_local_mac() -> str:
-    """跨平台取本机 MAC；失败返回占位 MAC。"""
     import platform
     try:
         if platform.system() == "Windows":
@@ -238,28 +184,13 @@ def _get_local_mac() -> str:
         pass
     return "00:00:00:00:00:00"
 
-
 def generate_claw_id() -> str:
-    """生成 Claw ID（MAC + 毫秒时间戳）。
-
-    仅在首次创建或显式重新注册时调用。
-    生成后由 get_or_create_claw_id() 持久化到 config.yaml，后续复用。
-
-    格式: claw-<mac12>-<yyyyMMddHHMMSSmmm>
-    示例: claw-000C296F9083-20260724104530123
-    """
     mac = _get_local_mac().replace(":", "").upper()
     now = datetime.now()
     ts = now.strftime("%Y%m%d%H%M%S") + f"{now.microsecond // 1000:03d}"
     return f"claw-{mac}-{ts}"
 
-
 def _dump_claw_id_first(data: Dict[str, Any], claw_id: str) -> Dict[str, Any]:
-    """构造 claw_id 置顶的 dict（其余键顺序不变），并写回 config.yaml。
-
-    仅调整键顺序，不改动任何值，不影响 cameras 等字段的读取。
-    写失败不抛异常（文件保持原样，不影响本次返回）。
-    """
     ordered: Dict[str, Any] = {"claw_id": claw_id}
     ordered.update({k: v for k, v in data.items() if k != "claw_id"})
     try:
@@ -270,18 +201,7 @@ def _dump_claw_id_first(data: Dict[str, Any], claw_id: str) -> Dict[str, Any]:
         pass
     return ordered
 
-
 def get_or_create_claw_id() -> str:
-    """从 config.yaml 读取 clawID；不存在则生成并持久化（置顶写入）。
-
-    clawID 是机器级标识，存于 config.yaml 顶层 claw_id 字段，且始终位于
-    文件第一个键（顶部）。首次调用时生成（MAC + 时间戳），后续所有授权
-    请求复用同一 ID，确保 HTTP 重发时云端识别为同一会话、不重复弹窗。
-    旧文件中 claw_id 不在顶部时，读取时会顺带归一化到顶部。
-
-    yaml 不可用或文件读写失败时降级为每次临时生成（本会话内可用，
-    但跨进程不保证一致）。
-    """
     if _yaml_lib is None:
         return generate_claw_id()
 
@@ -296,20 +216,14 @@ def get_or_create_claw_id() -> str:
 
     existing = data.get("claw_id", "")
     if existing:
-        # 已存在 → 复用；若不在文件顶部则归一化置顶（不改任何值）
+
         if next(iter(data), None) != "claw_id":
             _dump_claw_id_first(data, str(existing))
         return str(existing)
 
-    # 不存在 → 生成并置顶写入 config.yaml
     claw_id = generate_claw_id()
     _dump_claw_id_first(data, claw_id)
     return claw_id
-
-
-# ──────────────────────────────────────────────
-#  ONVIF WS-UsernameToken 鉴权辅助函数
-# ──────────────────────────────────────────────
 
 _ONVIF_NS = {
     "soap": "http://www.w3.org/2003/05/soap-envelope",
@@ -318,9 +232,7 @@ _ONVIF_NS = {
     "tt": "http://www.onvif.org/ver10/schema",
 }
 
-
 def _onvif_digest_auth_header(username: str, password: str) -> str:
-    """生成 ONVIF WS-UsernameToken PasswordDigest 的 SOAP Header XML 片段。"""
     nonce_raw = secrets.token_bytes(16)
     created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     digest_input = nonce_raw + created.encode("utf-8") + password.encode("utf-8")
@@ -336,12 +248,10 @@ def _onvif_digest_auth_header(username: str, password: str) -> str:
         '</wsse:UsernameToken>'
     )
 
-
 def _onvif_post_with_auth(
     ip: str, port: int, path: str, body: str,
     username: str, password: str, timeout: float = 5.0,
 ) -> Tuple[int, str]:
-    """POST SOAP 到 ONVIF endpoint，自动注入 WS-UsernameToken 鉴权头。返回 (status_code, body_text)。"""
     if _requests_lib is None:
         raise RuntimeError("requests 未安装")
     auth_xml = _onvif_digest_auth_header(username, password)
@@ -365,8 +275,6 @@ def _onvif_post_with_auth(
     )
     return resp.status_code, resp.text
 
-
-# 常见 ONVIF 服务端口（创维实测 2000；80 多为 Web UI，需实际验证）
 _ONVIF_CANDIDATE_PORTS = [2000, 80, 8000, 8899]
 
 _ONVIF_PROBE_BODY = (
@@ -376,17 +284,7 @@ _ONVIF_PROBE_BODY = (
     '<soap:Header/><soap:Body><tds:GetSystemDateAndTime/></soap:Body></soap:Envelope>'
 )
 
-
 def _probe_onvif_port(ip: str, hint_port: int = 0, timeout: float = 2.0) -> int:
-    """探测并验证设备真实的 ONVIF 服务端口。
-
-    向候选端口 POST 免鉴权的 GetSystemDateAndTime，只有返回 SOAP Envelope
-    的端口才认定为 ONVIF 端口（Web UI 端口会返回 HTML/404，可确定性区分）。
-    候选顺序: hint_port（调用方线索）→ 常见端口列表。
-
-    Returns:
-        验证成功的端口号；全部失败返回 0（表示未知，不可当事实持久化）。
-    """
     if _requests_lib is None:
         return 0
     candidates = []
@@ -401,8 +299,7 @@ def _probe_onvif_port(ip: str, hint_port: int = 0, timeout: float = 2.0) -> int:
                 headers={"Content-Type": "application/soap+xml; charset=utf-8"},
                 timeout=timeout,
             )
-            # 状态码不作硬性要求（部分设备对免鉴权请求回 400/401 的 SOAP Fault，
-            # 但只要 body 是 SOAP Envelope 即证明该端口提供 ONVIF 服务）
+
             text = (resp.text or "")[:2048].lower()
             if "envelope" in text and "<html" not in text:
                 return p
@@ -410,14 +307,7 @@ def _probe_onvif_port(ip: str, hint_port: int = 0, timeout: float = 2.0) -> int:
             continue
     return 0
 
-
 def _build_rtsp_url(ip: str, port: int, path: str, username: str = "", password: str = "") -> str:
-    """构造完整 RTSP URL，自动注入凭据。
-
-    支持两种 path 形态:
-      - 纯路径 "/md0_0" → rtsp://user:pwd@ip:port/md0_0
-      - 完整 URL "rtsp://host:port/md0_0" → 注入凭据
-    """
     path = (path or "").strip()
     if path.lower().startswith(("rtsp://", "http://", "https://")):
         parsed = urlparse(path)
@@ -442,26 +332,8 @@ def _build_rtsp_url(ip: str, port: int, path: str, username: str = "", password:
         return f"rtsp://{quote(username, safe='')}:{quote(password or '', safe='')}@{ip}:{port}{path}"
     return f"rtsp://{ip}:{port}{path}"
 
-
-# ──────────────────────────────────────────────
-#  工具函数
-# ──────────────────────────────────────────────
-
 def get_registered_cameras() -> List[CameraConfig]:
-    """
-    从 config.yaml 加载所有已注册摄像头配置。
-
-    每次对话开始时（Phase 0）必须先调用此函数，检查是否有缓存的摄像头信息。
-    已注册摄像头的凭据（username/password）保存在 config.yaml 中，
-    后续 connect_device 会自动使用这些凭据，用户无需重复输入密码。
-
-    安全约束: 无特殊约束
-
-    Returns:
-        List[CameraConfig]: 已注册摄像头列表（含 IP、端口、凭据、device_class 等）
-    """
     return _load_config_cameras()
-
 
 def register_camera(
     name: str,
@@ -481,51 +353,17 @@ def register_camera(
     product_version: str = "",
     illumination_modes: Optional[List[str]] = None,
 ) -> RegisterResult:
-    """
-    将摄像头信息写入 config.yaml，持久化凭据供下次自动连接。
-
-    首次成功连接摄像头后调用此函数，将设备信息和凭据保存到 config.yaml。
-    保存后，后续对话的 Phase 0 可通过 get_registered_cameras() 读取配置，
-    connect_device 自动使用保存的凭据连接，用户不再需要手动输入密码。
-
-    安全约束: 无特殊约束（内部配置写入，不向用户暴露凭据）
-
-    Args:
-        name:            摄像头唯一名称
-        ip:              IP 地址
-        port:            ONVIF 端口（0=未知；只应传入验证过的真实端口，不要传假设值）
-        username:        登录用户名（默认 "admin"）
-        password:        登录密码（保存到 config.yaml，不显示给用户）
-        rtsp_port:       RTSP 端口（默认 554）
-        rtsp_path:       主流路径（默认 "/md0_0"，SK 设备报警流）
-        device_class:    设备类型（"password_required" | "direct_connect"）
-        connection_type: 连接类型（"onvif" | "usb"）
-        sn_code:         序列号（可选）
-        pkdk:            设备公钥标识（可选）
-        rtsp_sub_path:   子流路径（默认 "/md0_1"）
-        device_index:    USB 设备索引（USB 摄像头专用，默认 0）
-        device_model:    USB 设备型号（可选）
-        product_version: 产品版本（可选）
-
-    Returns:
-        RegisterResult:
-            - success: 注册是否成功
-            - camera_name: 注册的摄像头名称
-            - error_message: 失败原因
-    """
     import os
     import yaml
 
-    # 确定 config.yaml 路径
     config_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
     config_path = os.path.join(config_dir, "config.yaml")
-    # 兼容旧文件名 confg.yaml
+
     if not os.path.exists(config_path):
         alt_path = os.path.join(config_dir, "confg.yaml")
         if os.path.exists(alt_path):
             config_path = alt_path
 
-    # 读取现有配置
     data = {}
     if os.path.exists(config_path):
         try:
@@ -536,11 +374,6 @@ def register_camera(
 
     cameras = data.get("cameras", [])
 
-    # 空值保护：空密码/空 SN 不覆盖已缓存值（三级匹配 name → ip → sn 查已有条目）。
-    # - 云端授权预注册会调 register_camera(password="")（见 _cloud_auth_and_connect），
-    #   若无保护会把用户已修正的凭据清回空串。
-    # - SN 探测失败时会调 register_camera(sn_code="")（如 ONVIF 发现的设备），
-    #   若无保护会按 ip 匹配命中旧条目并把已探到的 SN 清空（整体替换语义）。
     if not password or not sn_code:
         existing = None
         for cam in cameras:
@@ -563,23 +396,22 @@ def register_camera(
             if not sn_code:
                 sn_code = existing.get("sn_code") or existing.get("sn") or ""
 
-    # 构建新条目（同时写入两种方案的字段名以兼容）
     new_entry = {
         "name": name,
         "connection_type": connection_type,
         "ip": ip,
         "port": port,
-        "onvif_port": port,           # 密码认证方案兼容字段
+        "onvif_port": port,
         "username": username,
         "password": password,
         "rtsp_port": rtsp_port,
         "rtsp_path": rtsp_path,
-        "rtsp_path_main": rtsp_path,  # 密码认证方案兼容字段
+        "rtsp_path_main": rtsp_path,
         "rtsp_sub_path": rtsp_sub_path,
-        "rtsp_path_sub": rtsp_sub_path,  # 密码认证方案兼容字段
+        "rtsp_path_sub": rtsp_sub_path,
         "device_class": device_class,
         "sn_code": sn_code,
-        "sn": sn_code,               # 密码认证方案兼容字段
+        "sn": sn_code,
         "pkdk": pkdk,
         "registered_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -590,22 +422,21 @@ def register_camera(
     if illumination_modes:
         new_entry["illumination_modes"] = illumination_modes
 
-    # 更新或追加（按 name → ip → sn 三级匹配，支持重命名）
     found = False
-    # 1) 按 name 匹配 — 同名更新
+
     for i, cam in enumerate(cameras):
         if cam.get("name") == name:
             cameras[i] = new_entry
             found = True
             break
-    # 2) 按 ip 匹配 — 同一 IP 不同名称 → 重命名
+
     if not found and ip:
         for i, cam in enumerate(cameras):
             if cam.get("ip") == ip:
                 cameras[i] = new_entry
                 found = True
                 break
-    # 3) 按 sn_code 匹配 — 同一 SN 不同名称 → 重命名
+
     if not found and sn_code:
         for i, cam in enumerate(cameras):
             if cam.get("sn_code") == sn_code or cam.get("sn") == sn_code:
@@ -624,51 +455,20 @@ def register_camera(
     except Exception as e:
         return RegisterResult(success=False, camera_name=name, error_message=str(e))
 
-
-def _log_diag(msg: str) -> None:
-    """诊断日志，输出到 stderr（不干扰 MCP stdio 协议通道）。"""
-    import sys as _sys
-    print(f"[search_diag] {msg}", file=_sys.stderr, flush=True)
-
-
 def search_devices(
     method: Optional[DiscoveryMethod] = None,
     timeout: float = 15.0,
 ) -> SearchResult:
-    """
-    搜索局域网可用摄像头设备。默认执行全量搜索（SKY + WS-Discovery 两种协议），按 IP 去重。
-    USB 摄像头扫描已禁用。
 
-    默认流程:
-      1. 创维私有协议 (SK_DISCOVERY_SEARCH) — 信息最丰富，优先搜索
-      2. WS-Discovery (ONVIF) — 标准协议，补充非创维设备
-      所有结果按 IP 去重，先发现的保留（SKY 优先，数据更完整）。
-
-    也可通过 method 参数指定仅使用单一协议搜索。
-
-    安全约束: 无特殊约束
-
-    Args:
-        method:  发现方式（None = 全量搜索；或指定 WS_DISCOVERY / SKY_DISCOVERY / USB）
-        timeout: 每种协议的超时时间（秒，默认 15）
-
-    Returns:
-        SearchResult:
-            - success: 搜索是否成功
-            - devices: 发现的设备列表（按 IP 去重）
-            - error_message: 失败原因
-    """
-    # 指定单一协议时直接调用对应方法
     if method is not None:
         if method == DiscoveryMethod.SKY_DISCOVERY:
             return _search_sky_devices(timeout)
         elif method == DiscoveryMethod.USB:
-            # USB 摄像头扫描已禁用
+
             return SearchResult(success=True, devices=[], error_message="USB 扫描已禁用")
         else:
             return _search_ws_discovery_devices(timeout)
 
-    # 全量搜索: 依次运行 SKY + WS-Discovery，按 IP 去重（USB 已禁用）
     all_devices: List[DiscoveredDevice] = []
     seen_ips: set = set()
     errors: List[str] = []
@@ -687,29 +487,31 @@ def search_devices(
             errors.append(str(e))
 
     if not all_devices and errors:
-        _log_diag(f"[全量搜索] 无设备发现, errors={errors}")
         return SearchResult(
             success=False,
             devices=[],
             error_message="; ".join(errors),
         )
 
-    _log_diag(f"[全量搜索] 共发现 {len(all_devices)} 台设备 (IP去重后)")
     return SearchResult(success=True, devices=all_devices)
 
-
 def _search_sky_devices(timeout: float) -> SearchResult:
-    """通过创维私有协议搜索设备"""
     try:
         sky_devices = discover_sky_devices(timeout=timeout)
-        _log_diag(f"[SKY] discover_sky_devices 返回 {len(sky_devices)} 台设备, timeout={timeout}s")
         devices = []
         for sd in sky_devices:
+
+            rtsp_path = sd.rtsp_paths[0] if sd.rtsp_paths else "/md0_0"
+            access = _probe_stream_access(sd.ip, sd.rtsp_port, rtsp_path)
+            device_class = (
+                DeviceClass.DIRECT_CONNECT if access == "open"
+                else DeviceClass.PASSWORD_REQUIRED
+            )
             dev = DiscoveredDevice(
                 ip=sd.ip,
-                onvif_port=0,               # SK 协议只回报 web 端口，非 ONVIF 端口；置 0 待 connect_device 探测验证
+                onvif_port=0,
                 rtsp_port=sd.rtsp_port,
-                device_class=DeviceClass.PASSWORD_REQUIRED,
+                device_class=device_class,
                 sn_code=sd.sn,
                 model=sd.model,
                 manufacturer=sd.manufacturer,
@@ -737,15 +539,12 @@ def _search_sky_devices(timeout: float) -> SearchResult:
             devices=devices,
         )
     except Exception as e:
-        _log_diag(f"[SKY] 异常: {e}")
         return SearchResult(
             success=False,
             error_message=str(e),
         )
 
-
 def _search_usb_devices(timeout: float) -> SearchResult:
-    """通过 OpenCV 扫描 USB 摄像头"""
     try:
         import cv2
         found = []
@@ -764,20 +563,12 @@ def _search_usb_devices(timeout: float) -> SearchResult:
     except Exception as e:
         return SearchResult(success=False, error_message=str(e))
 
-
 def _search_ws_discovery_devices(timeout: float) -> SearchResult:
-    """通过 WS-Discovery 协议搜索 ONVIF 设备。
-
-    向多播地址 239.255.255.250:3702 发送 Probe（多网卡逐一发送），
-    解析 ProbeMatch 响应提取 IP、ONVIF 端口（XAddrs）、品牌/型号（Scopes）。
-    发现后用免密 RTSP 探测对设备分类（open → direct_connect）。
-    """
     import select
     import uuid
 
     probe_wait = max(1.0, min(timeout, 15.0))
 
-    # ── Step 1: 每个本机网卡发送一次多播 Probe ──
     socks = []
     for local_ip in _list_local_ipv4():
         try:
@@ -802,7 +593,6 @@ def _search_ws_discovery_devices(timeout: float) -> SearchResult:
             error_message="无可用网络接口，WS-Discovery 探测失败",
         )
 
-    # ── Step 2: 在超时窗口内收集 ProbeMatch 响应 ──
     found: Dict[str, dict] = {}
     deadline = time.time() + probe_wait
     while time.time() < deadline:
@@ -824,7 +614,6 @@ def _search_ws_discovery_devices(timeout: float) -> SearchResult:
         except Exception:
             pass
 
-    # ── Step 3: 免密 RTSP 探测分类 + 创维私有协议 SN 补探测 ──
     devices = []
     for ip, info in sorted(found.items()):
         access = _probe_stream_access(ip, 554, "/md0_0")
@@ -832,7 +621,7 @@ def _search_ws_discovery_devices(timeout: float) -> SearchResult:
             DeviceClass.DIRECT_CONNECT if access == "open"
             else DeviceClass.PASSWORD_REQUIRED
         )
-        # 通过创维私有协议补探测 SN（WS-Discovery 不提供 SN）
+
         sn = _probe_sn_via_sky(ip, timeout=2.0)
         devices.append(DiscoveredDevice(
             ip=ip,
@@ -846,9 +635,6 @@ def _search_ws_discovery_devices(timeout: float) -> SearchResult:
         ))
 
     return SearchResult(success=True, devices=devices)
-
-
-# ── WS-Discovery 协议常量与解析辅助 ──
 
 _WS_DISCOVERY_ADDR = "239.255.255.250"
 _WS_DISCOVERY_PORT = 3702
@@ -870,9 +656,7 @@ _WS_PROBE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
   </s:Body>
 </s:Envelope>"""
 
-
 def _list_local_ipv4() -> List[str]:
-    """枚举本机所有非回环 IPv4 地址（多网卡时向每个接口发送多播探测）"""
     addrs: List[str] = []
     try:
         import psutil
@@ -883,7 +667,7 @@ def _list_local_ipv4() -> List[str]:
     except Exception:
         pass
     if not addrs:
-        # psutil 不可用时回退到默认路由接口
+
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -893,14 +677,7 @@ def _list_local_ipv4() -> List[str]:
             pass
     return addrs
 
-
 def _parse_ws_probe_match(data: bytes) -> Optional[dict]:
-    """解析 WS-Discovery ProbeMatch/Hello XML。
-
-    提取 XAddrs（解析真实 ONVIF 端口——不一定是 80，创维实测为 2000）
-    和 Scopes（品牌 /name/、型号 /hardware/）。
-    Types 含 NetworkVideoTransmitter 才视为摄像头。
-    """
     import xml.etree.ElementTree as ET
     from urllib.parse import unquote
 
@@ -924,11 +701,11 @@ def _parse_ws_probe_match(data: bytes) -> Optional[dict]:
         return None
 
     xaddrs = _find_text("XAddrs")
-    onvif_port = 0   # 0 = 未知（无 XAddrs 时不假设 80）
+    onvif_port = 0
     if xaddrs:
         try:
             parsed = urlparse(xaddrs.split()[0])
-            # XAddrs URL 未显式写端口时，HTTP 默认 80 是协议事实，可采信
+
             onvif_port = parsed.port or 80
         except Exception:
             pass
@@ -943,17 +720,11 @@ def _parse_ws_probe_match(data: bytes) -> Optional[dict]:
 
     return {"onvif_port": onvif_port, "xaddrs": xaddrs, "brand": brand, "model": model}
 
-
 def _probe_sn_via_sky(ip: str, timeout: float = 3.0) -> str:
-    """通过创维私有协议单播探测设备 SN（WS-Discovery 补探测用）。
-
-    封装 discovery.py 的 probe_device_sn()，异常安全，失败返回空字符串。
-    """
     try:
         return probe_device_sn(ip=ip, timeout=timeout)
     except Exception:
         return ""
-
 
 def _cloud_auth_and_connect(
     camera_name: str,
@@ -965,13 +736,7 @@ def _cloud_auth_and_connect(
     username: str,
     cached: Optional[CameraConfig] = None,
 ) -> ConnectResult:
-    """内部函数：云端授权 + 自动连接。由 connect_device 在 pending_auth 场景调用。
 
-    流程：
-      1. 检查 SN → 2. POST 云端授权请求 → 3. 轮询等待结果（5s 间隔，最长 5 分钟）
-      4. 授权通过 → 用云端密码连接 → 注册凭据
-    """
-    # 1. 检查 SN 是否可用
     if not sn_code:
         return ConnectResult(
             success=False, status="needs_password",
@@ -982,10 +747,9 @@ def _cloud_auth_and_connect(
             ),
         )
 
-    # 2. 向云端发起授权请求
     cr = request_cloud_auth(sn_code)
     if not cr.success:
-        # 云端不可达 / 网络错误 → 降级为本地流程
+
         return ConnectResult(
             success=False, status="needs_password",
             needs_password=True,
@@ -995,7 +759,6 @@ def _cloud_auth_and_connect(
             ),
         )
 
-    # 3. 先注册设备信息到 config.yaml（云端轮询需要 SN 查设备）
     register_camera(
         name=camera_name, ip=ip, port=port,
         username=username, password="",
@@ -1005,7 +768,6 @@ def _cloud_auth_and_connect(
         connection_type=cached.connection_type if cached else "onvif",
     )
 
-    # 4. 轮询等待授权结果（5s 间隔，最长 5 分钟 = 60 次）
     poll_interval = 5
     max_polls = 60
     for _ in range(max_polls):
@@ -1013,15 +775,14 @@ def _cloud_auth_and_connect(
         result = poll_auth_status(camera_name)
 
         if result.status == AuthStatus.AUTHORIZED:
-            # 5. 用云端下发的密码尝试连接（强制 RTSP 验证：云端密码必须先经
-            #    RTSP 确认正确才允许进入连接态，未验证的密码不写盘）
+
             conn = _try_connect_with_password(
                 camera_name, ip, port, rtsp_port, rtsp_path,
                 username, result.device_pwd,
                 require_rtsp=True,
             )
             if conn.success:
-                # 连接成功 → 持久化凭据（含 SN）
+
                 register_camera(
                     name=camera_name, ip=ip,
                     port=conn.onvif_port or port,
@@ -1031,7 +792,7 @@ def _cloud_auth_and_connect(
                     sn_code=sn_code,
                     connection_type=cached.connection_type if cached else "onvif",
                 )
-                # 探测补光能力（失败不阻断）
+
                 _probe_and_save_illumination(
                     camera_name, ip,
                     conn.onvif_port or port,
@@ -1039,7 +800,7 @@ def _cloud_auth_and_connect(
                 )
                 return conn
             else:
-                # 云端密码连接失败 → 密码经 RTSP 验证不可用，或完全无法连接
+
                 return ConnectResult(
                     success=False, status="cloud_pwd_failed",
                     needs_password=True,
@@ -1067,9 +828,7 @@ def _cloud_auth_and_connect(
                     f"请直接输入设备 {camera_name}({ip}) 的密码。"
                 ),
             )
-        # PENDING: 继续轮询
 
-    # 超时
     return ConnectResult(
         success=False, status="needs_password",
         needs_password=True,
@@ -1078,7 +837,6 @@ def _cloud_auth_and_connect(
             f"请直接输入设备 {camera_name}({ip}) 的密码。"
         ),
     )
-
 
 def connect_device(
     camera_name: str,
@@ -1089,50 +847,11 @@ def connect_device(
     rtsp_path: str = "/md0_0",
     username: str = "admin",
     sn_code: str = "",
+    device_class: str = "",
 ) -> ConnectResult:
-    """
-    设备连接。流程：
 
-    1. 如果 config.yaml 有缓存凭据 → 自动使用缓存密码连接（重试 3 次）
-       多次重试仍失败 → 清除 config.yaml 中的注册信息，返回 needs_password
-    2. 如果传入了 password → 使用提供的密码连接（单次尝试，不清除缓存）
-    3. 如果无密码且 device_class == "password_required" → 内部发起云端授权
-       云端同意 → 用云端密码自动连接并注册
-       云端拒绝 → 返回 auth_rejected
-       云端不可用 → 返回 needs_password，让用户直接输入
-       云端密码连接失败 → 返回 cloud_pwd_failed，让用户输入
-    4. 如果无密码且非 password_required → 尝试免密拉流探测
-    5. Agent 获取到密码后再次调用 connect_device(camera_name, password=xxx)
-
-    安全约束: 显式提示（需要密码时提示用户输入）
-
-    Args:
-        camera_name: 摄像头名称（匹配 config.yaml 注册名或发现后的临时名）
-        password:    用户提供的密码（可选；有缓存时自动使用）
-        ip:          设备 IP（新发现的设备，未注册到 config.yaml 时需传入）
-        port:        ONVIF 端口（可选；不传或传错时由工具自动探测验证真实端口）
-        rtsp_port:   RTSP 端口（默认 554）
-        rtsp_path:   RTSP 路径（默认 /md0_0，SK 设备报警流）
-        username:    登录用户名（默认 admin）
-        sn_code:     设备 SN（发现阶段获取，云端授权必需）
-
-    Returns:
-        ConnectResult:
-            - success: 连接是否成功
-            - auth_method: "password" 或 "direct"
-            - status: "connected" / "needs_password" / "no_sn" / "auth_rejected" / "cloud_pwd_failed" / "failed"
-            - needs_password: True 表示需要密码
-            - error_message: 失败原因
-
-    连接态硬约束: 无 SN 不进入连接态。SN 是 SK HTTP 通信（动态 token 计算）的
-    必要参数，三条连接路径（密码 / 直连 / 云端授权）任一返回 "connected" 时，
-    config.yaml 中该设备的 SN 必然已注册（探测不到 SN 返回 "no_sn" 拒绝连接）。
-    """
-    # ── Step 1: 从 config.yaml 查找缓存配置 ──
     cached = _find_cached_camera(camera_name)
 
-    # 确定连接参数（缓存优先，参数兜底）
-    # SN 来源优先级：缓存 > 参数传入
     effective_sn = (cached.sn_code if cached and cached.sn_code else "") or sn_code
     if cached and cached.ip:
         dev_ip = cached.ip
@@ -1144,19 +863,18 @@ def connect_device(
         dev_class = cached.device_class or ""
     elif ip:
         dev_ip = ip
-        dev_port = port or 0   # 0 = 未知，交由连接流程探测验证（不再假设 80）
+        dev_port = port or 0
         dev_rtsp_port = rtsp_port or 554
         dev_rtsp_path = rtsp_path
         dev_username = username
         dev_pwd = password or ""
-        dev_class = ""
+        dev_class = device_class
     else:
         return ConnectResult(
             success=False, status="failed",
             error_message=f"未找到设备 {camera_name} 的连接信息（config.yaml 中无记录且未提供 IP）",
         )
 
-    # ── Step 2: 如果有密码（缓存或用户提供），直接尝试 ONVIF 鉴权连接 ──
     if dev_pwd:
         max_attempts = 3 if (cached and not password) else 1
         last_result = None
@@ -1171,12 +889,11 @@ def connect_device(
                 time.sleep(1.0)
 
         if last_result.success:
-            # 连接态硬约束：密码设备同样必须有 SN（SK 动态 token 计算的必要参数）。
-            # 发现阶段未带到（如 ONVIF 发现后用户手动输密码）时此处补探测。
+
             if not effective_sn:
                 effective_sn = _probe_sn_via_sky(dev_ip, timeout=3.0)
             if not effective_sn:
-                # 拒绝进入连接态：回滚 _try_connect_with_password 写入的内存连接
+
                 _connected_devices.pop(camera_name, None)
                 return ConnectResult(
                     success=False, status="no_sn",
@@ -1187,9 +904,7 @@ def connect_device(
                         f"请确认设备为创维 SK 协议设备后重试。"
                     ),
                 )
-            # 连接成功 → 持久化凭据与验证过的 ONVIF 端口。
-            # result.onvif_port 为实测验证值（0=未验证成功）；未验证时不把假设端口写盘，
-            # 保证 config.yaml 落盘结果只取决于设备事实，不随调用方传参漂移。
+
             verified_port = last_result.onvif_port
             port_changed = bool(verified_port) and (not cached or cached.port != verified_port)
             if not cached or cached.password != dev_pwd or port_changed:
@@ -1202,7 +917,7 @@ def connect_device(
                     sn_code=effective_sn or (cached.sn_code if cached else ""),
                     connection_type=cached.connection_type if cached else "onvif",
                 )
-            # 连接成功后探测补光能力（失败不阻断）
+
             _probe_and_save_illumination(
                 camera_name, dev_ip,
                 verified_port or (cached.port if cached else 0),
@@ -1210,9 +925,8 @@ def connect_device(
             )
             return last_result
 
-        # 密码认证失败
         if cached and not password:
-            # 缓存凭据失效 → 先尝试云端重新授权获取新密码
+
             if effective_sn:
                 cloud_result = _cloud_auth_and_connect(
                     camera_name, dev_ip, dev_port, effective_sn,
@@ -1220,9 +934,8 @@ def connect_device(
                     cached=cached,
                 )
                 if cloud_result.success:
-                    return cloud_result  # 云端获取新密码 + RTSP 验证通过
+                    return cloud_result
 
-            # 云端也失败（或无 SN）→ 清除缓存，让用户手动输入
             _remove_camera_config(camera_name)
             return ConnectResult(
                 success=False, status="needs_password",
@@ -1239,7 +952,6 @@ def connect_device(
             error_message=f"密码认证失败: {last_result.error_message}，请确认密码后重试",
         )
 
-    # ── Step 3: 无密码 + password_required → 内部发起云端授权 ──
     if dev_class == "password_required":
         return _cloud_auth_and_connect(
             camera_name, dev_ip, dev_port, effective_sn,
@@ -1247,17 +959,12 @@ def connect_device(
             cached=cached,
         )
 
-    # ── Step 4: 非 password_required → 尝试免密拉流探测 ──
     access = _probe_stream_access(dev_ip, dev_rtsp_port, dev_rtsp_path)
 
     if access == "open":
-        # 免密设备，直接连接（ONVIF 端口同样以探测验证结果为准）
-        # 1. 获取 SN（搜索阶段可能未传入 connect_device，此处补探测）
+
         probed_sn = effective_sn or _probe_sn_via_sky(dev_ip, timeout=3.0)
 
-        # 连接态硬约束：无 SN 不进入连接态。
-        # SN 是 SK HTTP 通信（动态 token 计算）的必要参数，缺失会导致补光/
-        # 追踪/图像调节/移动侦测等 SK 功能全部静默失效，却仍显示"已连接"。
         if not probed_sn:
             return ConnectResult(
                 success=False, status="no_sn",
@@ -1269,10 +976,8 @@ def connect_device(
                 ),
             )
 
-        # 2. 探测 ONVIF 端口
         verified_port = _probe_onvif_port(dev_ip, hint_port=dev_port)
 
-        # 3. 验证 SK HTTP 通信（有 SN 时才验证）
         sk_http_ok = False
         if probed_sn:
             sk_http_ok = _verify_sk_http(dev_ip, probed_sn)
@@ -1282,13 +987,13 @@ def connect_device(
             "port": verified_port or dev_port,
             "rtsp_port": dev_rtsp_port,
             "rtsp_path": dev_rtsp_path,
-            # 子码流路径与 CameraConfig 对齐（config 注册值为真相源，未注册时用 SK 约定默认）
+
             "rtsp_sub_path": (cached.rtsp_sub_path if cached and cached.rtsp_sub_path else "") or "/md0_1",
             "username": "",
             "password": "",
-            "sn_code": probed_sn,  # ← 内存中保存 SN，供 illumination/tracking 等使用
+            "sn_code": probed_sn,
         }
-        # 尽力建立 ONVIF 连接（部分免密设备支持默认凭据/匿名 ONVIF，供 PTZ 控制使用）
+
         if verified_port or dev_port:
             try:
                 from onvif import ONVIFCamera
@@ -1297,20 +1002,18 @@ def connect_device(
                 cam.create_devicemgmt_service().GetDeviceInformation()
                 conn_info["onvif_camera"] = cam
             except Exception:
-                pass  # ONVIF 不可用不影响拉流，仅 PTZ 功能受限
+                pass
         _connected_devices[camera_name] = conn_info
-        # 缓存为 direct_connect（带 SN，供后续 SK HTTP 通信使用）。
-        # 已注册但 config 缺 SN（如首次连接时探测失败的残留）时也回填——
-        # 旧逻辑仅在首次注册时写盘，SN 一旦漏写将永久为空。
+
         if not cached or not cached.sn_code:
             register_camera(
                 name=camera_name, ip=dev_ip, port=verified_port,
                 username="", password="",
                 rtsp_port=dev_rtsp_port, rtsp_path=dev_rtsp_path,
                 device_class="direct_connect",
-                sn_code=probed_sn,  # ← SN 写入 config（硬约束保证非空）
+                sn_code=probed_sn,
             )
-        # 连接成功后探测补光能力（失败不阻断）
+
         _probe_and_save_illumination(
             camera_name, dev_ip, verified_port or dev_port,
             dev_username or "", dev_pwd or "", cached,
@@ -1322,65 +1025,27 @@ def connect_device(
         )
 
     if access == "auth_required":
-        # 需要密码 → 内部发起云端授权
+
         return _cloud_auth_and_connect(
             camera_name, dev_ip, dev_port, effective_sn,
             dev_rtsp_port, dev_rtsp_path, dev_username,
             cached=cached,
         )
 
-    # 设备不可达
     return ConnectResult(
         success=False,
         status="failed",
         error_message=f"设备 {dev_ip} 不可达（RTSP 端口 {dev_rtsp_port} 无响应）",
     )
 
-
-# ──────────────────────────────────────────────
-#  连接状态管理（模块内部）
-# ──────────────────────────────────────────────
-
-_connected_devices: Dict[str, dict] = {}   # camera_name -> 连接信息
-
+_connected_devices: Dict[str, dict] = {}
 
 def _verify_sk_http(ip: str, sn: str, timeout: float = 5.0) -> bool:
-    """验证 SK HTTP 通信是否可用（轻量级探测，失败静默）。
-
-    用 SK_SETTING_GET_MAGIC 命令探测（最轻量的 SK 免鉴权命令），
-    返回 True 表示 SK HTTP 通道可用、SN 有效、设备支持创维私有协议。
-
-    Args:
-        ip:       设备 IP
-        sn:       设备 SN（用于构造请求）
-        timeout:  超时秒数
-
-    Returns:
-        True = SK HTTP 通道可用；False = 不可用或非创维设备
-    """
-    cmd = {
-        "service_type": "setting",
-        "msg_id": "0000000000000000000000",
-        "cmd_name": "SK_SETTING_GET_MAGIC",
-        "ver": "1.0",
-        "channel": 2,
-        "sequence": 0,
-        "refresh": "0",
-    }
-    resp = send_tcp_command(
-        ip=ip, command=cmd,
-        username="admin", password="",
-        timeout=timeout, port=SK_TCP_PORT,
-    )
-    if resp is None:
+    try:
+        env = sk_proto.verify_sk_http(ip, timeout=timeout)
+        return bool(env.get("available"))
+    except Exception:
         return False
-    http_status = resp.get("_http_status", 0)
-    resp_code = resp.get("code", "")
-    # HTTP 200 或 SK 正常响应码 → SK HTTP 通道可用
-    if http_status == 200 or resp_code in ("C0000", "C000", ""):
-        return True
-    return False
-
 
 def _probe_and_save_illumination(
     camera_name: str,
@@ -1390,14 +1055,7 @@ def _probe_and_save_illumination(
     password: str,
     cached: Optional[CameraConfig] = None,
 ) -> List[str]:
-    """连接成功后探测设备补光能力并持久化到 config.yaml（非阻塞，失败静默）。
 
-    双协议探测：先尝试创维私有协议 (TCP 9010)，失败则回退 ONVIF Imaging Service。
-
-    Returns:
-        支持的补光模式列表（空列表 = 不支持或探测失败）
-    """
-    # 如果 config.yaml 中已有缓存的补光模式，跳过重复探测
     if cached and cached.illumination_modes:
         return cached.illumination_modes
     try:
@@ -1407,7 +1065,7 @@ def _probe_and_save_illumination(
             sn_code=cached.sn_code if cached else "",
         )
         if info.supported and info.supported_modes:
-            # 探测到补光能力 → 持久化到 config.yaml
+
             register_camera(
                 name=camera_name, ip=ip, port=port,
                 username=username, password=password,
@@ -1418,26 +1076,17 @@ def _probe_and_save_illumination(
                 connection_type=cached.connection_type if cached else "onvif",
                 illumination_modes=info.supported_modes,
             )
-            # 如果探测到 TCP 可用，回写 tcp_port 到内存连接状态
-            # 这确保 manage_illumination 后续能直接走私有协议路径
+
             if info.protocol == "sky_private":
                 conn = _connected_devices.get(camera_name)
                 if conn and not conn.get("tcp_port"):
-                    conn["tcp_port"] = SK_TCP_PORT
+                    conn["tcp_port"] = _SK_TCP_PORT
             return info.supported_modes
     except Exception:
-        pass  # 探测失败不阻断连接流程
+        pass
     return []
 
-
 def _remove_camera_config(name: str) -> bool:
-    """从 config.yaml 移除指定摄像头的注册信息。
-
-    用于缓存凭据连接反复失败后清除过期注册，避免后续会话反复尝试无效设备。
-
-    Returns:
-        True 表示成功移除，False 表示未找到或写入失败。
-    """
     if _yaml_lib is None:
         return False
     try:
@@ -1448,14 +1097,13 @@ def _remove_camera_config(name: str) -> bool:
         cameras = data.get("cameras", [])
         new_cameras = [c for c in cameras if c.get("name") != name]
         if len(new_cameras) == len(cameras):
-            return False  # 未找到
+            return False
         data["cameras"] = new_cameras
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             _yaml_lib.safe_dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
         return True
     except Exception:
         return False
-
 
 def _try_connect_with_password(
     camera_name: str,
@@ -1467,50 +1115,24 @@ def _try_connect_with_password(
     password: str,
     require_rtsp: bool = False,
 ) -> ConnectResult:
-    """
-    使用密码尝试连接设备（TCP 通道 → ONVIF → RTSP 逐级验证）。
 
-    连接成功的判定标准:
-      - TCP 或 ONVIF 至少一个认证通过（HTTP 200 / 鉴权调用成功）
-      - **且** RTSP 拉流验证通过（密码对 RTSP 也有效）
-      - 例外: TCP/ONVIF 通过但 RTSP 端口不可达时，仍接受连接（设备可能不支持标准 RTSP 路径）；
-        require_rtsp=True 时取消该例外（RTSP 不可达 = 密码未经 RTSP 验证 = 拒绝），
-        供云端授权密码使用——系统获取的密码必须先经 RTSP 验证正确才允许进入连接态。
-
-    确定性保证: 传入的 onvif_port 只作为探测线索（hint），不直接采信。
-    先探测验证设备真实 ONVIF 端口，成功路径统一使用验证后的端口，
-    并通过 ConnectResult.onvif_port 回传（0=未验证成功），供上层决定是否持久化。
-    """
-    # ── Step 0: 探测验证真实 ONVIF 端口（不信任调用方传入的假设值）──
     verified_port = _probe_onvif_port(ip, hint_port=onvif_port)
-    effective_port = verified_port or onvif_port  # 探测失败时保留 hint 供内存会话使用
+    effective_port = verified_port or onvif_port
 
-    # 子码流路径：config 注册值为真相源（与 CameraConfig 字段对齐），未注册时用 SK 约定默认
     _cached_cfg = _find_cached_camera(camera_name)
     sub_path = (_cached_cfg.rtsp_sub_path if _cached_cfg and _cached_cfg.rtsp_sub_path else "") or "/md0_1"
 
-    # ── 尝试 1: 创维 TCP 通道 (9010) ──
-    test_cmd = {
-        "service_type": "device",
-        "cmd_name": "SK_DEVICE_GET_INFO",
-        "ver": "1.0",
-    }
-    resp = send_tcp_command(
-        ip=ip,
-        command=test_cmd,
-        username=username,
-        password=password,
-        timeout=5.0,
-        port=SK_TCP_PORT,
-    )
+    env = sk_proto.device_get_info(ip, username, password, timeout=5.0)
+    resp = env.get("body") if env.get("ok") else None
     tcp_ok = False
     if resp is not None:
-        _tcp_http_status = resp.get("_http_status", 0)
+        _tcp_http_status = env.get("http_status", 0)
         _tcp_resp_code = resp.get("code", "")
-        # 认证成功: HTTP 200 或 SK 正常响应码（C0000/C000/空）
+
         tcp_ok = (
             _tcp_http_status == 200
-            or (not _tcp_http_status and _tcp_resp_code in ("C0000", "C000", ""))
+            or (not _tcp_http_status and
+                (_tcp_resp_code == "" or sk_proto.code_accept(_tcp_resp_code)))
         )
         if tcp_ok:
             _connected_devices[camera_name] = {
@@ -1518,11 +1140,9 @@ def _try_connect_with_password(
                 "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
                 "rtsp_sub_path": sub_path,
                 "username": username, "password": password,
-                "tcp_port": SK_TCP_PORT,
+                "tcp_port": _SK_TCP_PORT,
             }
-        # else: TCP 返回了响应但认证失败（401/403/其他），降级到 ONVIF → RTSP
 
-    # ── 尝试 2: ONVIF 连接（使用验证过的端口）──
     onvif_ok = False
     if effective_port:
         try:
@@ -1531,7 +1151,7 @@ def _try_connect_with_password(
             dev_svc = cam.create_devicemgmt_service()
             dev_svc.GetDeviceInformation()
             onvif_ok = True
-            # 在已有连接信息上追加 ONVIF camera 对象（保留 TCP 信息）
+
             conn = _connected_devices.get(camera_name, {
                 "ip": ip, "port": effective_port,
                 "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
@@ -1541,22 +1161,20 @@ def _try_connect_with_password(
             conn["onvif_camera"] = cam
             _connected_devices[camera_name] = conn
         except Exception:
-            pass  # ONVIF 失败，继续尝试 RTSP
+            pass
 
-    # ── RTSP 密码验证: 密码必须对 RTSP 也有效才算"密码可用" ──
     rtsp_access = _probe_stream_access(ip, rtsp_port, rtsp_path, username, password)
     rtsp_ok = (rtsp_access == "open")
 
-    # ── 最终判定 ──
     if (tcp_ok or onvif_ok) and rtsp_ok:
-        # TCP/ONVIF + RTSP 全部通过 → 密码确认可用
+
         return ConnectResult(
             success=True, auth_method="password", status="connected",
             onvif_port=verified_port,
         )
 
     if (tcp_ok or onvif_ok) and rtsp_access == "auth_required":
-        # TCP/ONVIF 成功但 RTSP 认证失败 → 密码对 RTSP 无效（凭据隔离或密码不一致）
+
         _connected_devices.pop(camera_name, None)
         return ConnectResult(
             success=False, status="failed",
@@ -1564,7 +1182,7 @@ def _try_connect_with_password(
         )
 
     if rtsp_ok:
-        # 仅 RTSP 通过（TCP/ONVIF 均失败）→ 密码对 RTSP 有效，接受连接
+
         _connected_devices[camera_name] = {
             "ip": ip, "port": effective_port,
             "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
@@ -1578,28 +1196,25 @@ def _try_connect_with_password(
 
     if (tcp_ok or onvif_ok) and rtsp_access == "unreachable":
         if require_rtsp:
-            # 云端授权密码：RTSP 不可达 = 密码未经 RTSP 验证，不允许进入连接态
+
             _connected_devices.pop(camera_name, None)
             return ConnectResult(
                 success=False, status="failed",
                 error_message="RTSP 端口不可达，密码未经 RTSP 验证（云端授权密码要求强制 RTSP 验证）",
             )
-        # TCP/ONVIF 成功但 RTSP 不可达 → 接受连接（设备可能不支持标准 RTSP 路径）
+
         return ConnectResult(
             success=True, auth_method="password", status="connected",
             onvif_port=verified_port,
         )
 
-    # 全部失败
     _connected_devices.pop(camera_name, None)
     return ConnectResult(
         success=False, status="failed",
         error_message="TCP/ONVIF/RTSP 均连接失败",
     )
 
-
 def _rtsp_read_response_head(sock) -> str:
-    """读取 RTSP 响应至头部结束（\r\n\r\n）；超时/对端关闭时返回已收到的内容。"""
     response = b""
     while True:
         try:
@@ -1613,20 +1228,13 @@ def _rtsp_read_response_head(sock) -> str:
             break
     return response.decode("utf-8", errors="ignore")
 
-
 def _rtsp_status_code(resp_text: str) -> int:
-    """严格解析 RTSP 状态行（RTSP/x.y <code>）；非标准状态行返回 0。
-
-    不做子串匹配——旧版 "401" in text 会被响应头/SDP 中偶现的数字串误判。
-    """
     import re
     first_line = resp_text.split("\r\n", 1)[0].split("\n", 1)[0].strip()
     m = re.match(r"^RTSP/\d+\.\d+\s+(\d{3})", first_line)
     return int(m.group(1)) if m else 0
 
-
 def _rtsp_send_describe(sock, rtsp_url: str, cseq: int, auth_header: str = "") -> str:
-    """在给定连接上发送一个 DESCRIBE 请求并读取响应头。"""
     request = (
         f"DESCRIBE {rtsp_url} RTSP/1.0\r\n"
         f"CSeq: {cseq}\r\n"
@@ -1637,13 +1245,7 @@ def _rtsp_send_describe(sock, rtsp_url: str, cseq: int, auth_header: str = "") -
     sock.sendall(request.encode("utf-8"))
     return _rtsp_read_response_head(sock)
 
-
 def _parse_www_authenticate(resp_text: str) -> List[Dict[str, Any]]:
-    """解析响应头中全部 WWW-Authenticate challenge。
-
-    Returns:
-        [{"scheme": "digest"|"basic", "params": {realm/nonce/qop/...}}]
-    """
     import re
     challenges: List[Dict[str, Any]] = []
     for line in resp_text.splitlines():
@@ -1663,7 +1265,6 @@ def _parse_www_authenticate(resp_text: str) -> List[Dict[str, Any]]:
         challenges.append({"scheme": m.group(1).lower(), "params": params})
     return challenges
 
-
 def _build_rtsp_digest_header(
     params: Dict[str, str],
     username: str,
@@ -1671,10 +1272,6 @@ def _build_rtsp_digest_header(
     method: str,
     uri: str,
 ) -> str:
-    """按 RFC 2617 计算 Digest 认证头（RTSP DESCRIBE 用，兼容无 qop 的 RFC 2069 模式）。
-
-    response = MD5( MD5(user:realm:pass) : nonce [:nc:cnonce:qop] : MD5(method:uri) )
-    """
     def _md5(s: str) -> str:
         return hashlib.md5(s.encode("utf-8")).hexdigest()
 
@@ -1699,7 +1296,6 @@ def _build_rtsp_digest_header(
         header += f', opaque="{params["opaque"]}"'
     return header + qop_fields + "\r\n"
 
-
 def _rtsp_negotiated_describe(
     ip: str,
     rtsp_port: int,
@@ -1708,15 +1304,6 @@ def _rtsp_negotiated_describe(
     password: str = "",
     timeout: float = 5.0,
 ) -> Tuple[int, str]:
-    """完整 RTSP DESCRIBE 认证协商（标准 401 challenge/response）。
-
-    流程：无认证 DESCRIBE → 401 + WWW-Authenticate → 按 challenge 用
-    Digest（优先）/ Basic 重发 → 200。与 FFmpeg/VLC 的协商行为对齐，
-    修复旧版"单次 Basic DESCRIBE 被固件回 401 即误判认证失败"的假阴性。
-
-    Returns:
-        (最终 RTSP 状态码, 最后一次响应文本)；连接失败/无标准状态行返回 (0, "")
-    """
     rtsp_url = f"rtsp://{ip}:{rtsp_port}{path}"
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1726,13 +1313,12 @@ def _rtsp_negotiated_describe(
         return 0, ""
 
     try:
-        # 第 1 发：无认证 DESCRIBE（免密设备直接 200；需鉴权设备回 401 + challenge）
+
         resp = _rtsp_send_describe(sock, rtsp_url, 1)
         code = _rtsp_status_code(resp)
         if code != 401 or not (username and password):
             return code, resp
 
-        # 401 → 排空残留数据后按 challenge 协商重发
         try:
             sock.settimeout(0.2)
             while sock.recv(4096):
@@ -1745,7 +1331,7 @@ def _rtsp_negotiated_describe(
         ordered = ([c for c in challenges if c["scheme"] == "digest"]
                    + [c for c in challenges if c["scheme"] == "basic"])
         if not ordered:
-            # 固件 401 未带 challenge（非标准）→ 按旧版行为直接试一次 Basic
+
             ordered = [{"scheme": "basic", "params": {}}]
 
         for cseq, challenge in enumerate(ordered, start=2):
@@ -1769,7 +1355,6 @@ def _rtsp_negotiated_describe(
         except Exception:
             pass
 
-
 def _probe_stream_access(
     ip: str,
     rtsp_port: int = 554,
@@ -1777,15 +1362,7 @@ def _probe_stream_access(
     username: str = "",
     password: str = "",
 ) -> str:
-    """
-    探测 RTSP 流是否可访问（含标准 401 认证协商，Basic / Digest 均支持）。
 
-    Returns:
-        "open"           — 可以拉流（免密或密码正确）
-        "auth_required"  — 协商后仍 401（密码确实无效）
-        "unreachable"    — 设备不可达
-    """
-    # 先检查端口是否开放
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(3.0)
@@ -1796,7 +1373,6 @@ def _probe_stream_access(
     except Exception:
         return "unreachable"
 
-    # 端口开放 → 完整协商 DESCRIBE（无认证 → 401 challenge → Digest/Basic 重发）
     code, _resp_text = _rtsp_negotiated_describe(ip, rtsp_port, rtsp_path, username, password)
 
     if code == 200:
@@ -1804,8 +1380,7 @@ def _probe_stream_access(
     if code == 401:
         return "auth_required"
     if code:
-        # 其他 RTSP 错误码（404 等）— 可能是路径不对，但端口可达
-        # 尝试常见路径（含创维摄像头路径 /stream0, /md0_0, /md0_1）
+
         for alt_path in ["/Streaming/Channels/101", "/h264/ch1/main/av_stream", "/live",
                          "/stream0", "/md0_0", "/stream1", "/md0_1"]:
             if alt_path == rtsp_path:
@@ -1815,16 +1390,14 @@ def _probe_stream_access(
                 return "open"
             elif alt_result == "auth_required":
                 return "auth_required"
-        return "open"  # 端口开放且响应了 RTSP，视为可用
-    # 无标准状态行（响应异常/超时）— 维持旧版宽松语义：端口开放视为可达
-    return "open"
+        return "open"
 
+    return "open"
 
 def _quick_rtsp_check(
     ip: str, rtsp_port: int, path: str,
     username: str = "", password: str = "",
 ) -> str:
-    """快速检查单个 RTSP 路径是否可访问（复用完整认证协商，状态行严格解析）"""
     code, _ = _rtsp_negotiated_describe(ip, rtsp_port, path, username, password)
     if code == 200:
         return "open"
@@ -1832,9 +1405,7 @@ def _quick_rtsp_check(
         return "auth_required"
     return "unreachable"
 
-
 def _find_cached_camera(camera_name: str) -> Optional[CameraConfig]:
-    """从 config.yaml 查找指定名称的摄像头配置"""
     try:
         cameras = _load_config_cameras()
         for cam in cameras:
@@ -1844,16 +1415,9 @@ def _find_cached_camera(camera_name: str) -> Optional[CameraConfig]:
         pass
     return None
 
-
 def _load_config_cameras() -> List[CameraConfig]:
-    """从 config.yaml 加载摄像头配置列表（内部辅助）。
-    
-    兼容两种 config.yaml 字段格式:
-      - MCP 方案: port / sn_code / rtsp_path / rtsp_sub_path
-      - 密码认证方案: onvif_port / sn / rtsp_path_main / rtsp_path_sub
-    """
     if not CONFIG_PATH.exists():
-        # 兜底搜索
+
         alt_paths = [
             os.path.join(os.path.dirname(__file__), "..", "..", "confg.yaml"),
             "config.yaml",
@@ -1903,118 +1467,27 @@ def _load_config_cameras() -> List[CameraConfig]:
             continue
     return configs
 
-
-# ──────────────────────────────────────────────
-#  云端授权函数
-# ──────────────────────────────────────────────
-
-def _make_device_auth_sign(
-    request_id: str,
-    timestamp: str,
-    device_key: str,
-    agent_skill_id: str,
-) -> str:
-    """按 DeviceCryptUtils#ucHmacSHA256AuthSign 规则计算 scSign。
-
-    - 明文: requestId + timestamp + deviceKey + agentSkillId（无分隔符拼接）
-    - 密钥: MD5(agentSkillId)（32 位小写 hex）
-    - 签名: HMAC-SHA256(plain, secret) 的 hex 小写串取前 16 位
-    """
-    secret = hashlib.md5(agent_skill_id.encode("utf-8")).hexdigest()
-    plain = request_id + timestamp + device_key + agent_skill_id
-    return hmac.new(
-        secret.encode("utf-8"), plain.encode("utf-8"), hashlib.sha256
-    ).hexdigest()[:16]
-
-
 def request_cloud_auth(sn: str) -> CloudAuthRequestResult:
-    """
-    向云端发起设备授权请求（智能体认证设备授权参数）。
-
-    在 search_devices 发现设备后、connect_device 之前调用。
-    向云端 POST /agent/skill/v1/deviceAuthReq，请求体为
-    {deviceKey: sn, agentSkillId: claw_id}，云端校验通过后返回 true。
-
-    请求头携带设备签名（HMAC-SHA256）：
-    - requestId: 本次请求唯一标识（UUID）
-    - timestamp: 毫秒时间戳字符串
-    - scSign:    HMAC-SHA256(requestId+timestamp+deviceKey+agentSkillId,
-                 MD5(agentSkillId)) 的 hex 前 16 位
-
-    agentSkillId 复用 clawID（从 config.yaml 读取，首次自动生成并持久化），
-    HTTP 丢包重发时复用同一 clawID，确保云端识别为同一 Agent。
-
-    安全约束: 无特殊约束（仅发起请求，不携带密码等敏感信息）
-
-    Args:
-        sn: 设备序列号（deviceKey）
-
-    Returns:
-        CloudAuthRequestResult:
-            - success: 云端是否接受请求（R.data == true）
-            - claw_id: 本次使用的 clawID（重发时传入相同值）
-            - error_message: 失败原因
-    """
     claw_id = get_or_create_claw_id()
 
-    if not _CLOUD_AUTH_URL:
-        return CloudAuthRequestResult(
-            success=False,
-            claw_id=claw_id,
-            error_message="云端授权地址未配置（_CLOUD_AUTH_URL 为空，请填入 http://host:port/path）",
-        )
-
-    if _requests_lib is None:
-        return CloudAuthRequestResult(
-            success=False,
-            claw_id=claw_id,
-            error_message="requests 未安装，无法发送 HTTP 请求",
-        )
-
-    # 构造设备签名请求头
-    request_id = str(uuid.uuid4())
-    timestamp = str(int(time.time() * 1000))
-    sc_sign = _make_device_auth_sign(request_id, timestamp, sn, claw_id)
-
-    body = {"deviceKey": sn, "agentSkillId": claw_id}
-    headers = {
-        "Content-Type": "application/json;charset=utf-8",
-        "requestId": request_id,
-        "timestamp": timestamp,
-        "scSign": sc_sign,
-    }
     try:
-        resp = _requests_lib.post(
-            _CLOUD_AUTH_URL,
-            data=json.dumps(body, separators=(',', ':')),
-            headers=headers,
-            timeout=10.0,
-        )
-    except _requests_lib.RequestException as e:
+        env = sk_proto.cloud_auth_request(sn, claw_id, timeout=10.0)
+    except Exception as e:
         return CloudAuthRequestResult(
             success=False,
             claw_id=claw_id,
-            error_message=f"HTTP 请求失败: {e}",
+            error_message=f"云端请求失败: {e}",
         )
 
-    if resp.status_code != 200:
+    if not env.get("ok"):
         return CloudAuthRequestResult(
             success=False,
             claw_id=claw_id,
-            error_message=f"云端返回 HTTP {resp.status_code}: {resp.text[:200]}",
+            error_message=env.get("error", "云端请求失败"),
         )
 
-    # 解析 SpringBlade R<T> 响应: code==200 且 data==true 才算成功
-    try:
-        payload = resp.json()
-    except ValueError:
-        return CloudAuthRequestResult(
-            success=False,
-            claw_id=claw_id,
-            error_message=f"云端响应非 JSON: {resp.text[:200]}",
-        )
-
-    if payload.get("code") == 200 :
+    payload = env.get("body") or {}
+    if payload.get("code") == 200:
         return CloudAuthRequestResult(success=True, claw_id=claw_id)
 
     return CloudAuthRequestResult(
@@ -2023,36 +1496,10 @@ def request_cloud_auth(sn: str) -> CloudAuthRequestResult:
         error_message=f"云端拒绝请求（code={payload.get('code')}）: {payload.get('msg', '')}",
     )
 
-
 def poll_auth_status(
     camera_name: str,
 ) -> AuthStatusResult:
-    """
-    检测智能体与设备的授权状态（对接 /agent/skill/v1/checkAuth）。
 
-    单次调用做一次查询。Agent 应反复调用（建议间隔 5 秒，最长等待 300 秒 / 5 分钟）：
-    - status == AUTHORIZED → devicePwd 已自动写回 config.yaml，可直接调 connect_device
-    - status == REJECTED   → 用户在 APP 端拒绝了授权，流程终止
-    - status == PENDING    → 用户尚未确认，继续轮询
-    - status == ERROR      → 服务器异常或本地配置缺失，流程终止
-
-    授权通过时，云端返回的 devicePwd（MD5(deviceKey) 后 6 位）会自动写入
-    config.yaml 中该摄像头的 password 字段，后续 connect_device 直接复用。
-
-    安全约束: 无特殊约束
-
-    Args:
-        camera_name: 摄像头名称或 SN（从 config.yaml 查找设备 SN）
-
-    Returns:
-        AuthStatusResult:
-            - status: 授权状态 (PENDING / AUTHORIZED / REJECTED / ERROR)
-            - camera_name: 摄像头名称
-            - message: 状态说明
-            - auth_status_code: 云端原始 authStatus（0/1/2）
-            - device_pwd: 授权通过时的设备密码（其余场景为空）
-    """
-    # 1. 从 config.yaml 查设备 SN
     if _yaml_lib is None:
         return AuthStatusResult(status=AuthStatus.ERROR, camera_name=camera_name, message="pyyaml 未安装")
 
@@ -2068,60 +1515,27 @@ def poll_auth_status(
             message=f"未在 config.yaml 找到摄像头或其 SN: {camera_name}",
         )
 
-    # 2. 取持久化 clawID
     claw_id = get_or_create_claw_id()
 
-    # 3. 确定轮询 URL
-    check_url = _CLOUD_AUTH_POLL_URL or _CLOUD_AUTH_CHECK_URL
-    if not check_url:
-        return AuthStatusResult(
-            status=AuthStatus.ERROR,
-            camera_name=camera_name,
-            message="云端轮询地址未配置（_CLOUD_AUTH_CHECK_URL 和 _CLOUD_AUTH_POLL_URL 均为空）",
-        )
-
-    if _requests_lib is None:
-        return AuthStatusResult(
-            status=AuthStatus.ERROR,
-            camera_name=camera_name,
-            message="requests 未安装",
-        )
-
-    # 4. 构造签名 GET 请求
-    request_id = str(uuid.uuid4())
-    timestamp = str(int(time.time() * 1000))
-    sc_sign = _make_device_auth_sign(request_id, timestamp, camera.sn_code, claw_id)
-    params = {"deviceKey": camera.sn_code, "agentSkillId": claw_id}
-    headers = {
-        "requestId": request_id,
-        "timestamp": timestamp,
-        "scSign": sc_sign,
-    }
     try:
-        resp = _requests_lib.get(check_url, params=params, headers=headers, timeout=10.0)
-    except _requests_lib.RequestException as e:
+        env = sk_proto.cloud_auth_check(camera.sn_code, claw_id, timeout=10.0)
+    except Exception as e:
         return AuthStatusResult(
             status=AuthStatus.ERROR,
             camera_name=camera_name,
-            message=f"HTTP 请求失败: {e}",
+            message=f"云端请求失败: {e}",
         )
 
-    if resp.status_code != 200:
+    if not env.get("ok"):
         return AuthStatusResult(
             status=AuthStatus.ERROR,
             camera_name=camera_name,
-            message=f"云端返回 HTTP {resp.status_code}: {resp.text[:200]}",
+            message=env.get("error", "云端请求失败"),
         )
 
-    # 5. 解析 R<AgentDeviceAuthVO>
-    try:
-        payload = resp.json()
-    except ValueError:
-        return AuthStatusResult(
-            status=AuthStatus.ERROR,
-            camera_name=camera_name,
-            message=f"云端响应非 JSON: {resp.text[:200]}",
-        )
+    payload = env.get("body")
+    if not isinstance(payload, dict):
+        payload = {}
 
     if payload.get("code") != 200 or not payload.get("success"):
         return AuthStatusResult(
@@ -2134,9 +1548,8 @@ def poll_auth_status(
     auth_code = int(data.get("authStatus", 0))
     device_pwd = str(data.get("devicePwd") or "")
 
-    # 6. 映射 authStatus → AuthStatus
     if auth_code == 1:
-        # 授权通过：devicePwd 写回 config.yaml
+
         if device_pwd:
             register_camera(
                 name=camera.name,
@@ -2166,7 +1579,7 @@ def poll_auth_status(
             auth_status_code=auth_code,
         )
     else:
-        # auth_code == 0 或其他值都当作 PENDING
+
         return AuthStatusResult(
             status=AuthStatus.PENDING,
             camera_name=camera.name,
@@ -2174,33 +1587,12 @@ def poll_auth_status(
             auth_status_code=auth_code,
         )
 
-
-
 def disconnect_device(
     camera_name: str,
 ) -> DisconnectResult:
-    """
-    断开与摄像头的连接，释放所有资源。
-
-    执行步骤：
-    1. 停止所有活跃的视频流和录像
-    2. 释放云端会话（如有）
-    3. 关闭 ONVIF/RTSP 连接
-
-    安全约束: 无特殊约束
-
-    Args:
-        camera_name: 摄像头名称（自动填充）
-
-    Returns:
-        DisconnectResult:
-            - success: 断开是否成功
-            - session_released: 是否释放了云端会话
-            - error_message: 失败原因
-    """
     if camera_name in _connected_devices:
         conn_info = _connected_devices.pop(camera_name)
-        # 尝试关闭 ONVIF camera 对象
+
         onvif_cam = conn_info.get("onvif_camera")
         if onvif_cam:
             try:
@@ -2215,26 +1607,17 @@ def disconnect_device(
         error_message="设备未在连接列表中",
     )
 
-
-# ──────────────────────────────────────────────
-#  共享辅助: camera 解析器 + resolve_target
-# ──────────────────────────────────────────────
-
 def _find_camera(name: str):
-    """按 name 查注册表（大小写不敏感）。返回 CameraConfig 或 None。"""
     target = (name or "").strip().lower()
     for cam in get_registered_cameras():
         if (cam.name or "").strip().lower() == target:
             return cam
     return None
 
-
 def _dev_to_name(dev) -> str:
-    """DiscoveredDevice → 默认注册名（model 优先，IP 后缀防重名）"""
     base = dev.model or dev.sn_code or "camera"
     suffix = dev.ip.split(".")[-1] if dev.ip else "x"
     return f"{base}_{suffix}"
-
 
 def big_register(
     name: str = "",
@@ -2245,7 +1628,6 @@ def big_register(
     password: str = "",
     device_class: str = "password_required",
 ) -> RegisterResult:
-    """注册摄像头到 config.yaml。name 为空时自动生成；提供 password 则验证 ONVIF 鉴权。"""
     rr = register_camera(
         name=name, ip=ip, port=onvif_port,
         username="admin", password=password,
@@ -2267,11 +1649,7 @@ def big_register(
 
     return rr
 
-
 def _resolve_connect_target(name: str) -> Tuple[Optional[CameraConfig], Optional[AuthOrchestrateResult]]:
-    """从 config.yaml 按 name 解析目标摄像头；返回 (target, early_result)。
-    early_result 不为 None 时，big_connect 应直接返回它。
-    """
     cameras = get_registered_cameras()
     if not cameras:
         return None, AuthOrchestrateResult(
@@ -2301,25 +1679,8 @@ def _resolve_connect_target(name: str) -> Tuple[Optional[CameraConfig], Optional
         )
     return target, None
 
-
 def big_connect(name: str = "") -> AuthOrchestrateResult:
-    """云端授权编排：发起授权 + 轮询状态，一次调用完成。
 
-    内部流程（对 Agent 透明）：
-    1. POST /deviceAuthReq 发起授权请求
-    2. GET /checkAuth 轮询状态（5 秒一次，最长 10 分钟）
-    3. 授权通过时自动把 devicePwd 写回 config.yaml
-
-    Args:
-        name: 摄像头名称（空 → 单台直接用，多台返回列表让 Agent 问用户）
-
-    Returns:
-        成功: AuthOrchestrateResult(success=True, status="authorized",
-              camera_name, sn, claw_id, device_pwd)
-        失败: AuthOrchestrateResult(success=False, status="rejected|timeout|error|...",
-              error_message)
-    """
-    # 1. 解析目标摄像头
     target, early = _resolve_connect_target(name)
     if early is not None:
         return early
@@ -2330,7 +1691,6 @@ def big_connect(name: str = "") -> AuthOrchestrateResult:
             error_message=f"设备 '{target.name}' 未记录 SN，无法发起云端授权",
         )
 
-    # 2. 发起授权请求（POST）
     cr = request_cloud_auth(target.sn_code)
     if not cr.success:
         return AuthOrchestrateResult(
@@ -2340,9 +1700,8 @@ def big_connect(name: str = "") -> AuthOrchestrateResult:
             error_message=cr.error_message,
         )
 
-    # 3. 轮询授权状态（GET，5 秒一次，最多 10 分钟 = 120 次）
     poll_interval = 5
-    max_polls = 120  # 10 * 60 / 5 = 120
+    max_polls = 120
     for _ in range(max_polls):
         time.sleep(poll_interval)
         result = poll_auth_status(target.name)
@@ -2367,9 +1726,7 @@ def big_connect(name: str = "") -> AuthOrchestrateResult:
                 claw_id=cr.claw_id,
                 error_message=result.message,
             )
-        # PENDING: 继续轮询
 
-    # 4. 超时
     return AuthOrchestrateResult(
         success=False, status="timeout",
         camera_name=target.name, sn=target.sn_code,
@@ -2377,31 +1734,18 @@ def big_connect(name: str = "") -> AuthOrchestrateResult:
         error_message="授权等待超时（10 分钟），用户未确认",
     )
 
-
 def resolve_target(
     name: Optional[str] = None,
     answers: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """
-    解析目标 camera，4 段降级（写死，agent 不需判断）：
-      Stage 0. answers["camera"] 已选（NEEDS_INPUT 重调）→ 查注册；未注册就重 search + register
-      Stage 1. name 显式给 → 查注册
-      Stage 2. 注册列表 1 台 → 用；多台 → NEEDS_INPUT
-      Stage 3. 注册列表 0 台 → 自动 search → 1 台 auto-register；多台 NEEDS_INPUT；0 台 NO_CAMERAS
-
-    Returns:
-        ok=True:  {"ok": True, "camera": CameraConfig, "via": "user_picked|user_picked_registered|registered|auto_registered"}
-        ok=False: {"ok": False, "error_code": "NEEDS_INPUT|CAMERA_NOT_FOUND|NO_CAMERAS|...", "message", "hint", "needs_input"?}
-    """
     answers = answers or {}
 
-    # ── Stage 0: NEEDS_INPUT 重调带 camera 选 ──
     if answers.get("camera"):
         chosen = answers["camera"]
         cam = _find_camera(chosen)
         if cam:
             return {"ok": True, "camera": cam, "via": "user_picked"}
-        # 未注册 → 从 search options 选的 → 重 search + register
+
         try:
             sr = search_devices(timeout=15.0)
         except Exception as e:
@@ -2422,7 +1766,6 @@ def resolve_target(
                 "message": f"选了 {chosen!r} 但局域网未发现该设备",
                 "hint": "重新调 search_devices 看当前可发现设备"}
 
-    # ── Stage 1: name 显式给 ──
     if name:
         cam = _find_camera(name)
         if cam:
@@ -2431,7 +1774,6 @@ def resolve_target(
                 "message": f"name={name!r} 不在 config.yaml",
                 "hint": "用 get_registered_cameras 看已注册列表，或 search_devices 找新设备"}
 
-    # ── Stage 2: 没 name，看注册列表 ──
     cams = get_registered_cameras()
     if len(cams) == 1:
         return {"ok": True, "camera": cams[0], "via": "registered"}
@@ -2443,7 +1785,6 @@ def resolve_target(
                     "options": [{"label": f"{c.name} ({c.ip})", "value": c.name} for c in cams],
                 }]}
 
-    # ── Stage 3: list 空，自动 search ──
     try:
         sr = search_devices(timeout=15.0)
     except Exception as e:
@@ -2456,7 +1797,6 @@ def resolve_target(
                 "message": "config.yaml 空 + 局域网内未发现任何设备",
                 "hint": "检查相机电源和网络"}
 
-    # ── Stage 4: search 找到几台 ──
     if len(sr.devices) == 1:
         dev = sr.devices[0]
         dev_name = _dev_to_name(dev)
@@ -2471,7 +1811,6 @@ def resolve_target(
                 "message": f"自动注册 {dev_name} 失败: {reg.error_message}",
                 "hint": "手动调 register_camera 排查"}
 
-    # 多台 → NEEDS_INPUT
     return {"ok": False, "error_code": "NEEDS_INPUT",
             "needs_input": [{
                 "key": "camera",

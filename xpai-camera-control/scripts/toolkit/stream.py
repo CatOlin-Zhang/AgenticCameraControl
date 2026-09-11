@@ -1,7 +1,5 @@
-
 import os
 import signal
-import sys
 import threading
 import time
 from pathlib import Path
@@ -18,15 +16,12 @@ class RecordingAction(str, Enum):
     STOP = "stop"
     STATUS = "status"
 
-
 class StorageAction(str, Enum):
     QUERY = "query"
     SET = "set"
 
-
 @dataclass
 class StreamResult:
-
     success: bool
     stream_url: str = ""
     codec: str = ""
@@ -35,20 +30,16 @@ class StreamResult:
     bitrate: int = 0
     error_message: str = ""
 
-
 @dataclass
 class ScreenshotResult:
-    """截图操作返回结果"""
     success: bool
     file_path: str = ""
     width: int = 0
     height: int = 0
     error_message: str = ""
 
-
 @dataclass
 class RecordingResult:
-
     success: bool
     is_recording: bool = False
     file_path: str = ""
@@ -56,10 +47,8 @@ class RecordingResult:
     auto_stop: bool = False
     error_message: str = ""
 
-
 @dataclass
 class StorageResult:
-
     success: bool
     used_space_mb: float = 0.0
     available_space_mb: float = 0.0
@@ -68,18 +57,15 @@ class StorageResult:
     policy: str = ""
     error_message: str = ""
 
-
 def _open_rtsp_capture(rtsp_url: str):
-
     import cv2
     try:
         return cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG, [
-            cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000,
+            cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000,
             cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000,
         ])
     except (TypeError, AttributeError):
         return cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-
 
 def get_audio_video_stream(
     camera_name: str,
@@ -159,6 +145,7 @@ def get_audio_video_stream(
     try:
         import cv2
     except ImportError:
+
         from .device_mgmt import _probe_stream_access
         access = _probe_stream_access(ip, rtsp_port, rtsp_path, username, password)
         if access == "open":
@@ -183,6 +170,7 @@ def get_audio_video_stream(
 
     cap = _open_rtsp_capture(rtsp_url)
     if not cap.isOpened():
+
         cap.release()
         alt_path = (conn_info.get("rtsp_path") or "/md0_0") if sub_stream \
             else (conn_info.get("rtsp_sub_path") or "/md0_1")
@@ -218,12 +206,10 @@ def get_audio_video_stream(
         bitrate=0,
     )
 
-
 def capture_video_screenshot(
     camera_name: str,
     save_path: Optional[str] = None,
 ) -> ScreenshotResult:
-
     import os
     import time
 
@@ -274,103 +260,101 @@ def capture_video_screenshot(
             error_message="缺少 opencv-python，请安装: pip install opencv-python",
         )
 
-    if conn_type == "usb":
-        dev_idx = conn_info.get("device_index", 0)
-        cap = cv2.VideoCapture(dev_idx, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            cap.release()
-            return ScreenshotResult(
-                success=False,
-                file_path=file_path,
-                error_message=f"USB 摄像头 {dev_idx} 无法打开",
-            )
-    else:
-        ip = conn_info.get("ip", "")
-        rtsp_port = conn_info.get("rtsp_port", 554)
-        username = conn_info.get("username", "")
-        password = conn_info.get("password", "")
-
-        from .device_mgmt import _build_rtsp_url
-
-        paths = []
-        for p in (conn_info.get("rtsp_path") or "/md0_0",
-                  conn_info.get("rtsp_sub_path") or "/md0_1"):
-            if p and p not in paths:
-                paths.append(p)
-
-        for rtsp_path in paths:
-            rtsp_url = _build_rtsp_url(ip, rtsp_port, rtsp_path, username, password)
-            cap = _open_rtsp_capture(rtsp_url)
-            if cap.isOpened():
-                break
-            cap.release()
+    def _attempt_capture():
+        if conn_type == "usb":
+            dev_idx = conn_info.get("device_index", 0)
+            cap = cv2.VideoCapture(dev_idx, cv2.CAP_DSHOW)
+            if not cap.isOpened():
+                cap.release()
+                return ScreenshotResult(
+                    success=False,
+                    file_path=file_path,
+                    error_message=f"USB 摄像头 {dev_idx} 无法打开",
+                )
         else:
-            return ScreenshotResult(
-                success=False,
-                file_path=file_path,
-                error_message=f"无法从 {ip}:{rtsp_port} 打开视频流（已尝试 {'、'.join(paths)}），"
-                              f"请检查 RTSP 路径和认证信息",
-            )
+            ip = conn_info.get("ip", "")
+            rtsp_port = conn_info.get("rtsp_port", 554)
+            username = conn_info.get("username", "")
+            password = conn_info.get("password", "")
 
-    for _ in range(5):
-        ret, frame = cap.read()
-        if not ret:
-            cap.release()
+            from .device_mgmt import _build_rtsp_url
+
+            paths = []
+            for p in (conn_info.get("rtsp_path") or "/md0_0",
+                      conn_info.get("rtsp_sub_path") or "/md0_1"):
+                if p and p not in paths:
+                    paths.append(p)
+
+            for rtsp_path in paths:
+                rtsp_url = _build_rtsp_url(ip, rtsp_port, rtsp_path, username, password)
+                cap = _open_rtsp_capture(rtsp_url)
+                if cap.isOpened():
+                    break
+                cap.release()
+            else:
+                return ScreenshotResult(
+                    success=False,
+                    file_path=file_path,
+                    error_message=f"无法从 {ip}:{rtsp_port} 打开视频流（已尝试 {'、'.join(paths)}），"
+                                  f"请检查 RTSP 路径和认证信息",
+                )
+
+        frame = None
+        for _ in range(6):
+            ret, f = cap.read()
+            if ret and f is not None:
+                frame = f
+        cap.release()
+
+        if frame is None:
             return ScreenshotResult(
                 success=False,
                 file_path=file_path,
                 error_message="无法从流中读取帧数据",
             )
 
-    ret, frame = cap.read()
-    cap.release()
+        height, width = frame.shape[:2]
+        try:
+            import numpy as np
+            success_enc, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            if success_enc:
+                encoded.tofile(file_path)
+            else:
+                raise RuntimeError("imencode 返回失败")
+        except Exception as e:
+            return ScreenshotResult(
+                success=False,
+                file_path=file_path,
+                error_message=f"保存截图失败: {e}",
+            )
 
-    if not ret or frame is None:
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            return ScreenshotResult(
+                success=False,
+                file_path=file_path,
+                error_message="截图文件写入失败或为空",
+            )
+
         return ScreenshotResult(
-            success=False,
+            success=True,
             file_path=file_path,
-            error_message="读取帧数据失败",
+            width=width,
+            height=height,
         )
 
-    height, width = frame.shape[:2]
-    try:
-        import numpy as np
-        success_enc, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
-        if success_enc:
-            encoded.tofile(file_path)
-        else:
-            raise RuntimeError("imencode 返回失败")
-    except Exception as e:
-        return ScreenshotResult(
-            success=False,
-            file_path=file_path,
-            error_message=f"保存截图失败: {e}",
-        )
-
-    if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-        return ScreenshotResult(
-            success=False,
-            file_path=file_path,
-            error_message="截图文件写入失败或为空",
-        )
-
-    return ScreenshotResult(
-        success=True,
-        file_path=file_path,
-        width=width,
-        height=height,
-    )
+    result = _attempt_capture()
+    if not result.success:
+        time.sleep(1.0)
+        result = _attempt_capture()
+    return result
 
 _RECORDING_STARTUP_COMPENSATION = 1.5
 
-_storage_config: Dict[str, dict] = {}     # camera_name -> {"path": str, "format": str, "policy": str}
-
+_storage_config: Dict[str, dict] = {}
 
 _VALID_RTSP_TRANSPORTS = frozenset({"tcp", "udp"})
 
-
 def _resolve_binary(name: str) -> Optional[str]:
-
     path = shutil.which(name)
     if path:
         return path
@@ -381,11 +365,7 @@ def _resolve_binary(name: str) -> Optional[str]:
             return candidate
     return None
 
-
-
-
 def _resolve_transport_plan(rtsp_transport: Optional[Any]) -> List[str]:
-
     if rtsp_transport is None:
         return ["tcp", "udp"]
     if isinstance(rtsp_transport, str):
@@ -399,9 +379,7 @@ def _resolve_transport_plan(rtsp_transport: Optional[Any]) -> List[str]:
         raise ValueError(f"不支持的 rtsp_transport: {bad}，可选 {sorted(_VALID_RTSP_TRANSPORTS)}")
     return plan
 
-
 def _probe_dimensions(rtsp_url: str, transport_plan: List[str], timeout: int = 15) -> Tuple[int, int]:
-
     ffprobe_path = _resolve_binary("ffprobe")
     if not ffprobe_path:
         return 0, 0
@@ -428,12 +406,9 @@ def _probe_dimensions(rtsp_url: str, transport_plan: List[str], timeout: int = 1
             continue
     return 0, 0
 
-
 _IS_WINDOWS = os.name == "nt"
 
-
 def _send_ffmpeg_interrupt(proc: subprocess.Popen) -> None:
-
     try:
         if _IS_WINDOWS:
             os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
@@ -442,10 +417,8 @@ def _send_ffmpeg_interrupt(proc: subprocess.Popen) -> None:
     except (OSError, ValueError):
         pass
 
-
 @dataclass
 class _CameraRecState:
-
     process: Optional[subprocess.Popen] = None
     start_time: Optional[float] = None
     file_path: str = ""
@@ -453,13 +426,10 @@ class _CameraRecState:
     timer: Optional[threading.Timer] = None
     log_handle: Any = None
 
-
 _recording_states: Dict[str, _CameraRecState] = {}
-
 
 _VIDEO_DIR = Path(__file__).resolve().parent.parent.parent / "video"
 _REC_STATE_FILE = _VIDEO_DIR / "recording_state.json"
-
 
 def _load_rec_state_file() -> Dict[str, dict]:
     try:
@@ -469,7 +439,6 @@ def _load_rec_state_file() -> Dict[str, dict]:
     except (OSError, ValueError):
         return {}
 
-
 def _write_rec_state_file(states: Dict[str, dict]) -> None:
     try:
         os.makedirs(_VIDEO_DIR, exist_ok=True)
@@ -477,7 +446,6 @@ def _write_rec_state_file(states: Dict[str, dict]) -> None:
             json.dump(states, f, ensure_ascii=False, indent=2)
     except OSError:
         pass
-
 
 def _persist_rec_start(camera_name: str, pid: int, file_path: str,
                        stop_at: Optional[float]) -> None:
@@ -490,16 +458,13 @@ def _persist_rec_start(camera_name: str, pid: int, file_path: str,
     }
     _write_rec_state_file(states)
 
-
 def _persist_rec_remove(camera_name: str) -> None:
     states = _load_rec_state_file()
     if camera_name in states:
         states.pop(camera_name)
         _write_rec_state_file(states)
 
-
 def _rec_pid_alive(pid: int) -> bool:
-
     try:
         import psutil
         proc = psutil.Process(pid)
@@ -507,9 +472,7 @@ def _rec_pid_alive(pid: int) -> bool:
     except Exception:
         return False
 
-
 def _get_live_persisted_recording(camera_name: str) -> Optional[dict]:
-
     states = _load_rec_state_file()
     entry = states.get(camera_name)
     if not entry:
@@ -522,9 +485,7 @@ def _get_live_persisted_recording(camera_name: str) -> Optional[dict]:
     _write_rec_state_file(states)
     return None
 
-
 def _stop_orphan_recording(camera_name: str, entry: dict) -> "RecordingResult":
-
     pid = entry["pid"]
     file_path = entry.get("file_path", "")
     start_time = entry.get("start_time") or time.time()
@@ -567,9 +528,7 @@ def _stop_orphan_recording(camera_name: str, entry: dict) -> "RecordingResult":
         duration_seconds=reported_duration,
     )
 
-
 def _read_log_tail(log_path: str, n: int = 300) -> str:
-
     try:
         with open(log_path, "rb") as f:
             data = f.read()
@@ -577,9 +536,7 @@ def _read_log_tail(log_path: str, n: int = 300) -> str:
     except OSError:
         return ""
 
-
 def _remove_log_if_empty(video_path: str) -> None:
-
     log_path = os.path.splitext(video_path)[0] + ".log"
     try:
         if os.path.isfile(log_path) and os.path.getsize(log_path) == 0:
@@ -587,9 +544,7 @@ def _remove_log_if_empty(video_path: str) -> None:
     except OSError:
         pass
 
-
 def _get_video_duration(file_path: str) -> Optional[float]:
-
     ffprobe_path = _resolve_binary("ffprobe")
     if not ffprobe_path:
         return None
@@ -611,7 +566,6 @@ def _get_video_duration(file_path: str) -> Optional[float]:
     except Exception:
         pass
     return None
-
 
 def toggle_recording(
     camera_name: str,
@@ -706,12 +660,14 @@ def toggle_recording(
         )
 
     if action == RecordingAction.START:
+
         existing = _recording_states.get(camera_name)
         if existing and existing.process is not None and existing.process.poll() is None:
             return RecordingResult(
                 success=False, is_recording=True,
                 error_message=f"摄像头 {camera_name} 正在录像（文件: {existing.file_path}），请先停止再开始",
             )
+
         if existing:
             if existing.timer is not None:
                 existing.timer.cancel()
@@ -793,6 +749,7 @@ def toggle_recording(
 
         last_error = ""
         for transport in ([working_transport] + [t for t in transport_plan if t != working_transport]):
+
             ffmpeg_cmd = [
                 ffmpeg_path, "-y",
                 "-loglevel", "error",
@@ -814,6 +771,7 @@ def toggle_recording(
             except OSError:
                 log_handle = None
             popen_kwargs = dict(
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=log_handle if log_handle is not None else subprocess.DEVNULL,
             )
@@ -855,8 +813,6 @@ def toggle_recording(
                     log_handle=log_handle,
                 )
                 _recording_states[camera_name] = state
-                print(f"[recording] 录像已启动: {file_path} (transport={transport})",
-                      file=sys.stderr)
 
                 stop_at = None
                 if duration is not None and duration > 0:
@@ -871,9 +827,6 @@ def toggle_recording(
                     state.timer.daemon = True
                     state.timer.start()
                     stop_at = time.time() + compensated
-                    print(f"[recording] 已设置自动停止定时器: {compensated:.1f}s 后自动停止"
-                          f"（含启动补偿，已扣除 {health_check_delay:.1f}s 健康检查延迟）",
-                          file=sys.stderr)
 
                 _persist_rec_start(camera_name, proc.pid, file_path, stop_at)
 
@@ -891,8 +844,6 @@ def toggle_recording(
                     log_handle=log_handle,
                 )
                 _recording_states[camera_name] = state
-                print(f"[recording] 录像已启动（等待关键帧）: {file_path} (transport={transport})",
-                      file=sys.stderr)
 
                 stop_at = None
                 if duration is not None and duration > 0:
@@ -908,9 +859,6 @@ def toggle_recording(
                     state.timer.daemon = True
                     state.timer.start()
                     stop_at = time.time() + compensated
-                    print(f"[recording] 已设置自动停止定时器: {compensated:.1f}s 后自动停止"
-                          f"（含启动补偿，已扣除 {health_check_delay:.1f}s 健康检查延迟）",
-                          file=sys.stderr)
 
                 _persist_rec_start(camera_name, proc.pid, file_path, stop_at)
 
@@ -947,7 +895,6 @@ def toggle_recording(
         error_message=f"未知的 action: {action}",
     )
 
-
 def manage_storage_status(
     camera_name: str,
     action: StorageAction = StorageAction.QUERY,
@@ -970,6 +917,7 @@ def manage_storage_status(
     storage_path = cfg["path"]
 
     if action == StorageAction.SET:
+
         valid_formats = {"mp4", "avi", "jpg"}
         valid_policies = {"overwrite", "stop_when_full", "circular"}
 
@@ -977,6 +925,7 @@ def manage_storage_status(
             storage_path = path
             try:
                 os.makedirs(storage_path, exist_ok=True)
+
                 test_file = os.path.join(storage_path, ".write_test")
                 with open(test_file, "w") as f:
                     f.write("test")
@@ -1071,7 +1020,6 @@ _GO2RTC_SKILL_DIR = _os.path.dirname(
 
 _go2rtc_process: Optional[Any] = None
 
-
 @dataclass
 class WebRTCResult:
     success: bool = False
@@ -1079,9 +1027,7 @@ class WebRTCResult:
     rtsp_url: str = ""
     error_message: str = ""
 
-
 def _ensure_go2rtc() -> str:
-
     import shutil
     path = shutil.which("go2rtc")
     if path:
@@ -1092,9 +1038,7 @@ def _ensure_go2rtc() -> str:
         return local_path
     return ""
 
-
 def _download_go2rtc() -> str:
-
     import shutil
     import urllib.request
     import zipfile
@@ -1104,11 +1048,9 @@ def _download_go2rtc() -> str:
     tmp = _os.path.join(_GO2RTC_SKILL_DIR, f"_go2rtc_dl_{_GO2RTC_BIN_NAME}")
 
     for url in _GO2RTC_DOWNLOAD_URLS:
-        print(f"[go2rtc] 尝试下载: {url[:80]}...")
         try:
             urllib.request.urlretrieve(url, tmp)
             if not _os.path.isfile(tmp) or _os.path.getsize(tmp) < 1024:
-                print("[go2rtc] 下载文件异常（过小或 HTML 错误页），尝试下一个源")
                 if _os.path.exists(tmp):
                     _os.remove(tmp)
                 continue
@@ -1124,25 +1066,19 @@ def _download_go2rtc() -> str:
                         if extracted != dest:
                             shutil.move(extracted, dest)
                         _os.remove(tmp)
-                        print(f"[go2rtc] 下载并解压成功: {dest}")
                         return dest
                     else:
-                        print("[go2rtc] zip 中未找到 go2rtc.exe，尝试下一个源")
                         _os.remove(tmp)
                         continue
             else:
                 shutil.move(tmp, dest)
                 _os.chmod(dest, 0o755)
-                print(f"[go2rtc] 下载成功: {dest}")
                 return dest
         except Exception as e:
-            print(f"[go2rtc] 下载失败: {e}，尝试下一个源")
             if _os.path.exists(tmp):
                 _os.remove(tmp)
 
-    print("[go2rtc] 所有下载源均失败")
     return ""
-
 
 def start_webrtc_stream(
     camera_name: str,
@@ -1150,7 +1086,6 @@ def start_webrtc_stream(
     go2rtc_path: Optional[str] = None,
     port: int = 1984,
 ) -> WebRTCResult:
-
     import subprocess
 
     global _go2rtc_process
@@ -1211,13 +1146,9 @@ def start_webrtc_stream(
         )
 
     web_url = f"http://localhost:{port}"
-    print(f"[go2rtc] 已启动，浏览器打开 {web_url} 观看摄像头 '{camera_name}'",
-          file=_sys.stderr)
     return WebRTCResult(success=True, web_url=web_url, rtsp_url=rtsp_url)
 
-
 def stop_webrtc_stream() -> bool:
-
     global _go2rtc_process
 
     if _go2rtc_process is None:
@@ -1234,5 +1165,4 @@ def stop_webrtc_stream() -> bool:
     finally:
         _go2rtc_process = None
 
-    print("[go2rtc] 已停止", file=_sys.stderr)
     return True

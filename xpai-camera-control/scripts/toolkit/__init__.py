@@ -1,18 +1,3 @@
-"""
-XPAI Camera Control — Toolkit 工具集
-
-提供摄像头控制的全部工具函数，按功能分为 7 大类：
-  1. stream         — 音视频流与存储（含 WebRTC go2rtc 转流）
-  2. ptz            — 云台与巡航
-  3. device_mgmt    — 设备管理与维护
-  4. events         — IPC 事件接收（私有协议告警监听 + 落盘）
-  5. illumination   — 补光模式控制（SK HTTP 私有协议）
-  6. image_settings — 图像参数设置（SK 私有协议优先，ONVIF Imaging 回退）
-  7. tracking       — 侦测追踪控制（人形追踪/车辆追踪/区域检测，SK HTTP 私有协议）
-
-"""
-
-# ── stream ──
 from .stream import (
     get_audio_video_stream,
     capture_video_screenshot,
@@ -29,7 +14,6 @@ from .stream import (
     StorageAction,
 )
 
-# ── ptz ──
 from .ptz import (
     control_ptz,
     get_ptz_parameters,
@@ -42,7 +26,6 @@ from .ptz import (
     PTZInfo,
 )
 
-# ── device_mgmt ──
 from .device_mgmt import (
     get_registered_cameras,
     register_camera,
@@ -57,7 +40,7 @@ from .device_mgmt import (
     DeviceClass,
     CameraConfig,
     RegisterResult,
-    # 云端授权
+
     AuthStatus,
     AuthOrchestrateResult,
     AuthStatusResult,
@@ -68,7 +51,6 @@ from .device_mgmt import (
     resolve_target,
 )
 
-# ── events (IPC 事件接收) ──
 from .events import (
     manage_camera_events,
     EventAction,
@@ -77,7 +59,6 @@ from .events import (
     PendingEventsResult,
 )
 
-# ── illumination (补光模式控制) ──
 from .illumination import (
     manage_illumination,
     probe_illumination_capability,
@@ -91,7 +72,6 @@ from .illumination import (
     FILLLIGHT_MODES,
 )
 
-# ── image_settings (图像参数设置) ──
 from .image_settings import (
     manage_image_settings,
     ImageAction,
@@ -99,7 +79,6 @@ from .image_settings import (
     ImageSetResult,
 )
 
-# ── tracking (侦测追踪控制) ──
 from .tracking import (
     manage_tracking,
     TrackingAction,
@@ -108,9 +87,8 @@ from .tracking import (
     TrackingSetResult,
 )
 
-
 __all__ = [
-    # stream
+
     "get_audio_video_stream",
     "capture_video_screenshot",
     "toggle_recording",
@@ -124,7 +102,7 @@ __all__ = [
     "WebRTCResult",
     "RecordingAction",
     "StorageAction",
-    # ptz
+
     "control_ptz",
     "get_ptz_parameters",
     "calibrate_ptz",
@@ -134,7 +112,7 @@ __all__ = [
     "CalibrateResult",
     "PTZDirection",
     "PTZInfo",
-    # device_mgmt
+
     "get_registered_cameras",
     "register_camera",
     "search_devices",
@@ -148,7 +126,7 @@ __all__ = [
     "DeviceClass",
     "CameraConfig",
     "RegisterResult",
-    # device_mgmt (云端授权)
+
     "AuthStatus",
     "AuthOrchestrateResult",
     "AuthStatusResult",
@@ -157,13 +135,13 @@ __all__ = [
     "poll_auth_status",
     "big_connect",
     "resolve_target",
-    # events (IPC 事件接收)
+
     "manage_camera_events",
     "EventAction",
     "CameraEvent",
     "EventMonitorResult",
     "PendingEventsResult",
-    # illumination (补光模式控制)
+
     "manage_illumination",
     "probe_illumination_capability",
     "IlluminationAction",
@@ -174,12 +152,12 @@ __all__ = [
     "big_filllight_set",
     "DAYNIGHT_MODES",
     "FILLLIGHT_MODES",
-    # image_settings (图像参数设置)
+
     "manage_image_settings",
     "ImageAction",
     "ImageQueryResult",
     "ImageSetResult",
-    # tracking (侦测追踪控制)
+
     "manage_tracking",
     "TrackingAction",
     "DetectType",
