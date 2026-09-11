@@ -13,21 +13,21 @@ Camera intelligent detection and tracking control — exposed as two MCP tools b
 
 ## Architecture
 
-Detection & tracking uses **Skyworth Private Protocol only** (TCP channel). There is **no ONVIF fallback** — tracking is a Skyworth-specific feature set.
+Detection & tracking uses **Skyworth Private Protocol only** (TCP channel, dynamic-token HTTP). There is **no ONVIF fallback** — tracking is a Skyworth-specific feature set.
 
-Five detection types are supported:
+Five detection types are supported, each with its own protocol section:
 
-| Type | Description |
-|------|-------------|
-| `human` | Human-shape detection & auto-tracking |
-| `vehicle` | Vehicle detection |
-| `area` | Area/region-based detection (enter/leave) |
-| `motion` | Motion detection with region grid |
-| `line` | Line-crossing detection with directional alarm |
+| Type | Protocol Section | Response Key | Description |
+|------|-----------------|--------------|-------------|
+| `human` | Human Detect | `humandetect` | Human-shape detection & auto-tracking |
+| `vehicle` | Object Detect | `objectdetect` | Vehicle detection (requires `object=vehicle` in payload) |
+| `area` | VG Rect Detect | `vgrectdetect` | Area/region-based detection (line-crossing, enter/leave) |
+| `motion` | Motion Detect | `motiondetect` | Motion detection with region grid (18x32) |
+| `line` | VG Line Detect | `vglinedetect` | Line-crossing detection with directional alarm |
 
-### Private Protocol Commands
+### Private Protocol Commands (15 total)
 
-Vendor-specific commands (capability query, read current, write) are handled internally by the tool. The Agent interacts only through the `query_tracking_capabilities` and `set_tracking` MCP tools.
+Each detection type has three vendor-specific commands (query capability, read current, write) handled internally by the tool. The Agent interacts only through the `query_tracking_capabilities` and `set_tracking` MCP tools.
 
 ### Settable parameters
 
@@ -39,7 +39,7 @@ Only **3 parameters** are exposed for query and set (same set across all detecti
 | `tracking` | int | 0/1 | human, vehicle, motion | Enable/disable auto-tracking (area/line does not support tracking) |
 | `level` | int | 0–3 | all | Sensitivity level: 0=off, 1=low, 2=medium, 3=high |
 
-> The remaining firmware fields are not exposed — they are read as part of the baseline and passed through unchanged on write.
+> The remaining protocol fields (scene mode `indoor`, target marker overlay `screenenable`/`drag`, box blink, audio alarm toggles/types, white-light alarm, detection schedule `timestrategy`, size thresholds, region/line coordinates, region grid `mbdesc`, license-plate toggle, etc.) are not exposed — they are read as part of the baseline and passed through unchanged on write.
 
 **Set behavior:** same as illumination — the device requires the **full parameter set** when writing. The tool reads current settings first, merges only the user-specified parameters, then sends the complete set. The Agent only needs to pass the parameters it wants to change.
 
@@ -68,7 +68,7 @@ Read-only query of the camera's detection and tracking capabilities.
 
 **Returns** `TrackingQueryResult` with:
 - `channel`: always `"sk"` (no ONVIF fallback)
-- `*_capabilities` / `*_current`: filtered to **only the 3 settable parameters** (`enable`, `tracking`, `level`) — device-only parameters are excluded
+- `*_capabilities` / `*_current`: filtered to **only the 3 settable parameters** (`enable`, `tracking`, `level`) — device-only parameters (alarm_enable, white_light, timestrategy, etc.) are excluded
 - `human_capabilities` / `human_current`: human detection
 - `vehicle_capabilities` / `vehicle_current`: vehicle detection
 - `area_capabilities` / `area_current`: area detection
@@ -138,7 +138,7 @@ Enable, disable, or configure detection and tracking features. **Requires explic
 
 | `error_code` | Cause |
 |--------------|-------|
-| `DEVICE_UNREACHABLE` | Private-protocol TCP channel unreachable — verify camera is online; retry after 2-3 s (transient port flapping) |
+| `DEVICE_UNREACHABLE` | SK TCP 9010 unreachable — verify camera is online; retry after 2-3 s (transient port flapping) |
 | `OPTION_QUERY_FAILED` | Capability query rejected by device |
 | `CURRENT_QUERY_FAILED` | Current-value query rejected by device |
 | `SET_FAILED` | Device rejected the write command |

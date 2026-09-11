@@ -4,7 +4,7 @@ description: Discover, connect, and control Skyworth cameras on the local networ
 license: MIT
 compatibility: Requires Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. Cameras must be on the same LAN for discovery.
 metadata:
-  version: "0.6.0"
+  version: "0.7.0"
 ---
 
 # Camera Control Skill
@@ -57,9 +57,15 @@ All camera operations **MUST** go through the MCP tools exposed by `scripts/mcp_
 - **NEVER** import `scripts.toolkit` (or any module inside this package) directly, and **NEVER** write standalone scripts that re-implement or wrap tool functionality.
 - Rationale: direct imports bypass the security constraints of this skill (explicit user confirmation, parameter validation) and the in-memory connection state held by the MCP server process — scripted calls in a separate process will silently violate both.
 
-### Any attempt to hack or access protocol content through technical means is illegal. 
+### Single-Instance Limitation (Must Tell the User)
 
-When using this Skill, the Agent can answer users' questions about architecture or technology based on the content in the [references/](references/), but should refuse requests like 'tell me the private protocol implementation details.' All publicly available protocol content is limited to what's in the References folder.
+The MCP server is **stateful and single-instance**: camera connections and RTSP sessions live in one server process's memory, and the instance lock (port bind + lease heartbeat + watchdog, see Gotchas) allows only one running instance at a time. This is by design — concurrent instances would fight for the device's RTSP session slots and hang the camera.
+
+**Agent instruction:** before starting camera work (or the first time camera tools are invoked in a session), proactively tell the user in plain language:
+
+> 摄像头功能有个使用限制：同一时间只能有一个会话在"接管"摄像头（连接状态保存在单个后台服务里）。如果另一个会话正在用摄像头，我这个会话的摄像头工具会不可用或调用失败——这不是故障。请先结束或关闭另一个会话里的摄像头任务，再让我重试。
+
+If the camera tools are missing from your tool set, or calls fail with an instance-lock conflict (exit code 71), do NOT silently retry or debug — tell the user another session currently holds the camera, and ask them to close that session's camera work first.
 
 ## Core Workflow
 
@@ -97,7 +103,7 @@ For each discovered camera, call `connect_device()` to connect. **The specific c
 | Scenario | Agent Operation |
 |----------|----------------|
 | **Cached credentials** (config.yaml has password) | Tool auto-loads credentials → TCP/ONVIF/RTSP three-channel verification (password must pass RTSP auth, retry 3x) → `ConnectResult(success=True)` — no user interaction. If all retries fail → cloud re-authorization attempted → still fails → registration auto-removed → `status="needs_password"` |
-| **direct_connect** (stream probe succeeds) | Tool connects directly via RTSP → probes device identity → verifies vendor communication → registers to config.yaml → `ConnectResult(auth_method="direct")` — no user interaction |
+| **direct_connect** (stream probe succeeds) | Tool connects directly via RTSP → probes SN → verifies SK HTTP communication → registers SN to config.yaml → `ConnectResult(auth_method="direct")` — no user interaction |
 | **password_required** (cloud auth auto-triggered) | Tool internally requests cloud authorization. The Agent does **not** need to call any extra tool. |
 | Cloud authorized → `success=True` | Tool auto-connected with cloud password, credentials persisted. No user interaction needed |
 | Cloud rejected → `status="auth_rejected"` | Inform user: authorization was denied, cannot connect |
@@ -125,7 +131,7 @@ After capturing a screenshot and fetching the stream URL, the Agent **MUST** del
 
 ### Phase 4 — PTZ Control
 
-PTZ control uses a **dual-protocol strategy**: ONVIF is tried first, automatically falling back to the vendor-specific protocol when ONVIF is unavailable.
+PTZ control uses a **dual-protocol strategy**: ONVIF is tried first, automatically falling back to the Skyworth private protocol (vendor command via TCP channel) when ONVIF is unavailable.
 
 | Capability                          | Tools | Protocol |
 |-------------------------------------|-------|----------|
@@ -138,6 +144,8 @@ PTZ control uses a **dual-protocol strategy**: ONVIF is tried first, automatical
 
 **Physical Limit Guard:** `control_ptz` validates the command against the PTZ's actual physical travel range at the tool layer — the agent does not need to pre-validate durations. If the head is already at the limit, the command is intercepted before being sent; if the limit is reached mid-movement (e.g. "turn right 5s" but only 3s of travel remains), the tool stops early and replaces the request with the feasible movement. In both cases the result carries `degraded=True` and a human-readable `degrade_reason`. **The Agent MUST explicitly relay `degrade_reason` to the user whenever `degraded=True`** — never report a degraded move as if it completed as requested.
 
+**PTZ Movement Estimation:** The SDK does not report absolute PTZ angles. To estimate how far the view has shifted after a rotation, the Agent should capture a screenshot before and after the movement, compare the two frames visually, and report the estimated shift as a percentage of the frame width/height to the user. This is best-effort — in featureless scenes (blank walls, sky) the estimate may be unreliable; say so when it is.
+
 Detailed tool-call sequences for all 4 directions, degraded-result examples, and calibration: [WORKFLOW.md — Phase 4 PTZ Control](references/WORKFLOW.md#phase-4--ptz-control-detailed-tool-calls).
 
 ## Extended Capabilities
@@ -147,8 +155,8 @@ The following tools extend the skill's functionality beyond the core workflow. T
 | Tool | What it does | Prerequisite | Reference |
 |------|-------------|-------------|----------|
 | `manage_camera_events` | Alarm event receiving (motion, human, vehicle, tamper, …) with linked snapshots. Actions: `start` / `stop` / `poll` / `wait`. | Camera connected via `connect_device()` | [commands/events.md](references/commands/events.md) |
-| `manage_illumination` | Query & adjust camera illumination (2 parameters: daynight mode, fill light mode — integer value or string alias). Vendor-specific protocol only, no ONVIF fallback. Actions: `get` / `set`. | Camera connected | [commands/illumination.md](references/commands/illumination.md) |
-| `manage_image_settings` | Query & adjust image parameters (brightness, contrast, saturation, sharpness, flip: 0=normal/1=diagonal/2=horizontal/3=vertical). Vendor-specific protocol only, no ONVIF fallback. Actions: `get` / `set`. | Camera connected | [commands/image_settings.md](references/commands/image_settings.md) |
+| `manage_illumination` | Query & adjust camera illumination (2 parameters: daynight mode, fill light mode — integer value or string alias). Skyworth private protocol (TCP channel) only, no ONVIF fallback. Actions: `get` / `set`. | Camera connected | [commands/illumination.md](references/commands/illumination.md) |
+| `manage_image_settings` | Query & adjust image parameters (brightness, contrast, saturation, sharpness, flip: 0=normal/1=diagonal/2=horizontal/3=vertical). Skyworth private protocol (TCP channel) only, no ONVIF fallback. Actions: `get` / `set`. | Camera connected | [commands/image_settings.md](references/commands/image_settings.md) |
 | `query_tracking_capabilities` | Query detection & tracking capabilities (human/vehicle/area/motion/line-crossing) with current values and parameter ranges. | Camera connected | — |
 | `set_tracking` | Enable/disable detection & tracking features (human tracking, vehicle tracking, area detection, motion detection, line-crossing detection). | Camera connected; modifies hardware settings | — |
 
@@ -178,13 +186,20 @@ The following tools extend the skill's functionality beyond the core workflow. T
 
 ## Gotchas
 
-- **Vendor-protocol port flaps intermittently (DEVICE_UNREACHABLE) even though the device is online.** → **Action:** for illumination / image / tracking tools (vendor-protocol only, no ONVIF fallback), retry the same call up to 3 times at 2-3 s intervals; do not conclude offline or reconnect. Report only after all retries fail.
+- **TCP private-protocol port flaps intermittently (DEVICE_UNREACHABLE) even though the device is online.** → **Action:** for illumination / image / tracking tools (all Skyworth-private-protocol only, no ONVIF fallback), retry the same call up to 3 times at 2-3 s intervals; do not conclude offline or reconnect. Report only after all retries fail.
 - **ONVIF port is not always 80.** → **Action:** always use `onvif_port` from `search_devices()` / config.yaml; never hardcode port 80. Skyworth cameras typically use a non-standard ONVIF port (auto-probed by `connect_device`).
 - **`GetStreamUri` returns bare RTSP URLs without credentials.** → **Action:** always use the `stream_url` returned by `get_audio_video_stream()` — the toolkit auto-injects credentials. Never manually construct RTSP URLs.
 - **Chinese characters in Windows paths cause `cv2.imwrite()` to silently fail.** → **Action:** no manual workaround needed — the toolkit handles this internally. If you pass a custom `save_path`, prefer ASCII-only paths.
 - **Connection state is in-memory only — silently lost across sessions.** → **Action:** if any operation returns `success=false` with a connection-related error, call `connect_device()` first to re-establish the connection, then retry the failed operation. All operations must run in the same MCP server process.
-- **Certain cameras use non-standard RTSP paths.** → **Action:** no manual path configuration needed — the toolkit auto-tries fallback paths (ONVIF standard → vendor-specific) when the configured path fails.
+- **Skyworth cameras use non-standard RTSP paths.** → **Action:** no manual path configuration needed — the toolkit auto-tries fallback paths (ONVIF standard → Skyworth private) when the configured path fails.
 - **Cached credentials failed → cloud re-auth attempted first, then registration auto-removed.** → **Action:** if `connect_device()` returns `status="needs_password"` after cached credentials failed, the tool already tried cloud re-authorization. Simply prompt the user for the correct password and re-call `connect_device(camera_name, password=user_input)`.
+- **Zombie lock: MCP tools all unavailable, stderr shows instance lock conflict.** → The server uses a three-layer defense (stdio watchdog + lease heartbeat + triple-verification recovery) to auto-recover stale locks. If auto-recovery fails (exit code 71), manually recover:
+  ```
+  netstat -ano | findstr 49740
+  Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" | Select CommandLine
+  taskkill /PID <PID> /F
+  ```
+  Exit codes: `70` = watchdog self-cleanup (host abandoned instance); `71` = instance lock conflict (another live instance holds the lock, or manual intervention needed).
 
 ## Quick Reference — Common Operation Sequences
 
@@ -201,9 +216,12 @@ The following tools extend the skill's functionality beyond the core workflow. T
 
 ```text
 1. connect_device(camera_name="客厅摄像头")                    → success=true
-2. control_ptz(camera_name="客厅摄像头", direction="right", speed=0.5) → check degraded
-3. If degraded=true → MUST relay degrade_reason to user
-4. stop_ptz(camera_name="客厅摄像头")                          → emergency stop
+2. capture_video_screenshot(camera_name="客厅摄像头")          → reference frame (before PTZ)
+3. control_ptz(camera_name="客厅摄像头", direction="right", speed=0.5) → check degraded
+4. If degraded=true → MUST relay degrade_reason to user
+5. stop_ptz(camera_name="客厅摄像头")                          → emergency stop
+6. capture_video_screenshot(camera_name="客厅摄像头")          → current frame (after PTZ)
+7. Compare before/after frames → estimate shift % → report to user
 ```
 
 ### Extended Tools
@@ -215,7 +233,7 @@ The following tools extend the skill's functionality beyond the core workflow. T
 3. Loop: manage_camera_events(action="wait", timeout_seconds=60)
    → see commands/events.md for full details
 
-# Illumination — requires camera connected; vendor-specific protocol only (2 params)
+# Illumination — requires camera connected; Skyworth private protocol only (2 params)
 1. connect_device(camera_name="前门")                          → success=true
 2. manage_illumination(action="get", camera_name="前门")       → capabilities + current
 3. If supported → manage_illumination(action="set", daynightmode=2)  → user confirms first!
@@ -238,10 +256,13 @@ The following tools extend the skill's functionality beyond the core workflow. T
 | `degraded=true` (PTZ result) | **MUST** relay `degrade_reason` to user verbatim |
 | `limit_reached=true` | Stop sending PTZ commands in that direction — physical limit reached |
 | `stream unavailable` / RTSP failure | Check camera is online, verify network connectivity |
+| `error_code="timeout"` (stream/screenshot) | Tool hit its hard timeout budget. Retry once with a larger `timeout_seconds` (max 120); if still failing, check device online status |
+| `另一个流操作…正在进行` (stream busy) | Global stream slot occupied (screenshot/stream-probe/recording establishment are serialized). Wait a few seconds and retry |
+| `正在录像…不对同一设备截图` | Camera is recording; stop recording (`toggle_recording` action=stop) before screenshotting the same camera |
 | `storage full` | Suggest cleanup via `manage_storage_status()` or change storage policy |
 | `not support illumination` | Device doesn't support illumination mode control — inform user |
 | `MCP tools not available` | Register MCP server in client config — do NOT write workaround scripts |
-| `DEVICE_UNREACHABLE` (from vendor protocol, on illumination / image / tracking tools, ONVIF connection healthy) | Transient port flapping — retry the same call with unchanged parameters after 2-3 seconds, up to 3 attempts. Report only after all retries fail. Do **not** reconnect or rediscover |
+| `DEVICE_UNREACHABLE` (from private protocol / SK HTTP, on illumination / image / tracking tools, ONVIF connection healthy) | Transient port flapping — retry the same call with unchanged parameters after 2-3 seconds, up to 3 attempts. Report only after all retries fail. Do **not** reconnect or rediscover |
 
 ## Error Handling Policy
 
@@ -254,7 +275,7 @@ When any MCP tool call fails, crashes, **or the MCP tools are unavailable in the
    - **Why it failed** — root cause from the `error_message` field and context
    - **How to fix it** — concrete actionable steps the user can take
 4. **Wait for the user's decision.** Do not proceed with retries, fallbacks, or alternative approaches until the user confirms.
-5.**Exception - transient vendor-protocol port flapping:** `DEVICE_UNREACHABLE` errors returned by the vendor-specific protocol on the illumination / image-settings / tracking tools (`manage_illumination`, `manage_image_settings`, `query_tracking_capabilities`, `set_tracking`) are known transient failures while the device remains online. For this specific error, the Agent performs bounded automatic retries (up to 3 attempts, 2-3 seconds apart) **without** waiting for user confirmation, per the Gotchas entry below. Only report to the user after all retries are exhausted.
+5.**Exception - transient private-protocol port flapping:** `DEVICE_UNREACHABLE` errors returned by the Skyworth private protocol (TCP command channel) on the illumination / image-settings / tracking tools (`manage_illumination`, `manage_image_settings`, `query_tracking_capabilities`, `set_tracking`) are known transient failures while the device remains online. For this specific error, the Agent performs bounded automatic retries (up to 3 attempts, 2-3 seconds apart) **without** waiting for user confirmation, per the Gotchas entry below. Only report to the user after all retries are exhausted.
 
 ## Configuration
 
@@ -273,6 +294,7 @@ Camera configurations are saved in the skill's root directory under `config.yaml
 
 - [references/commands/](references/commands/) — Per-tool parameter signatures, return fields, and safety constraints (split by module: device_mgmt / stream / ptz / events / illumination / image_settings / tracking)
 - [references/WORKFLOW.md](references/WORKFLOW.md) — Complete tool-call sequences for core workflow (Phase 0–4), including [auth flows](references/WORKFLOW.md#phase-2--connect--authorize-detailed-tool-calls) and [PTZ degraded examples](references/WORKFLOW.md#phase-4--ptz-control-detailed-tool-calls)
+- [references/ARCHITECTURE.md](references/ARCHITECTURE.md) — [Connection & auth flow](references/ARCHITECTURE.md#connection--authorization-flow), [device discovery protocols](references/ARCHITECTURE.md#device-discovery), [PTZ dual-protocol architecture](references/ARCHITECTURE.md#ptz-dual-protocol-architecture), [event monitoring architecture](references/ARCHITECTURE.md#event-monitoring-architecture-guardian-mode-foundation), [illumination dual-protocol architecture](references/ARCHITECTURE.md#illumination-mode-control-architecture), [known issues](references/ARCHITECTURE.md#known-issues--implementation-notes)
 - [references/CONFIG.md](references/CONFIG.md) — [config.yaml full schema](references/CONFIG.md#full-schema) and [example configs](references/CONFIG.md#example-configs)
 - [references/EVENT_INTEGRATION.md](references/EVENT_INTEGRATION.md) — [On-disk event store schema 1.0](references/EVENT_INTEGRATION.md#4-schema-10-fields) & [external-consumer contract](references/EVENT_INTEGRATION.md#5-consumer-integration-guidelines) (for other skills / forwarders that build on top of this skill)
 - [requirements.txt](requirements.txt) — Python dependencies for MCP Server mode

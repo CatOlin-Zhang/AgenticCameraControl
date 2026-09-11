@@ -146,13 +146,13 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
 
 **Illumination capability probing:** after a successful connection (both password-auth and direct-connect paths), `connect_device()` automatically probes the ONVIF Imaging Service for supported illumination modes via `probe_illumination_capability()`. The result is persisted to `config.yaml` as `illumination_modes`. The probe is non-blocking — failures are silently ignored so they never delay the connection flow. If `illumination_modes` is already cached in config.yaml from a previous session, re-probing is skipped.
 
-**Connection flow (三通道验证: 私有 TCP 通道 → ONVIF → RTSP):**
+**Connection flow (三通道验证: TCP 9010 → ONVIF → RTSP):**
 
 1. Check `config.yaml` for cached credentials → if found, retry connection up to 3 times (1s interval) using TCP/ONVIF/RTSP three-channel verification. For password devices, the password must pass **RTSP authentication** to be considered valid. All retries fail → attempt **cloud re-authorization** (if SN available) to fetch a fresh password; cloud also fails → auto-remove registration from config.yaml → return `status="needs_password"`
 2. If password provided by user → single attempt with TCP/ONVIF/RTSP verification (no retry, no cache cleanup). RTSP auth failure → `status="failed"`
-3. If no password and `device_class == "password_required"` → internally initiate cloud authorization (authorization request + polling). Cloud returns password → verify via TCP/ONVIF + RTSP → success: persist credentials; failure: return `status="cloud_pwd_failed"`
+3. If no password and `device_class == "password_required"` → internally initiate cloud authorization (POST request + polling). Cloud returns password → verify via TCP/ONVIF + RTSP → success: persist credentials; failure: return `status="cloud_pwd_failed"`
 4. If not `password_required` → probe RTSP stream:
-   - `200 OK` (direct-connect) → probe SN via the private protocol → verify private-protocol communication → register to config.yaml with SN → `auth_method="direct"`
+   - `200 OK` (direct-connect) → probe SN via Skyworth private protocol → verify SK HTTP communication → register to config.yaml with SN → `auth_method="direct"`
    - `401 Unauthorized` → internally initiate cloud authorization (same as step 3)
 5. Cloud authorization outcomes: authorized → auto-connect with cloud password; rejected → `status="auth_rejected"`; timeout/error → `status="needs_password"`
 

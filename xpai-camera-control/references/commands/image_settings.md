@@ -121,7 +121,7 @@ Change one or more image parameters. **Requires explicit user confirmation.**
 
 | `error_code` | Cause |
 |--------------|-------|
-| `DEVICE_UNREACHABLE` | Private-protocol TCP channel unreachable — verify camera is online |
+| `DEVICE_UNREACHABLE` | SK TCP 9010 unreachable — verify camera is online |
 | `OPTION_QUERY_FAILED` | Capability query rejected by device |
 | `CURRENT_QUERY_FAILED` | Current-value query rejected by device |
 | `SET_FAILED` | Device rejected the write command |
