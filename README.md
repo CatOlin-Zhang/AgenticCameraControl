@@ -21,7 +21,7 @@
 
 局域网 IP 摄像头的智能控制系统。支持 ONVIF 协议摄像头， Sky Worth 协议摄像头，以及 USB 摄像头的自动发现、连接、视频流拉取、云台控制（除USB）、设备管理（除USB）等功能。
 
-核心模块 `xpai-camera-control` 可作为 MCP (Model Context Protocol) Server 运行，将 20 个摄像头控制工具暴露给 AI Agent 使用。项目同时提供 Windows、macOS、Linux 三个平台的预编译分发包。
+核心模块 `xpai-camera-control` 可作为 MCP (Model Context Protocol) Server 运行，将 20 个摄像头控制工具暴露给 AI Agent 使用。分发采用单一技能包设计：`toolkit` 的各平台编译产物共存于同一包内，Windows、macOS、Linux 无需任何修改即可直接运行。
 
 ### 功能概览
 
@@ -29,7 +29,7 @@
 |------------|------------------------------------------------|
 | **设备发现**   | 局域网自动搜索摄像头，支持 WS-Discovery、Sky Worth 协议、USB 扫描 |
 | **设备连接**   | 自动探测认证方式，凭据缓存与自动重连                             |
-| **视频流**    | RTSP 流地址获取、截图、录像、存储管理                          |
+| **视频流**    | RTSP 流地址获取、截图、录像（支持定长自动停止）、存储管理                |
 | **WebRTC** | RTSP 流转 WebRTC 浏览器实时预览，返回 HTTP 访问地址            |
 | **云台控制**   | 8 方向移动+变焦、物理极限保护、云台校准                           |
 | **事件监听**   | 报警事件订阅（移动/人形/遮挡等）、事件联动抓拍、本地事件存储                |
@@ -79,22 +79,22 @@ Server 通过 stdio 传输协议与 MCP 客户端通信，兼容 Claude Desktop 
 }
 ```
 
-### 多平台分发
+### 跨平台支持
 
-| 目录                             | 平台        | 工具模块格式      |
-|--------------------------------|-----------|-------------|
-| `xpai-camera-control/`         | Linux（源码） | `.py` 源码    |
-| `xpai-camera-control-windows/` | Windows   | `.pyd` 编译模块 |
-| `xpai-camera-control-MacOs/`   | macOS     | `.so` 编译模块  |
-| `xpai-camera-control-linux/`   | Linux     | `.so` 编译模块  |
+采用**单一技能包**设计，无需按平台选择目录：
 
-各平台分发包结构一致，均包含 `scripts/mcp_server.py` 入口和 `scripts/toolkit/` 工具集。使用对应平台的分发目录运行 MCP Server 即可。
+| 形态 | 说明 |
+|------|------|
+| 源码包（本仓库） | `scripts/toolkit/` 为 `.py` 源码，任意平台安装依赖后直接运行 |
+| 分发包（构建产物） | `toolkit` 编译为各平台二进制（Windows `.pyd` / macOS、Linux `.so`），按 Python 扩展名后缀共存于同一包内，同一包在三平台直接运行 |
+
+分发包由 `xpai-build/build_toolkit.py` 构建（敏感常量混淆 + Cython 编译），详见 [build_readme.md](xpai-build/build_readme.md)。
 
 ### 项目结构
 
 ```
 AgenticCameraControl/
-├── xpai-camera-control/          # 核心技能包（MCP Server，源码 / Linux 分发）
+├── xpai-camera-control/          # 核心技能包（MCP Server，单包全平台通用）
 │   ├── scripts/
 │   │   ├── mcp_server.py         # MCP Server 入口
 │   │   ├── _paths.py             # 路径解析
@@ -120,9 +120,7 @@ AgenticCameraControl/
 │   ├── SKILL.md                  # Agent 技能描述文件
 │   ├── config.yaml               # 摄像头配置（运行时自动生成）
 │   └── requirements.txt          # Python 依赖
-├── xpai-camera-control-windows/  # Windows 平台分发（.pyd 编译模块）
-├── xpai-camera-control-MacOs/    # macOS 平台分发（.so 编译模块）
-├── xpai-camera-control-linux/    # Linux 平台分发（.so 编译模块）
+├── xpai-build/                   # 构建工具（源码混淆 + Cython 编译，不进分发包）
 └── README.md
 ```
 
@@ -179,6 +177,16 @@ AgenticCameraControl/
 |------|------|
 | 空闲超时 | **30 秒** — 用户停止交互后 Agent 应断开连接释放控制权 |
 | 并发控制 | FIFO：同一时间仅一个 Agent 拥有完全控制权，其余为只读 |
+| 单实例锁 | 同一时间仅允许一个 MCP Server 进程运行（端口绑定 + 租约心跳 + 看门狗三层防护） |
+
+### 故障排查
+
+| 现象 | 原因与处理 |
+|------|-----------|
+| MCP 工具全部不可用，Server 启动即退出（exit code 71） | 实例锁冲突：已有 MCP Server 实例在运行。部分 Agent 架构在会话结束后不会终止 Server 进程，旧进程的租约心跳持续刷新，自动回收不会触发，新会话的 Server 因此无法启动。处理：读取技能包根目录 `.instance_lease.json` 中的 `pid` 字段定位旧进程，确认其命令行属于本技能包的 `mcp_server.py` 后执行 `taskkill /PID <PID> /F /T`（Linux/macOS 用 `kill -9`），再重启 MCP 客户端拉起新实例 |
+| 定长录像未按预期停止 | 录像时长应通过 `toggle_recording(action="start", duration=<秒>)` 传入，由 Server 端到时自动停止。不要依赖“启动后延时再调用 stop”的方式——对话过程中的其他任务会淹没该停止操作，导致录像无限持续并占用设备的 RTSP 会话 |
+
+Server 进程退出码：`70` = 看门狗自清理（宿主已放弃该实例）；`71` = 实例锁冲突（另一存活实例持锁，或需手动干预）。
 
 ### Agent 集成与使用建议
 
@@ -198,7 +206,7 @@ AgenticCameraControl/
 
 An intelligent control system for IP cameras on local networks. Supports ONVIF-compliant cameras, Sky Worth protocol cameras, and USB webcams for auto-discovery, connection, video streaming, PTZ control (excluding USB), and device management (excluding USB).
 
-The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Server, exposing 20 camera control tools to AI Agents. Pre-built distribution packages are also available for Windows, macOS, and Linux.
+The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Server, exposing 20 camera control tools to AI Agents. Distribution uses a single-skill-package design: compiled toolkit artifacts for each platform coexist in the same package, running on Windows, macOS, and Linux without any modification.
 
 ### Features
 
@@ -206,7 +214,7 @@ The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Se
 |--------------------------|-------------------------------------------------------------------------------------------------------------------|
 | **Discovery**            | Auto-search cameras on LAN, supports WS-Discovery, Sky Worth protocol, and USB scanning                           |
 | **Connection**           | Auto-detect auth method, credential caching and auto-reconnect                                                    |
-| **Streaming**            | RTSP stream URL retrieval, screenshots, recording, storage management                                             |
+| **Streaming**            | RTSP stream URL retrieval, screenshots, recording (fixed-duration auto-stop supported), storage management        |
 | **WebRTC**               | RTSP-to-WebRTC browser live preview, returns HTTP access URL                                                      |
 | **PTZ Control**          | 8-directional movement + zoom, physical limit guard, calibration                                        |
 | **Event Monitoring**     | Alarm event subscription (motion/human/tamper, etc.), snapshot linkage on event, local event store                |
@@ -256,22 +264,22 @@ Add the following to your MCP client configuration (e.g. Claude Desktop):
 }
 ```
 
-### Platform Distributions
+### Cross-Platform Support
 
-| Directory                      | Platform       | Toolkit Module Format   |
-|--------------------------------|----------------|-------------------------|
-| `xpai-camera-control/`         | Linux (source) | `.py` source            |
-| `xpai-camera-control-windows/` | Windows        | `.pyd` compiled modules |
-| `xpai-camera-control-MacOs/`   | macOS          | `.so` compiled modules  |
-| `xpai-camera-control-linux/`   | Linux          | `.so` compiled modules  |
+A **single skill package** design — no need to pick a directory per platform:
 
-Each platform distribution shares the same structure with a `scripts/mcp_server.py` entry point and `scripts/toolkit/` toolset. Run the MCP Server from the directory matching your platform.
+| Form | Description |
+|------|-------------|
+| Source package (this repo) | `scripts/toolkit/` ships as `.py` source; runs on any platform after installing dependencies |
+| Distribution package (build artifact) | `toolkit` compiled to per-platform binaries (Windows `.pyd` / macOS & Linux `.so`), coexisting in the same package via Python extension suffixes — one package runs on all three platforms |
+
+The distribution package is built by `xpai-build/build_toolkit.py` (sensitive-constant obfuscation + Cython compilation); see [build_readme.md](xpai-build/build_readme.md).
 
 ### Project Structure
 
 ```
 AgenticCameraControl/
-├── xpai-camera-control/          # Core skill package (MCP Server, source / Linux dist)
+├── xpai-camera-control/          # Core skill package (MCP Server, single package for all platforms)
 │   ├── scripts/
 │   │   ├── mcp_server.py         # MCP Server entry point
 │   │   ├── _paths.py             # Path resolution
@@ -297,9 +305,6 @@ AgenticCameraControl/
 │   ├── SKILL.md                  # Agent skill description file
 │   ├── config.yaml               # Camera config (auto-generated at runtime)
 │   └── requirements.txt          # Python dependencies
-├── xpai-camera-control-windows/  # Windows dist (.pyd compiled modules)
-├── xpai-camera-control-MacOs/    # macOS dist (.so compiled modules)
-├── xpai-camera-control-linux/    # Linux dist (.so compiled modules)
 └── README.md
 ```
 
@@ -356,6 +361,16 @@ See `xpai-camera-control/requirements.txt` for the full dependency list.
 |------|-------|
 | Idle timeout | **30 seconds** — Agent must disconnect and release control when user stops interacting |
 | Concurrent control | FIFO: only one agent has full control; others are view-only |
+| Single-instance lock | Only one MCP server process may run at a time (three-layer defense: port bind + lease heartbeat + watchdog) |
+
+### Troubleshooting
+
+| Symptom | Cause & Resolution |
+|---------|--------------------|
+| All MCP tools unavailable; server exits immediately on startup (exit code 71) | Instance-lock conflict: another MCP server instance is already running. Some Agent architectures do not terminate the server process when a session ends; the orphaned process keeps its lease heartbeat fresh, automatic recovery never fires, and the new session's server cannot start. Resolution: read the `pid` field from `.instance_lease.json` in the skill package root to locate the stale process, verify its command line belongs to this skill's `mcp_server.py`, then run `taskkill /PID <PID> /F /T` (Linux/macOS: `kill -9`), and restart the MCP client to spawn a fresh instance |
+| Fixed-duration recording did not stop as expected | Pass the duration via `toggle_recording(action="start", duration=<seconds>)` — the server auto-stops when time is up. Do not rely on "start, wait, then call stop": intermediate tasks during the conversation will bury the stop step, leaving the recording running indefinitely and holding the device's RTSP session |
+
+Server exit codes: `70` = watchdog self-cleanup (host abandoned the instance); `71` = instance-lock conflict (another live instance holds the lock, or manual intervention needed).
 
 ### Agent Integration & Usage Tips
 

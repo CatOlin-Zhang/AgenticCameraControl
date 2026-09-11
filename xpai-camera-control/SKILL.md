@@ -64,7 +64,7 @@ The MCP server is **stateful and single-instance**: camera connections and RTSP 
 
 **Agent instruction:** before starting camera work (or the first time camera tools are invoked in a session), proactively tell the user in plain language:
 
-> 摄像头功能有个使用限制：同一时间只能有一个会话在"接管"摄像头（连接状态保存在单个后台服务里）。如果另一个会话正在用摄像头，我这个会话的摄像头工具会不可用或调用失败——这不是故障。请先结束或关闭另一个会话里的摄像头任务，再让我重试。
+> The camera feature has a usage limitation: only one session can "take over" the camera at a time (the connection state is stored in a single background service). If another session is currently using the camera, the camera tools in this session may become unavailable or fail when called — this is not a malfunction. Please end or close the camera task in the other session first, then ask me to retry.
 
 If the camera tools are missing from your tool set, or calls fail with an instance-lock conflict (exit code 71), do NOT silently retry or debug — tell the user another session currently holds the camera, and ask them to close that session's camera work first.
 
@@ -201,6 +201,8 @@ The following tools extend the skill's functionality beyond the core workflow. T
   taskkill /PID <PID> /F
   ```
   Exit codes: `70` = watchdog self-cleanup (host abandoned instance); `71` = instance lock conflict (another live instance holds the lock, or manual intervention needed).
+- **Orphaned MCP server process across sessions — the new session cannot connect.** Some Agent host architectures do not terminate the MCP server process when a session ends. The orphaned process stays alive and keeps its lease heartbeat fresh, so it legitimately holds the instance lock — lease-based auto-recovery only reclaims *expired* leases and never kills a live instance. → **Action:** find the original process's PID, kill it, then let the client start a new instance. Fastest: read the `pid` field from `.instance_lease.json` in the skill root (the heartbeat writes `pid`/`port`/`ts` every 5 s), or `netstat -ano | findstr 49740` (lock port is derived from the skill path). Verify the PID really belongs to this skill's `mcp_server.py` before killing (`Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" | Select CommandLine`), then `taskkill /PID <PID> /F /T`, and restart the session / MCP client so it spawns a fresh server. Caution: killing the PID breaks whatever session still owns it — confirm with the user that the previous session is truly gone first.
+- **Fixed-duration recording must NOT be implemented as agent-side sleep ("start → wait N seconds → stop").** The Agent has no reliable way to idle: intermediate conversation turns, other tool calls, and context growth will bury the pending stop step, so the `stop` call may never be issued. The recording then runs indefinitely — holding the device's RTSP session slot and blocking screenshots and stream probes on that camera. → **Action:** push the duration into the tool itself: `toggle_recording(action="start", duration=<seconds>)` auto-stops server-side with zero agent involvement. For open-ended recording, start without `duration`, explicitly tell the user recording is in progress, and stop only when the user asks — never schedule a "self-reminder" to stop later.
 
 ## Quick Reference — Common Operation Sequences
 
@@ -258,8 +260,8 @@ The following tools extend the skill's functionality beyond the core workflow. T
 | `limit_reached=true` | Stop sending PTZ commands in that direction — physical limit reached |
 | `stream unavailable` / RTSP failure | Check camera is online, verify network connectivity |
 | `error_code="timeout"` (stream/screenshot) | Tool hit its hard timeout budget. Retry once with a larger `timeout_seconds` (max 120); if still failing, check device online status |
-| `另一个流操作…正在进行` (stream busy) | Global stream slot occupied (screenshot/stream-probe/recording establishment are serialized). Wait a few seconds and retry |
-| `正在录像…不对同一设备截图` | Camera is recording; stop recording (`toggle_recording` action=stop) before screenshotting the same camera |
+| `stream busy` (another stream operation already in progress) | Global stream slot occupied (screenshot/stream-probe/recording establishment are serialized). Wait a few seconds and retry |
+| `recording in progress` (screenshot rejected on the same camera) | Camera is recording; stop recording (`toggle_recording` action=stop) before screenshotting the same camera |
 | `storage full` | Suggest cleanup via `manage_storage_status()` or change storage policy |
 | `not support illumination` | Device doesn't support illumination mode control — inform user |
 | `MCP tools not available` | Register MCP server in client config — do NOT write workaround scripts |

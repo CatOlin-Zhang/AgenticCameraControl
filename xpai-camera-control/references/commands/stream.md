@@ -19,7 +19,7 @@ Fetch the real-time video stream URL.
 
 **Execution model:** the stream probe runs in a **global serial slot** (mutually exclusive with screenshot / recording establishment) via an ffmpeg/ffprobe subprocess with hard timeouts — on timeout the subprocess is killed and the device RTSP session is released immediately; the call can never hang indefinitely. If the camera is **currently recording**, no second RTSP session is opened: the URL is returned with `success=true`, empty metadata, and an explanatory `error_message`.
 
-**Timeout errors:** a tool-level timeout returns `{"success": false, "error_code": "timeout", ...}`; a busy slot returns an error message containing `stream_busy` semantics ("另一个流操作…正在进行"). On timeout, the Agent may retry once with a larger `timeout_seconds`.
+**Timeout errors:** a tool-level timeout returns `{"success": false, "error_code": "timeout", ...}`; a busy slot returns an error message containing `stream_busy` semantics (e.g. "another stream operation is already in progress"). On timeout, the Agent may retry once with a larger `timeout_seconds`.
 
 **StreamResult return fields:**
 
@@ -48,7 +48,7 @@ Capture a single frame from the current video stream and save as JPEG.
 
 **Execution model:** RTSP screenshots run in a **global serial slot** via an ffmpeg subprocess (path main↔sub × transport tcp→udp fallback inside); on timeout the subprocess is killed and the device session released — the call cannot hang indefinitely. **Recording conflict:** if the camera is currently recording, the screenshot is **rejected** (one long session already occupies a device RTSP slot; opening a second may exhaust the device's session limit) — stop the recording first. Multiple cameras: screenshots to *different* cameras are serialized by the slot (one burst at a time), which is intentional to avoid concurrent-decode/session contention.
 
-**Timeout errors:** a tool-level timeout returns `{"success": false, "error_code": "timeout", ...}`; a busy slot returns "另一个流操作…正在进行". On timeout, the Agent may retry once with a larger `timeout_seconds`.
+**Timeout errors:** a tool-level timeout returns `{"success": false, "error_code": "timeout", ...}`; a busy slot returns a stream-busy error message ("another stream operation is already in progress"). On timeout, the Agent may retry once with a larger `timeout_seconds`.
 
 **ScreenshotResult return fields:**
 
