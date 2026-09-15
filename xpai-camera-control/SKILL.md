@@ -1,6 +1,6 @@
 ---
 name: xpai-camera-control
-description: Discover, connect, and control Skyworth cameras on the local network. Capabilities include device detection, streaming, WebRTC browser preview, snapshot capture, PTZ pan/tilt control, alarm event monitoring, illumination mode control, image parameter adjustment, detection & tracking (human/vehicle/area/motion/line-crossing), and device management. Runs as an MCP Server. Use when the user wants to discover cameras, view a camera feed, capture snapshots, control PTZ, watch for motion/alarm events, adjust illumination mode, adjust image parameters, enable detection or tracking, manage camera settings, or mentions ONVIF, RTSP, IP camera, webcam, or Skyworth cameras.
+description: Discover, connect, and control XPAI cameras on the local network. Capabilities include device detection, streaming, WebRTC browser preview, snapshot capture, PTZ pan/tilt control, alarm event monitoring, illumination mode control, image parameter adjustment, detection & tracking (human/vehicle/area/motion/line-crossing), and device management. Runs as an MCP Server. Use when the user wants to discover cameras, view a camera feed, capture snapshots, control PTZ, watch for motion/alarm events, adjust illumination mode, adjust image parameters, enable detection or tracking, manage camera settings, or mentions ONVIF, RTSP, IP camera, webcam, or XPAI cameras.
 license: MIT
 compatibility: Requires Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. Cameras must be on the same LAN for discovery.
 metadata:
@@ -147,7 +147,7 @@ PTZ control uses a **dual-protocol strategy**: ONVIF is tried first, automatical
 
 **PTZ Movement Estimation:** The SDK does not report absolute PTZ angles. To estimate how far the view has shifted after a rotation, the Agent should capture a screenshot before and after the movement, compare the two frames visually, and report the estimated shift as a percentage of the frame width/height to the user. This is best-effort — in featureless scenes (blank walls, sky) the estimate may be unreliable; say so when it is.
 
-Detailed tool-call sequences for all 4 directions, degraded-result examples, and calibration: [WORKFLOW.md — Phase 4 PTZ Control](references/WORKFLOW.md#phase-4--ptz-control-detailed-tool-calls).
+If PTZ detailed sequences, degrees mode, or calibration (`calibrate_ptz` set_home/go_home) are needed → [WORKFLOW.md — Phase 4](references/WORKFLOW.md#phase-4--ptz-control-detailed-tool-calls).
 
 ## Extended Capabilities
 
@@ -247,7 +247,9 @@ The following tools extend the skill's functionality beyond the core workflow. T
 2. If needs_password → ask user for password → connect_device(camera_name="前门", password=user_input)
 ```
 
-## Failure Response Quick Reference
+## Decision Table — error / status → action
+
+This table is the **single runtime source of truth** for error handling. On any tool failure: analyze the error → apply the mapped action. Do NOT write workaround scripts or re-implement tool functionality. Report to the user what failed / why / how to fix, then wait for the user's decision — **except** the bounded auto-retry row below.
 
 | `error_message` pattern / `status` | Agent Action |
 |------------------------------------|--------------|
@@ -264,25 +266,24 @@ The following tools extend the skill's functionality beyond the core workflow. T
 | `recording in progress` (screenshot rejected on the same camera) | Camera is recording; stop recording (`toggle_recording` action=stop) before screenshotting the same camera |
 | `storage full` | Suggest cleanup via `manage_storage_status()` or change storage policy |
 | `not support illumination` | Device doesn't support illumination mode control — inform user |
-| `MCP tools not available` | Register MCP server in client config — do NOT write workaround scripts |
-| `DEVICE_UNREACHABLE` (from private protocol / SK HTTP, on illumination / image / tracking tools, ONVIF connection healthy) | Transient port flapping — retry the same call with unchanged parameters after 2-3 seconds, up to 3 attempts. Report only after all retries fail. Do **not** reconnect or rediscover |
+| `MCP tools not available` | Register MCP server in client config (see [MCP-Only Interaction](#mcp-only-interaction-hard-rule)) — do NOT write workaround scripts |
+| `DEVICE_UNREACHABLE` (from private protocol / SK HTTP, on illumination / image / tracking tools, ONVIF connection healthy) | **Bounded auto-retry, no user confirmation needed:** retry the same call with unchanged parameters after 2-3 seconds, up to 3 attempts. Transient private-protocol port flapping; do not reconnect or rediscover. Report only after all retries fail |
+| `exit code 71` / instance lock conflict / MCP tools all unavailable | Another session holds the camera, or stale lock. Auto-recovery usually handles this; if not → see Gotchas (zombie lock) above |
 
-## Error Handling Policy
+## Conditional Loading Index
 
-When any MCP tool call fails, crashes, **or the MCP tools are unavailable in the current session**, the Agent **MUST** follow these rules:
+Load a reference **only when its trigger fires** — do not pre-read.
 
-1. **Do NOT write workaround scripts or re-implement tool functionality.** Never attempt to bypass a tool failure — or missing tool registration — by writing custom Python code, shell commands, or alternative implementations. If the tools are missing, register the MCP server (see [MCP-Only Interaction](#mcp-only-interaction-hard-rule)) instead of importing the toolkit directly.
-2. **Analyze the error.** Read the error message, traceback, or tool return value (e.g. `success=False`, `error_message`) to identify the root cause.
-3. **Report to the user.** Clearly explain:
-   - **What failed** — which tool, what operation
-   - **Why it failed** — root cause from the `error_message` field and context
-   - **How to fix it** — concrete actionable steps the user can take
-4. **Wait for the user's decision.** Do not proceed with retries, fallbacks, or alternative approaches until the user confirms.
-5.**Exception - transient private-protocol port flapping:** `DEVICE_UNREACHABLE` errors returned by the Skyworth private protocol (TCP command channel) on the illumination / image-settings / tracking tools (`manage_illumination`, `manage_image_settings`, `query_tracking_capabilities`, `set_tracking`) are known transient failures while the device remains online. For this specific error, the Agent performs bounded automatic retries (up to 3 attempts, 2-3 seconds apart) **without** waiting for user confirmation, per the Gotchas entry below. Only report to the user after all retries are exhausted.
+| Trigger | Read |
+|---------|------|
+| PTZ detailed sequences, degrees mode, calibration needed | [references/WORKFLOW.md — Phase 4](references/WORKFLOW.md#phase-4--ptz-control-detailed-tool-calls) |
+| Auth flow details beyond the Decision Table (cloud auth internals, direct_connect) | [references/WORKFLOW.md — Phase 2](references/WORKFLOW.md#phase-2--connect--authorize-detailed-tool-calls) |
+| Building an external consumer on the event store | [references/EVENT_INTEGRATION.md](references/EVENT_INTEGRATION.md) |
+| Per-tool parameter signatures, return fields, safety constraints | [references/commands/](references/commands/) — device_mgmt · discovery · stream · ptz · events · illumination · image_settings · tracking |
 
 ## Configuration
 
-Camera configurations are saved in the skill's root directory under `config.yaml`. After a successful connection, the credentials are automatically written to config.yaml and are reused in subsequent conversations. Complete schema can be found in [references/CONFIG.md](references/CONFIG.md).
+Camera configurations are saved in `config.yaml` (skill root). Credentials auto-persist after first successful connection. When config.yaml full schema or example configs are needed → [references/CONFIG.md](references/CONFIG.md).
 
 ## Limitations
 
@@ -295,9 +296,17 @@ Camera configurations are saved in the skill's root directory under `config.yaml
 
 ## References
 
-- [references/commands/](references/commands/) — Per-tool parameter signatures, return fields, and safety constraints (split by module: device_mgmt / stream / ptz / events / illumination / image_settings / tracking)
-- [references/WORKFLOW.md](references/WORKFLOW.md) — Complete tool-call sequences for core workflow (Phase 0–4), including [auth flows](references/WORKFLOW.md#phase-2--connect--authorize-detailed-tool-calls) and [PTZ degraded examples](references/WORKFLOW.md#phase-4--ptz-control-detailed-tool-calls)
-- [references/ARCHITECTURE.md](references/ARCHITECTURE.md) — [Connection & auth flow](references/ARCHITECTURE.md#connection--authorization-flow), [device discovery protocols](references/ARCHITECTURE.md#device-discovery), [PTZ dual-protocol architecture](references/ARCHITECTURE.md#ptz-dual-protocol-architecture), [event monitoring architecture](references/ARCHITECTURE.md#event-monitoring-architecture-guardian-mode-foundation), [illumination dual-protocol architecture](references/ARCHITECTURE.md#illumination-mode-control-architecture), [known issues](references/ARCHITECTURE.md#known-issues--implementation-notes)
-- [references/CONFIG.md](references/CONFIG.md) — [config.yaml full schema](references/CONFIG.md#full-schema) and [example configs](references/CONFIG.md#example-configs)
-- [references/EVENT_INTEGRATION.md](references/EVENT_INTEGRATION.md) — [On-disk event store schema 1.0](references/EVENT_INTEGRATION.md#4-schema-10-fields) & [external-consumer contract](references/EVENT_INTEGRATION.md#5-consumer-integration-guidelines) (for other skills / forwarders that build on top of this skill)
-- [requirements.txt](requirements.txt) — Python dependencies for MCP Server mode
+Load a reference **only when its trigger fires** — do not pre-read.
+
+| Trigger | Read |
+|---------|------|
+| Need per-tool parameter signatures, return fields, or safety constraints | [references/commands/](references/commands/) (device_mgmt · discovery · stream · ptz · events · illumination · image_settings · tracking) |
+| Need complete tool-call sequences for core workflow (Phase 0–4) | [references/WORKFLOW.md](references/WORKFLOW.md) |
+| Device discovery protocol internals (WS-Discovery, Skyworth private, USB) | [references/commands/discovery.md](references/commands/discovery.md) |
+| Connection & auth flow details beyond the Decision Table | [references/commands/device_mgmt.md](references/commands/device_mgmt.md) |
+| PTZ dual-protocol architecture or physical limit guard details | [references/commands/ptz.md](references/commands/ptz.md) |
+| Event monitoring architecture (Guardian mode foundation) | [references/commands/events.md](references/commands/events.md) |
+| Illumination mode control architecture (Skyworth private protocol) | [references/commands/illumination.md](references/commands/illumination.md) |
+| config.yaml full schema or example configs | [references/CONFIG.md](references/CONFIG.md) |
+| Building an external consumer on the event store (schema 1.0, consumer contract) | [references/EVENT_INTEGRATION.md](references/EVENT_INTEGRATION.md) |
+| Python dependencies list | [requirements.txt](requirements.txt) |

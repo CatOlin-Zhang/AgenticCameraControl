@@ -42,7 +42,7 @@ search_devices()
 - `sky_*` fields are populated for Skyworth devices, empty for others
 - `device_class` is auto-classified via RTSP probe: `"password_required"` or `"direct_connect"`
 
-For protocol-level details (multicast addresses, message formats), see [ARCHITECTURE.md — Device Discovery](ARCHITECTURE.md#device-discovery).
+For protocol-level details (multicast addresses, message formats), see [Discovery — How Discovery Works](commands/discovery.md#how-discovery-works-internal).
 
 ---
 
@@ -142,7 +142,7 @@ toggle_recording(camera_name="客厅摄像头", action="start")
 toggle_recording(camera_name="客厅摄像头", action="stop")
 ```
 
-> For non-ASCII path handling and same-process connection requirements, see [ARCHITECTURE.md — Known Issues](ARCHITECTURE.md#known-issues--implementation-notes).
+> For non-ASCII path handling and same-process connection requirements, see [SKILL.md — Gotchas](../SKILL.md#gotchas).
 
 ### End-to-End: User says "I want to see the camera"
 
@@ -248,7 +248,7 @@ Receive alarm events (motion, human, vehicle, tamper, line-crossing, …) with l
 | **Prerequisite** | Camera connected via `connect_device()` |
 | **Safety** | `action="start"` spawns a background listener — requires explicit user confirmation |
 | **Detailed reference** | [commands/events.md](commands/events.md) — full parameter/return fields, schema 1.0 format, event store contract |
-| **Architecture** | [ARCHITECTURE.md — Event Monitoring Architecture](ARCHITECTURE.md#event-monitoring-architecture-guardian-mode-foundation) |
+| **Architecture** | [commands/events.md — Architecture](commands/events.md#architecture) |
 
 ### Illumination Mode Control (`manage_illumination`)
 
@@ -259,4 +259,4 @@ Query and adjust camera illumination parameters. Dual-protocol: Skyworth private
 | **Prerequisite** | Camera connected via `connect_device()`; capability auto-probed at connect time and cached in `config.yaml` as `illumination_modes` |
 | **Safety** | `action="set"` modifies a hardware setting — requires explicit user confirmation. Always call `get` first to retrieve `capabilities` (parameter ranges), then call `set` with only the parameters to change |
 | **Detailed reference** | [commands/illumination.md](commands/illumination.md) — full parameter table (15 params), return fields, dual-protocol details |
-| **Architecture** | [ARCHITECTURE.md — Illumination Mode Control Architecture](ARCHITECTURE.md#illumination-mode-control-architecture) |
+| **Architecture** | [commands/illumination.md — Architecture](commands/illumination.md#architecture) |
