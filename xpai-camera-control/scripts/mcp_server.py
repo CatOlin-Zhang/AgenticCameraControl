@@ -55,7 +55,7 @@ TOOLS = [
     ),
     Tool(
         name="search_devices",
-        description="扫描局域网发现可用摄像头（WS-Discovery / 创维私有协议）。返回新发现的设备列表，与 get_registered_cameras（读取本地已保存配置）不同。发现多个设备时必须将全部设备逐一展示给用户，不得省略或仅展示部分结果。",
+        description="扫描局域网发现可用摄像头（WS-Discovery / XPAI私有协议）。返回新发现的设备列表，与 get_registered_cameras（读取本地已保存配置）不同。发现多个设备时必须将全部设备逐一展示给用户，不得省略或仅展示部分结果。",
         inputSchema={
             "type": "object",
             "properties": {
