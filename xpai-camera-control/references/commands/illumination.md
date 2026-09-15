@@ -10,7 +10,7 @@ Camera illumination mode query and adjustment — exposed as the single MCP tool
 
 ## Architecture
 
-Illumination control uses the **Skyworth Private Protocol only** (TCP channel, port 9010, dynamic-token HTTP): capability query, read settings, write settings — handled internally by the tool.
+Illumination control uses the **XPAI Private Protocol only** (TCP channel, port 9010, dynamic-token HTTP): capability query, read settings, write settings — handled internally by the tool.
 
 This protocol exposes **2 controllable parameters**:
 

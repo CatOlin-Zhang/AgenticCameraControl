@@ -2,7 +2,7 @@
 
 Pan/tilt control with **dual-protocol strategy** — exposed as MCP tools by `scripts/mcp_server.py`
 
-ONVIF PTZ Service is tried first, automatically falling back to the Skyworth private protocol (vendor command via TCP channel) when ONVIF is unavailable. Protocol selection and fallback are handled internally — the Agent only sees the `protocol` field in the result.
+ONVIF PTZ Service is tried first, automatically falling back to the XPAI private protocol (vendor command via TCP channel) when ONVIF is unavailable. Protocol selection and fallback are handled internally — the Agent only sees the `protocol` field in the result.
 
 > **MCP-only:** All tools below are invoked exclusively through the MCP server (`scripts/mcp_server.py`). Never import this module directly or write standalone scripts to call these functions.
 
@@ -18,7 +18,7 @@ Directional movement of the PTZ head. Auto-stops after `duration_seconds`.
 
 - **Pre-check:** if the head is already at the physical limit in the requested direction, the command is intercepted (no move command is sent to the device) and the result returns `degraded=True` with `actual_duration_seconds=0`.
 - **In-flight guard:** during movement the tool polls the head position (every ~0.4s); when the range boundary is reached or displacement stalls, it stops early. E.g. a "turn right 5s" request with only ~3s of travel left stops at ~3s with `degraded=True`.
-- **Graceful fallback:** on devices where position polling is unavailable (no Skyworth private channel), the guard silently degrades to plain timed movement — behavior is unchanged from before.
+- **Graceful fallback:** on devices where position polling is unavailable (no XPAI private channel), the guard silently degrades to plain timed movement — behavior is unchanged from before.
 
 **Agent behavior (MANDATORY):** whenever the result has `degraded=True`, the agent MUST explicitly relay `degrade_reason` to the user (e.g. "You requested a 5-second right turn, but the PTZ head reached its physical limit after 3.2 seconds and stopped early"). Never silently swallow a degraded result.
 

@@ -4,7 +4,7 @@ Full schema for `config.yaml` — the configuration file for the Camera Control 
 
 ## File Location
 
-Place `config.yaml` at the skill root (`xpai-camera-control/config.yaml`) to define camera configurations. Cameras discovered at runtime via WS-Discovery, Skyworth private protocol, or USB scanning do not need to be pre-configured.
+Place `config.yaml` at the skill root (`xpai-camera-control/config.yaml`) to define camera configurations. Cameras discovered at runtime via WS-Discovery, XPAI private protocol, or USB scanning do not need to be pre-configured.
 
 ---
 
@@ -82,14 +82,14 @@ Unique string identifier for the camera.
 | `username` | `"admin"` | ONVIF login username. |
 | `password` | `""` | ONVIF login password. Auto-cached to config.yaml after successful connection. |
 | `rtsp_port` | `554` | RTSP streaming port. |
-| `rtsp_path` | `"/stream1"` | Main stream RTSP path. Aliases: `rtsp_path_main`. Skyworth cameras use vendor-specific paths; the toolkit auto-tries fallback paths when the configured path fails. |
+| `rtsp_path` | `"/stream1"` | Main stream RTSP path. Aliases: `rtsp_path_main`. XPAI cameras use vendor-specific paths; the toolkit auto-tries fallback paths when the configured path fails. |
 | `rtsp_sub_path` | `"/stream2"` | Sub stream RTSP path. Aliases: `rtsp_path_sub`. Same fallback behavior as main stream. |
 
 ### Device Identity Parameters
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `sn_code` | `""` | Device serial number. Populated by ONVIF `GetDeviceInformation` or Skyworth discovery during registration. |
+| `sn_code` | `""` | Device serial number. Populated by ONVIF `GetDeviceInformation` or XPAI discovery during registration. |
 | `sn` | `""` | Alias for `sn_code`. Written for compatibility with password auth scheme. |
 | `pkdk` | `""` | Device identity token. Populated automatically during registration. |
 | `device_class` | auto | Auto-detected by RTSP probe: 401 response → `"password_required"` (needs username/password); 200 response → `"direct_connect"` (no password, connects immediately). |

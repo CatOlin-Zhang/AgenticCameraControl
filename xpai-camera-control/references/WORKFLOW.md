@@ -252,7 +252,7 @@ Receive alarm events (motion, human, vehicle, tamper, line-crossing, …) with l
 
 ### Illumination Mode Control (`manage_illumination`)
 
-Query and adjust camera illumination parameters. Dual-protocol: Skyworth private (TCP channel, 15 parameters) + ONVIF Imaging fallback (mode only). Single tool, `action` switches mode: `get` / `set`.
+Query and adjust camera illumination parameters. Dual-protocol: XPAI private (TCP channel, 15 parameters) + ONVIF Imaging fallback (mode only). Single tool, `action` switches mode: `get` / `set`.
 
 | Aspect | Detail |
 |--------|--------|

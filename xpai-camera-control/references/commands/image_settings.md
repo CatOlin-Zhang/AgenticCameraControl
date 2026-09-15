@@ -10,9 +10,9 @@ Camera image parameter query and adjustment — exposed as the single MCP tool `
 
 ## Architecture
 
-Image settings use the **Skyworth private protocol only** (TCP channel; same pattern as Illumination — no ONVIF fallback, because ONVIF Imaging covers only the 4 continuous parameters and cannot do `flip`).
+Image settings use the **XPAI private protocol only** (TCP channel; same pattern as Illumination — no ONVIF fallback, because ONVIF Imaging covers only the 4 continuous parameters and cannot do `flip`).
 
-### Skyworth Private Protocol (TCP channel)
+### XPAI Private Protocol (TCP channel)
 
 The private protocol provides full image control via vendor-specific TCP commands (capability query, read settings, write settings — handled internally by the tool).
 

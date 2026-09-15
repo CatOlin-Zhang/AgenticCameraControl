@@ -13,7 +13,7 @@ Camera intelligent detection and tracking control — exposed as two MCP tools b
 
 ## Architecture
 
-Detection & tracking uses **Skyworth Private Protocol only** (TCP channel, dynamic-token HTTP). There is **no ONVIF fallback** — tracking is a Skyworth-specific feature set.
+Detection & tracking uses **XPAI Private Protocol only** (TCP channel, dynamic-token HTTP). There is **no ONVIF fallback** — tracking is a XPAI-specific feature set.
 
 Five detection types are supported, each with its own protocol section:
 

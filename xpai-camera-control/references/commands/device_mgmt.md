@@ -78,7 +78,7 @@ Search for available cameras on the local network. The tool automatically select
 |--------|--------|
 | **Safety** | None |
 | **Returns** | `SearchResult` (see field tables below) |
-| **Parameters** | `timeout`: discovery timeout in seconds (default 15.0). The tool internally tries all available protocols (ONVIF WS-Discovery, Skyworth private, USB) and merges results. |
+| **Parameters** | `timeout`: discovery timeout in seconds (default 15.0). The tool internally tries all available protocols (ONVIF WS-Discovery, XPAI private, USB) and merges results. |
 | **Implementation** | Internally dispatches to the corresponding discovery protocol; results are normalized into `DiscoveredDevice` objects |
 
 **SearchResult return fields:**
@@ -102,21 +102,21 @@ Search for available cameras on the local network. The tool automatically select
 | `manufacturer` | string | Manufacturer name |
 | `supported_media` | list[string] | Supported media settings |
 | `discovery_method` | string | How the device was found: `"ws_discovery"` / `"sky_discovery"` / `"usb"` |
-| `sky_subtype` | string | Skyworth device subtype (1=bullet/2=dome/3=halfdome/5=PTZ/6=bullet+dome); empty for non-Skyworth |
-| `sky_name` | string | Device display name (Skyworth only) |
-| `sky_dtype` | string | Device type code (Skyworth only) |
-| `sky_hw_version` | string | Hardware version (Skyworth only) |
-| `sky_sw_version` | string | Software version (Skyworth only) |
-| `sky_did` | string | Device ID (Skyworth only) |
-| `sky_channels` | int | Channel count (0=non-Skyworth, 1=mono, 2=binocular) |
-| `sky_channel_list` | list | Channel details with RTSP codec modes (Skyworth only) |
-| `sky_web_port` | int | Web UI port (Skyworth only) |
-| `sky_udp_port` | int | UDP command port (Skyworth only) |
-| `sky_net_type` | string | Network type: `"eth"` / `"wifi"` (Skyworth only) |
-| `sky_ip_mode` | string | IP mode: 0=DHCP, 1=adaptive, 2=manual (Skyworth only) |
-| `sky_mask` | string | Subnet mask (Skyworth only) |
-| `sky_gateway` | string | Gateway address (Skyworth only) |
-| `sky_mac` | string | MAC address (Skyworth only) |
+| `sky_subtype` | string | XPAI device subtype (1=bullet/2=dome/3=halfdome/5=PTZ/6=bullet+dome); empty for non-XPAI |
+| `sky_name` | string | Device display name (XPAI only) |
+| `sky_dtype` | string | Device type code (XPAI only) |
+| `sky_hw_version` | string | Hardware version (XPAI only) |
+| `sky_sw_version` | string | Software version (XPAI only) |
+| `sky_did` | string | Device ID (XPAI only) |
+| `sky_channels` | int | Channel count (0=non-XPAI, 1=mono, 2=binocular) |
+| `sky_channel_list` | list | Channel details with RTSP codec modes (XPAI only) |
+| `sky_web_port` | int | Web UI port (XPAI only) |
+| `sky_udp_port` | int | UDP command port (XPAI only) |
+| `sky_net_type` | string | Network type: `"eth"` / `"wifi"` (XPAI only) |
+| `sky_ip_mode` | string | IP mode: 0=DHCP, 1=adaptive, 2=manual (XPAI only) |
+| `sky_mask` | string | Subnet mask (XPAI only) |
+| `sky_gateway` | string | Gateway address (XPAI only) |
+| `sky_mac` | string | MAC address (XPAI only) |
 | `supported_illumination_modes` | list[string] | Supported illumination modes probed during discovery (empty when not probed or unsupported; populated by `connect_device()` post-connect) |
 
 ---
@@ -152,7 +152,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
 2. If password provided by user → single attempt with TCP/ONVIF/RTSP verification (no retry, no cache cleanup). RTSP auth failure → `status="failed"`
 3. If no password and `device_class == "password_required"` → internally initiate cloud authorization (POST request + polling). Cloud returns password → verify via TCP/ONVIF + RTSP → success: persist credentials; failure: return `status="cloud_pwd_failed"`
 4. If not `password_required` → probe RTSP stream:
-   - `200 OK` (direct-connect) → probe SN via Skyworth private protocol → verify SK HTTP communication → register to config.yaml with SN → `auth_method="direct"`
+   - `200 OK` (direct-connect) → probe SN via XPAI private protocol → verify SK HTTP communication → register to config.yaml with SN → `auth_method="direct"`
    - `401 Unauthorized` → internally initiate cloud authorization (same as step 3)
 5. Cloud authorization outcomes: authorized → auto-connect with cloud password; rejected → `status="auth_rejected"`; timeout/error → `status="needs_password"`
 
