@@ -21,7 +21,7 @@
 
 局域网 IP 摄像头的智能控制系统。支持 ONVIF 协议摄像头， Sky Worth 协议摄像头，以及 USB 摄像头的自动发现、连接、视频流拉取、云台控制（除USB）、设备管理（除USB）等功能。支持摄像头智能命名——用户可自定义名称，或由多模态模型根据截图画面自动生成描述性名称。
 
-核心模块 `xpai-camera-control` 可作为 MCP (Model Context Protocol) Server 运行，将 20 个摄像头控制工具暴露给 AI Agent 使用。分发采用单一技能包设计：`toolkit` 的各平台编译产物共存于同一包内，Windows、macOS、Linux 无需任何修改即可直接运行。
+核心模块 `xpai-camera-control` 可作为 MCP (Model Context Protocol) Server 运行，将 20 个摄像头控制工具暴露给 AI Agent 使用。`scripts/toolkit/` 为纯 Python 源码，任意平台安装依赖后直接运行。
 
 ### 功能概览
 
@@ -82,14 +82,7 @@ Server 通过 stdio 传输协议与 MCP 客户端通信，兼容 Claude Desktop 
 
 ### 跨平台支持
 
-采用**单一技能包**设计，无需按平台选择目录：
-
-| 形态 | 说明 |
-|------|------|
-| 源码包（本仓库） | `scripts/toolkit/` 为 `.py` 源码，任意平台安装依赖后直接运行 |
-| 分发包（构建产物） | `toolkit` 编译为各平台二进制（Windows `.pyd` / macOS、Linux `.so`），按 Python 扩展名后缀共存于同一包内，同一包在三平台直接运行 |
-
-分发包由内部构建流程生成（敏感常量混淆 + Cython 编译），构建工具不随本仓库分发。
+`scripts/toolkit/` 为纯 Python 源码，Windows、macOS、Linux 安装依赖后直接运行，无需按平台选择目录。
 
 ### 项目结构
 
@@ -207,7 +200,7 @@ Server 进程退出码：`70` = 看门狗自清理（宿主已放弃该实例）
 
 An intelligent control system for IP cameras on local networks. Supports ONVIF-compliant cameras, Sky Worth protocol cameras, and USB webcams for auto-discovery, connection, video streaming, PTZ control (excluding USB), and device management (excluding USB). Features intelligent camera naming — users can assign custom names, or let the multimodal model auto-generate descriptive names from screenshot content.
 
-The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Server, exposing 20 camera control tools to AI Agents. Distribution uses a single-skill-package design: compiled toolkit artifacts for each platform coexist in the same package, running on Windows, macOS, and Linux without any modification.
+The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Server, exposing 20 camera control tools to AI Agents. `scripts/toolkit/` ships as pure Python source — runs on any platform after installing dependencies.
 
 ### Features
 
@@ -268,14 +261,7 @@ Add the following to your MCP client configuration (e.g. Claude Desktop):
 
 ### Cross-Platform Support
 
-A **single skill package** design — no need to pick a directory per platform:
-
-| Form | Description |
-|------|-------------|
-| Source package (this repo) | `scripts/toolkit/` ships as `.py` source; runs on any platform after installing dependencies |
-| Distribution package (build artifact) | `toolkit` compiled to per-platform binaries (Windows `.pyd` / macOS & Linux `.so`), coexisting in the same package via Python extension suffixes — one package runs on all three platforms |
-
-The distribution package is produced by an internal build pipeline (sensitive-constant obfuscation + Cython compilation); the build tooling is not distributed with this repository.
+`scripts/toolkit/` ships as pure Python source — runs on Windows, macOS, and Linux after installing dependencies. No need to pick a directory per platform.
 
 ### Project Structure
 
