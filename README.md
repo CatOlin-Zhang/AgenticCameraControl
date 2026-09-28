@@ -5,13 +5,13 @@
   <img src="https://img.shields.io/badge/MCP-1.0-green" alt="MCP 1.0">
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License MIT">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform">
-  <img src="https://img.shields.io/badge/Version-0.6.0-orange" alt="Version 0.6.0">
+  <img src="https://img.shields.io/badge/Version-0.7.0-orange" alt="Version 0.7.0">
   <img src="https://img.shields.io/badge/ONVIF-Supported-blueviolet" alt="ONVIF">
   <img src="https://img.shields.io/badge/Skyworth-Supported-ff6600" alt="Skyworth">
   <img src="https://img.shields.io/badge/Transport-stdio-9cf" alt="Transport stdio">
 </p>
 
-> **版本：0.6.0** | 传输协议：MCP stdio | MCP 工具数：20
+> **版本：0.7.0** | 传输协议：MCP stdio | MCP 工具数：20
 
 **[中文](#中文) | [English](#english)**
 
@@ -19,7 +19,7 @@
 
 ## 中文
 
-局域网 IP 摄像头的智能控制系统。支持 ONVIF 协议摄像头， Sky Worth 协议摄像头，以及 USB 摄像头的自动发现、连接、视频流拉取、云台控制（除USB）、设备管理（除USB）等功能。
+局域网 IP 摄像头的智能控制系统。支持 ONVIF 协议摄像头， Sky Worth 协议摄像头，以及 USB 摄像头的自动发现、连接、视频流拉取、云台控制（除USB）、设备管理（除USB）等功能。支持摄像头智能命名——用户可自定义名称，或由多模态模型根据截图画面自动生成描述性名称。
 
 核心模块 `xpai-camera-control` 可作为 MCP (Model Context Protocol) Server 运行，将 20 个摄像头控制工具暴露给 AI Agent 使用。分发采用单一技能包设计：`toolkit` 的各平台编译产物共存于同一包内，Windows、macOS、Linux 无需任何修改即可直接运行。
 
@@ -36,6 +36,7 @@
 | **补光控制**   | 日夜模式切换、补光灯模式/亮度/定时器/灵敏度调节（仅Sky Worth）          |
 | **图像设置**   | 亮度/对比度/饱和度/锐度/翻转/白平衡/宽动态等参数调节（仅Sky Worth）      |
 | **侦测追踪**   | 人形追踪/车辆追踪/区域检测能力查询与开关控制（仅Sky Worth）            |
+| **摄像头命名**  | 支持用户自定义命名，或由多模态模型根据截图画面自动生成描述性名称             |
 
 ### 快速开始
 
@@ -107,7 +108,8 @@ AgenticCameraControl/
 │   │   │   ├── events.py         # 报警事件接收与本地存储
 │   │   │   ├── illumination.py   # 补光/夜视模式控制
 │   │   │   ├── image_settings.py # 图像参数设置
-│   │   │   └── tracking.py       # 侦测追踪控制
+│   │   │   ├── tracking.py       # 侦测追踪控制
+│   │   │   └── sk_proto.py       # Skyworth 私有协议实现
 │   │   └── __init__.py
 │   ├── references/               # 技术参考文档
 │   │   ├── commands/             # 各模块工具签名与参数说明
@@ -203,7 +205,7 @@ Server 进程退出码：`70` = 看门狗自清理（宿主已放弃该实例）
 
 ## English
 
-An intelligent control system for IP cameras on local networks. Supports ONVIF-compliant cameras, Sky Worth protocol cameras, and USB webcams for auto-discovery, connection, video streaming, PTZ control (excluding USB), and device management (excluding USB).
+An intelligent control system for IP cameras on local networks. Supports ONVIF-compliant cameras, Sky Worth protocol cameras, and USB webcams for auto-discovery, connection, video streaming, PTZ control (excluding USB), and device management (excluding USB). Features intelligent camera naming — users can assign custom names, or let the multimodal model auto-generate descriptive names from screenshot content.
 
 The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Server, exposing 20 camera control tools to AI Agents. Distribution uses a single-skill-package design: compiled toolkit artifacts for each platform coexist in the same package, running on Windows, macOS, and Linux without any modification.
 
@@ -220,6 +222,7 @@ The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Se
 | **Illumination Control** | Day/night mode switching, fill-light mode/brightness/timer/sensitivity adjustment (Sky Worth only)                |
 | **Image Settings**       | Brightness/contrast/saturation/sharpness/flip/whitebalance/WDR adjustment (Sky Worth only)                        |
 | **Detection & Tracking** | Human tracking, vehicle tracking, area detection capability query and toggle (Sky Worth only)                     |
+| **Camera Naming**        | User-defined naming or multimodal model auto-naming based on screenshot content                                   |
 
 ### Quick Start
 
@@ -291,7 +294,8 @@ AgenticCameraControl/
 │   │   │   ├── events.py         # Alarm event receiving & local store
 │   │   │   ├── illumination.py   # Illumination / night-vision control
 │   │   │   ├── image_settings.py # Image parameter settings
-│   │   │   └── tracking.py       # Detection & tracking control
+│   │   │   ├── tracking.py       # Detection & tracking control
+│   │   │   └── sk_proto.py       # Skyworth private protocol implementation
 │   │   └── __init__.py
 │   ├── references/               # Technical reference docs
 │   │   ├── commands/             # Per-module tool signatures & parameters
