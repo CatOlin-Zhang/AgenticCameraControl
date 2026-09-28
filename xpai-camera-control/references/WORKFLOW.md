@@ -260,3 +260,76 @@ Query and adjust camera illumination parameters. Dual-protocol: XPAI private (TC
 | **Safety** | `action="set"` modifies a hardware setting — requires explicit user confirmation. Always call `get` first to retrieve `capabilities` (parameter ranges), then call `set` with only the parameters to change |
 | **Detailed reference** | [commands/illumination.md](commands/illumination.md) — full parameter table (15 params), return fields, dual-protocol details |
 | **Architecture** | [commands/illumination.md — Architecture](commands/illumination.md#architecture) |
+
+---
+
+## Common Operation Sequences
+
+Quick reference for frequent task patterns:
+
+### Connect → Screenshot
+
+```text
+1. connect_device(camera_name="客厅摄像头")        → success=true
+2. capture_video_screenshot(camera_name="客厅摄像头") → file_path
+3. get_audio_video_stream(camera_name="客厅摄像头")   → stream_url
+# Deliver BOTH: show screenshot image + tell user the RTSP URL
+```
+
+### Connect → PTZ Control
+
+```text
+1. connect_device(camera_name="客厅摄像头")                    → success=true
+2. capture_video_screenshot(camera_name="客厅摄像头")          → reference frame (before PTZ)
+3. control_ptz(camera_name="客厅摄像头", direction="right", speed=0.5) → check degraded
+4. If degraded=true → MUST relay degrade_reason to user
+5. stop_ptz(camera_name="客厅摄像头")                          → emergency stop
+6. capture_video_screenshot(camera_name="客厅摄像头")          → current frame (after PTZ)
+7. Compare before/after frames → estimate shift % → report to user
+```
+
+### Event Monitoring
+
+```text
+1. connect_device(camera_name="前门")                          → success=true
+2. manage_camera_events(action="start", camera_name="前门")    → user confirms first!
+3. Loop: manage_camera_events(action="wait", timeout_seconds=60)
+   → see commands/events.md for full details
+```
+
+### Illumination
+
+```text
+1. connect_device(camera_name="前门")                          → success=true
+2. manage_illumination(action="get", camera_name="前门")       → capabilities + current
+3. If supported → manage_illumination(action="set", daynightmode=2)  → user confirms first!
+   → see commands/illumination.md for full parameter list
+```
+
+---
+
+## Troubleshooting: Instance Lock
+
+The server uses a three-layer defense (stdio watchdog + lease heartbeat + triple-verification recovery) to auto-recover stale locks. If auto-recovery fails (exit code 71), manually recover:
+
+### Zombie Lock (stale process, host abandoned)
+
+```
+netstat -ano | findstr 49740
+Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" | Select CommandLine
+taskkill /PID <PID> /F
+```
+
+Exit codes: `70` = watchdog self-cleanup; `71` = instance lock conflict.
+
+### Orphaned MCP Server Process
+
+Some Agent hosts don't terminate the MCP server when a session ends. The orphaned process keeps its lease heartbeat fresh, so it legitimately holds the lock.
+
+**Recovery:**
+1. Read `pid` from `.instance_lease.json` in the skill root (heartbeat writes `pid`/`port`/`ts` every 5s), or `netstat -ano | findstr 49740`
+2. Verify: `Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" | Select CommandLine`
+3. Kill: `taskkill /PID <PID> /F /T`
+4. Restart the session / MCP client
+
+> **Caution:** killing the PID breaks whatever session still owns it — confirm with the user that the previous session is truly gone first.

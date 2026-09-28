@@ -1,6 +1,6 @@
 ---
 name: xpai-camera-control
-description: Discover, connect, and control XPAI cameras on the local network. Capabilities include device detection, streaming, WebRTC browser preview, snapshot capture, PTZ pan/tilt control, alarm event monitoring, illumination mode control, image parameter adjustment, detection & tracking (human/vehicle/area/motion/line-crossing), and device management. Runs as an MCP Server. Use when the user wants to discover cameras, view a camera feed, capture snapshots, control PTZ, watch for motion/alarm events, adjust illumination mode, adjust image parameters, enable detection or tracking, manage camera settings, or mentions ONVIF, RTSP, IP camera, webcam, or XPAI cameras.
+description: "Discover, connect, and control XPAI LAN cameras via MCP. Capabilities: device detection, streaming, WebRTC preview, snapshots, PTZ control, alarm events, illumination, image settings, detection & tracking, device management."
 license: MIT
 compatibility: Requires Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. Cameras must be on the same LAN for discovery.
 metadata:
@@ -11,62 +11,50 @@ metadata:
 
 ## When to Use
 
-Trigger this skill when the user:
-- Wants to see a camera feed, capture a snapshot, or record video
-- Asks to find or discover cameras on the network
-- Requests pan, tilt, camera movement, or PTZ calibration
-- Asks to watch/guard a camera or check for motion, human, tamper, or other alarm events
-- Wants to adjust illumination mode (IR light, white light, night vision, auto-switch)
-- Wants to adjust image parameters (brightness, contrast, saturation, sharpness, image flip)
-- Wants to view camera feed in a browser via WebRTC live preview
-- Wants to enable/disable detection or tracking features (human tracking, vehicle tracking, area detection, motion detection, line-crossing detection)
-- Mentions ONVIF, RTSP, IP camera, webcam, or specific camera brands
+Trigger when the user wants to discover, view, capture, record, move (PTZ), monitor (events/alarm), adjust (illumination/image), or track with IP cameras on the local network.
 
-## Running Mode: MCP Server (stdio transport)
+## Installation
 
-`scripts/mcp_server.py` runs as an MCP server using **stdio transport only**. It is **not** a network service — no port is opened and there is no `localhost` URL to connect to. Instead, the MCP client (Claude Desktop, etc.) **launches the script as a child process** (via the config below) and exchanges JSON-RPC messages over the process's stdin/stdout. The Agent interacts with all camera control tools exclusively through this stdio channel; per-session connection state lives in the memory of that child process.
+If `xpai-camera-control` tools are not present in the available tool set, follow these steps:
 
+**Step 1 — Determine SKILL_ROOT:** the absolute path of the directory containing this SKILL.md, or run:
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run MCP server (normally you don't run this manually —
-# the MCP client spawns it as a child process per the config below)
-python scripts/mcp_server.py
+python -c "from scripts._paths import get_skill_root; print(get_skill_root())"
 ```
 
-**MCP Configuration** — Add to your MCP client's config:
+**Step 2 — Install dependencies:**
+```bash
+pip install -r <SKILL_ROOT>/requirements.txt
+```
+
+**Step 3 — Write MCP config:** append the following JSON to the host's MCP config file (replace `<SKILL_ROOT>` with the actual path from Step 1):
 ```json
 {
   "mcpServers": {
     "xpai-camera-control": {
       "command": "python",
       "args": ["scripts/mcp_server.py"],
-      "cwd": "/path/to/xpai-camera-control"
+      "cwd": "<SKILL_ROOT>"
     }
   }
 }
 ```
+Common config locations:
+- Claude Desktop: `%APPDATA%\Claude\claude_desktop_config.json` (Win) / `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
+- Cursor: Settings → MCP → Add Server
+- Cline: `.cline/mcp_settings.json`
 
-The MCP server exposes **20 tools** covering 8 toolkit modules. See [references/commands/](references/commands/) for per-module tool signatures and return fields.
-
-### MCP-Only Interaction (Hard Rule)
+## MCP-Only Interaction (Hard Rule)
 
 All camera operations **MUST** go through the MCP tools exposed by `scripts/mcp_server.py`:
 
-- If the `xpai-camera-control` tools are **not present** in your available tool set, do NOT fall back to scripting. First register the MCP server in the client configuration (installing `requirements.txt` if needed), wait for the tools to load, then call them.
+- If the `xpai-camera-control` tools are **not present** in your available tool set, do NOT fall back to scripting. Follow the [Installation](#installation) steps first, then call the tools.
 - **NEVER** import `scripts.toolkit` (or any module inside this package) directly, and **NEVER** write standalone scripts that re-implement or wrap tool functionality.
 - Rationale: direct imports bypass the security constraints of this skill (explicit user confirmation, parameter validation) and the in-memory connection state held by the MCP server process — scripted calls in a separate process will silently violate both.
 
-### Single-Instance Limitation (Must Tell the User)
+## Single-Instance Limitation
 
-The MCP server is **stateful and single-instance**: camera connections and RTSP sessions live in one server process's memory, and the instance lock (port bind + lease heartbeat + watchdog, see Gotchas) allows only one running instance at a time. This is by design — concurrent instances would fight for the device's RTSP session slots and hang the camera.
-
-**Agent instruction:** before starting camera work (or the first time camera tools are invoked in a session), proactively tell the user in plain language:
-
-> The camera feature has a usage limitation: only one session can "take over" the camera at a time (the connection state is stored in a single background service). If another session is currently using the camera, the camera tools in this session may become unavailable or fail when called — this is not a malfunction. Please end or close the camera task in the other session first, then ask me to retry.
-
-If the camera tools are missing from your tool set, or calls fail with an instance-lock conflict (exit code 71), do NOT silently retry or debug — tell the user another session currently holds the camera, and ask them to close that session's camera work first.
+The server is stateful and single-instance (port bind + lease heartbeat + watchdog). **Proactively tell the user:** only one session can control the camera at a time; if another session holds it, tools may fail — that's not a malfunction. On instance-lock conflict (exit code 71), tell the user to close the other session's camera work first.
 
 ## Core Workflow
 
@@ -87,31 +75,16 @@ When Phase 0 cache is unavailable, call `search_devices()` to discover cameras o
 - Results are returned as a unified `DiscoveredDevice` list — XPAI-specific metadata (SN, channels, MAC, etc.) is included under `sky_*` prefixed fields when available
 - Each result includes a `discovery_method` field indicating which protocol found the device
 
-**Camera Naming:** When `search_devices()` returns multiple cameras, the Agent **MUST**:
+**Camera Naming:** When multiple cameras are found, list them (IP, model, SN) and assign a friendly name to each. Two naming strategies are available:
 
-1. **List all discovered cameras** — present each device with its key identifiers (IP, model, SN) in a numbered list so the user can distinguish them
-2. **Prompt for user-defined names** — ask the user if they want to assign friendly names (e.g. "living room camera", "front door", "garage") before connecting. Pass the chosen name as the `name` parameter to `connect_device()` or `register_camera()`
-3. **Or auto-name via multimodal model** — if the Agent has vision capabilities, it can connect each camera first, call `capture_video_screenshot()` to capture a frame, analyze the scene content, and generate a descriptive name automatically (e.g. a camera showing a doorway → "front door cam"). Then call `register_camera(name=auto_name, ip=camera_ip, ...)` to rename — `register_camera` matches by IP and replaces the old entry in-place, no duplicates
+1. **User-provided names** — Ask the user to name each camera (e.g. "front door", "parking lot").
+2. **Auto-naming by multimodal model** — Capture a screenshot from each camera via `capture_video_screenshot()`, then analyze the image content to generate a descriptive name that reflects the scene (e.g. "entrance hallway", "backyard", "loading dock"). Present the generated names to the user for confirmation before saving.
 
-> **Renaming:** `register_camera` uses a three-tier match: **name → IP → SN**. Calling it with a new name but the same IP or SN as an existing entry will rename that entry in-place. This means users can rename cameras at any time — during initial setup, after connecting, or in a later session.
-
-> **Note:** If the user skips naming, the toolkit assigns a default name based on the device model or IP. Friendly names make subsequent operations much clearer (e.g. "The living room camera turns left" vs "192.168.1.105 device turns left").
+If the user already provides names, use strategy 1. Otherwise, default to strategy 2 (auto-naming). Pass the chosen name as `name` to `connect_device()` / `register_camera()`. `register_camera` matches by name → IP → SN, so calling with a new name + same IP renames in-place.
 
 ### Phase 2 — Connect & Authorize
 
-For each discovered camera, call `connect_device()` to connect. **The specific connection process is handled internally by the tool**. The Agent's responsibilities are as follows:
-
-| Scenario | Agent Operation |
-|----------|----------------|
-| **Cached credentials** (config.yaml has password) | Tool auto-loads credentials → TCP/ONVIF/RTSP three-channel verification (password must pass RTSP auth, retry 3x) → `ConnectResult(success=True)` — no user interaction. If all retries fail → cloud re-authorization attempted → still fails → registration auto-removed → `status="needs_password"` |
-| **direct_connect** (stream probe succeeds) | Tool connects directly via RTSP → probes SN → verifies SK HTTP communication → registers SN to config.yaml → `ConnectResult(auth_method="direct")` — no user interaction |
-| **password_required** (cloud auth auto-triggered) | Tool internally requests cloud authorization. The Agent does **not** need to call any extra tool. |
-| Cloud authorized → `success=True` | Tool auto-connected with cloud password, credentials persisted. No user interaction needed |
-| Cloud rejected → `status="auth_rejected"` | Inform user: authorization was denied, cannot connect |
-| Cloud unavailable → `status="needs_password"` | Inform user: cloud service unreachable, ask user to input password directly → `connect_device(name, password=user_input)` |
-| Cloud password mismatch → `status="cloud_pwd_failed"` | Inform user: cloud password doesn't work (device may have changed password), ask user to input correct password → `connect_device(name, password=user_input)` |
-| **needs_password** | Agent prompts user for password → calls `connect_device(name, password=user_input)` |
-| **Connection successful** | Credentials already persisted by the tool → future sessions auto-connect via Phase 0 |
+Call `connect_device()` for each camera. The tool handles auth internally (cloud authorization, cached credentials, direct connect). **Agent only reacts to the returned `status`** — see [Decision Table](#decision-table--error--status--action) for mapping.
 
 ### Phase 3 — Stream & Capture
 
@@ -151,101 +124,33 @@ If PTZ detailed sequences, degrees mode, or calibration (`calibrate_ptz` set_hom
 
 ## Extended Capabilities
 
-The following tools extend the skill's functionality beyond the core workflow. They are **not required** for typical camera operation but are available when the user explicitly requests them.
+Available when the user explicitly requests them (all require camera connected):
 
-| Tool | What it does | Prerequisite | Reference |
-|------|-------------|-------------|----------|
-| `manage_camera_events` | Alarm event receiving (motion, human, vehicle, tamper, …) with linked snapshots. Actions: `start` / `stop` / `poll` / `wait`. | Camera connected via `connect_device()` | [commands/events.md](references/commands/events.md) |
-| `manage_illumination` | Query & adjust camera illumination (2 parameters: daynight mode, fill light mode — integer value or string alias). XPAI private protocol (TCP channel) only, no ONVIF fallback. Actions: `get` / `set`. | Camera connected | [commands/illumination.md](references/commands/illumination.md) |
-| `manage_image_settings` | Query & adjust image parameters (brightness, contrast, saturation, sharpness, flip: 0=normal/1=diagonal/2=horizontal/3=vertical). XPAI private protocol (TCP channel) only, no ONVIF fallback. Actions: `get` / `set`. | Camera connected | [commands/image_settings.md](references/commands/image_settings.md) |
-| `query_tracking_capabilities` | Query detection & tracking capabilities (human/vehicle/area/motion/line-crossing) with current values and parameter ranges. | Camera connected | — |
-| `set_tracking` | Enable/disable detection & tracking features (human tracking, vehicle tracking, area detection, motion detection, line-crossing detection). | Camera connected; modifies hardware settings | — |
+| Tool | Actions | Reference |
+|------|---------|----------|
+| `manage_camera_events` | Alarm events (motion/human/vehicle/tamper/…): `start`/`stop`/`poll`/`wait` | [events.md](references/commands/events.md) |
+| `manage_illumination` | Illumination (daynight + fill light): `get`/`set` | [illumination.md](references/commands/illumination.md) |
+| `manage_image_settings` | Image params (brightness/contrast/…): `get`/`set` | [image_settings.md](references/commands/image_settings.md) |
+| `query_tracking_capabilities` / `set_tracking` | Detection & tracking query/config | [tracking.md](references/commands/tracking.md) |
 
-> **Note:** `manage_camera_events(action="start")` spawns a background listener thread — **requires explicit user confirmation** before calling. `manage_illumination(action="set")` and `set_tracking` modify hardware settings — also require user confirmation. Cloud authorization is handled internally by `connect_device` (blocking call, may wait for user confirmation on APP).
-
-## Toolkit Modules
-
-8 modules exposed as MCP tools via `scripts/mcp_server.py`. For per-tool parameter signatures, return fields, and safety constraints: [commands/](references/commands/) — [device_mgmt.md](references/commands/device_mgmt.md) · [stream.md](references/commands/stream.md) · [ptz.md](references/commands/ptz.md) · [events.md](references/commands/events.md) · [illumination.md](references/commands/illumination.md) · [image_settings.md](references/commands/image_settings.md) · [tracking.md](references/commands/tracking.md).
-
-| Module | Key Functions | Reference |
-|--------|--------------|----------|
-| `device_mgmt` | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device` | [commands/device_mgmt.md](references/commands/device_mgmt.md) |
-| `stream` | `capture_video_screenshot`, `get_audio_video_stream`, `toggle_recording`, `manage_storage_status`, `start_webrtc_stream`, `stop_webrtc_stream` | [commands/stream.md](references/commands/stream.md) |
-| `ptz` | `control_ptz`, `get_ptz_parameters`, `calibrate_ptz`, `stop_ptz` | [commands/ptz.md](references/commands/ptz.md) |
-| `events` | `manage_camera_events` (action: `start` / `stop` / `poll` / `wait`) | [commands/events.md](references/commands/events.md) |
-| `illumination` | `manage_illumination` (action: `get` / `set`) | [commands/illumination.md](references/commands/illumination.md) |
-| `image_settings` | `manage_image_settings` (action: `get` / `set`) | [commands/image_settings.md](references/commands/image_settings.md) |
-| `tracking` | `query_tracking_capabilities`, `set_tracking` | [commands/tracking.md](references/commands/tracking.md) |
+> `events(start)`, `illumination(set)`, `set_tracking` require **explicit user confirmation** before calling.
 
 ## Security Constraints
 
-| Constraint | Rule | Applies To |
-|------------|------|-----------|
-| **Explicit Prompt** | Inform the user of the operation content before execution and wait for confirmation | PTZ, streaming, screenshots, event monitor start, illumination mode change, image settings change, tracking config change |
-| **Code Validation** | Validate parameters, device status, and connection availability | Recording, storage configuration |
-| **Background Thread Boundary** | The only background threads in this skill are the per-camera event listeners; they start **only** after explicit user enablement via `manage_camera_events(action="start")`, and their behavior is limited to alarm subscription plus writes into the `snapshots/` and `events/` whitelist paths. Auto-resume after a process restart re-arms **only** listeners the user enabled and never stopped (persisted intent) — it never starts new listeners on its own | Event monitoring |
+| Constraint | Rule |
+|------------|------|
+| **Explicit Prompt** | Inform user and wait for confirmation before: PTZ, streaming, screenshots, event monitor start, illumination/image/tracking changes |
+| **Code Validation** | Tool-layer validation for: recording, storage configuration |
+| **Background Thread** | Event listeners start **only** after `events(action="start")`; auto-resume only re-arms previously-enabled listeners |
 
 ## Gotchas
 
-- **TCP private-protocol port flaps intermittently (DEVICE_UNREACHABLE) even though the device is online.** → **Action:** for illumination / image / tracking tools (all XPAI-private-protocol only, no ONVIF fallback), retry the same call up to 3 times at 2-3 s intervals; do not conclude offline or reconnect. Report only after all retries fail.
-- **ONVIF port is not always 80.** → **Action:** always use `onvif_port` from `search_devices()` / config.yaml; never hardcode port 80. XPAI cameras typically use a non-standard ONVIF port (auto-probed by `connect_device`).
-- **`GetStreamUri` returns bare RTSP URLs without credentials.** → **Action:** always use the `stream_url` returned by `get_audio_video_stream()` — the toolkit auto-injects credentials. Never manually construct RTSP URLs.
-- **Chinese characters in Windows paths cause `cv2.imwrite()` to silently fail.** → **Action:** no manual workaround needed — the toolkit handles this internally. If you pass a custom `save_path`, prefer ASCII-only paths.
-- **Connection state is in-memory only — silently lost across sessions.** → **Action:** if any operation returns `success=false` with a connection-related error, call `connect_device()` first to re-establish the connection, then retry the failed operation. All operations must run in the same MCP server process.
-- **XPAI cameras use non-standard RTSP paths.** → **Action:** no manual path configuration needed — the toolkit auto-tries fallback paths (ONVIF standard → XPAI private) when the configured path fails.
-- **Cached credentials failed → cloud re-auth attempted first, then registration auto-removed.** → **Action:** if `connect_device()` returns `status="needs_password"` after cached credentials failed, the tool already tried cloud re-authorization. Simply prompt the user for the correct password and re-call `connect_device(camera_name, password=user_input)`.
-- **Zombie lock: MCP tools all unavailable, stderr shows instance lock conflict.** → The server uses a three-layer defense (stdio watchdog + lease heartbeat + triple-verification recovery) to auto-recover stale locks. If auto-recovery fails (exit code 71), manually recover:
-  ```
-  netstat -ano | findstr 49740
-  Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" | Select CommandLine
-  taskkill /PID <PID> /F
-  ```
-  Exit codes: `70` = watchdog self-cleanup (host abandoned instance); `71` = instance lock conflict (another live instance holds the lock, or manual intervention needed).
-- **Orphaned MCP server process across sessions — the new session cannot connect.** Some Agent host architectures do not terminate the MCP server process when a session ends. The orphaned process stays alive and keeps its lease heartbeat fresh, so it legitimately holds the instance lock — lease-based auto-recovery only reclaims *expired* leases and never kills a live instance. → **Action:** find the original process's PID, kill it, then let the client start a new instance. Fastest: read the `pid` field from `.instance_lease.json` in the skill root (the heartbeat writes `pid`/`port`/`ts` every 5 s), or `netstat -ano | findstr 49740` (lock port is derived from the skill path). Verify the PID really belongs to this skill's `mcp_server.py` before killing (`Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" | Select CommandLine`), then `taskkill /PID <PID> /F /T`, and restart the session / MCP client so it spawns a fresh server. Caution: killing the PID breaks whatever session still owns it — confirm with the user that the previous session is truly gone first.
-- **Fixed-duration recording must NOT be implemented as agent-side sleep ("start → wait N seconds → stop").** The Agent has no reliable way to idle: intermediate conversation turns, other tool calls, and context growth will bury the pending stop step, so the `stop` call may never be issued. The recording then runs indefinitely — holding the device's RTSP session slot and blocking screenshots and stream probes on that camera. → **Action:** push the duration into the tool itself: `toggle_recording(action="start", duration=<seconds>)` auto-stops server-side with zero agent involvement. For open-ended recording, start without `duration`, explicitly tell the user recording is in progress, and stop only when the user asks — never schedule a "self-reminder" to stop later.
-
-## Quick Reference — Common Operation Sequences
-
-### Connect → Screenshot (user wants to "see" a camera)
-
-```text
-1. connect_device(camera_name="客厅摄像头")        → success=true
-2. capture_video_screenshot(camera_name="客厅摄像头") → file_path
-3. get_audio_video_stream(camera_name="客厅摄像头")   → stream_url
-# Deliver BOTH: show screenshot image + tell user the RTSP URL
-```
-
-### Connect → PTZ Control
-
-```text
-1. connect_device(camera_name="客厅摄像头")                    → success=true
-2. capture_video_screenshot(camera_name="客厅摄像头")          → reference frame (before PTZ)
-3. control_ptz(camera_name="客厅摄像头", direction="right", speed=0.5) → check degraded
-4. If degraded=true → MUST relay degrade_reason to user
-5. stop_ptz(camera_name="客厅摄像头")                          → emergency stop
-6. capture_video_screenshot(camera_name="客厅摄像头")          → current frame (after PTZ)
-7. Compare before/after frames → estimate shift % → report to user
-```
-
-### Extended Tools
-
-```text
-# Event monitoring — requires camera connected; user confirms before start
-1. connect_device(camera_name="前门")                          → success=true
-2. manage_camera_events(action="start", camera_name="前门")    → user confirms first!
-3. Loop: manage_camera_events(action="wait", timeout_seconds=60)
-   → see commands/events.md for full details
-
-# Illumination — requires camera connected; XPAI private protocol only (2 params)
-1. connect_device(camera_name="前门")                          → success=true
-2. manage_illumination(action="get", camera_name="前门")       → capabilities + current
-3. If supported → manage_illumination(action="set", daynightmode=2)  → user confirms first!
-   → see commands/illumination.md for full parameter list
-
-# Cloud authorization — handled internally by connect_device
-1. connect_device(camera_name="前门", sn_code="SN123")   → status="needs_password" (cloud unreachable) or auth_rejected or cloud_pwd_failed
-2. If needs_password → ask user for password → connect_device(camera_name="前门", password=user_input)
-```
+- **TCP port flaps (DEVICE_UNREACHABLE)** → for illumination/image/tracking tools, retry up to 3× at 2-3s intervals; do not reconnect. Report only after all retries fail.
+- **Never hardcode ONVIF port 80** → always use `onvif_port` from `search_devices()` / config.yaml.
+- **Never manually construct RTSP URLs** → always use `stream_url` from `get_audio_video_stream()` (credentials auto-injected).
+- **Connection state is in-memory only** → on `success=false` with connection error, call `connect_device()` first, then retry.
+- **Fixed-duration recording** → always use `toggle_recording(action="start", duration=<seconds>)`. Never implement agent-side sleep → stop.
+- **Zombie lock / orphaned MCP server process** → see [WORKFLOW.md — Troubleshooting](references/WORKFLOW.md#troubleshooting-instance-lock) for manual recovery steps.
 
 ## Decision Table — error / status → action
 
@@ -266,9 +171,9 @@ This table is the **single runtime source of truth** for error handling. On any 
 | `recording in progress` (screenshot rejected on the same camera) | Camera is recording; stop recording (`toggle_recording` action=stop) before screenshotting the same camera |
 | `storage full` | Suggest cleanup via `manage_storage_status()` or change storage policy |
 | `not support illumination` | Device doesn't support illumination mode control — inform user |
-| `MCP tools not available` | Register MCP server in client config (see [MCP-Only Interaction](#mcp-only-interaction-hard-rule)) — do NOT write workaround scripts |
+| `MCP tools not available` | Follow [Installation](#installation) steps — do NOT write workaround scripts |
 | `DEVICE_UNREACHABLE` (from private protocol / SK HTTP, on illumination / image / tracking tools, ONVIF connection healthy) | **Bounded auto-retry, no user confirmation needed:** retry the same call with unchanged parameters after 2-3 seconds, up to 3 attempts. Transient private-protocol port flapping; do not reconnect or rediscover. Report only after all retries fail |
-| `exit code 71` / instance lock conflict / MCP tools all unavailable | Another session holds the camera, or stale lock. Auto-recovery usually handles this; if not → see Gotchas (zombie lock) above |
+| `exit code 71` / instance lock conflict / MCP tools all unavailable | Another session holds the camera, or stale lock. Auto-recovery usually handles this; if not → see [WORKFLOW.md — Troubleshooting](references/WORKFLOW.md#troubleshooting-instance-lock) |
 
 ## Conditional Loading Index
 
@@ -276,9 +181,12 @@ Load a reference **only when its trigger fires** — do not pre-read.
 
 | Trigger | Read |
 |---------|------|
-| PTZ detailed sequences, degrees mode, calibration needed | [references/WORKFLOW.md — Phase 4](references/WORKFLOW.md#phase-4--ptz-control-detailed-tool-calls) |
-| Auth flow details beyond the Decision Table (cloud auth internals, direct_connect) | [references/WORKFLOW.md — Phase 2](references/WORKFLOW.md#phase-2--connect--authorize-detailed-tool-calls) |
+| Common operation sequences (screenshot, PTZ, events, illumination) | [references/WORKFLOW.md — Common Operation Sequences](references/WORKFLOW.md#common-operation-sequences) |
+| PTZ detailed sequences, degrees mode, calibration | [references/WORKFLOW.md — Phase 4](references/WORKFLOW.md#phase-4--ptz-control-detailed-tool-calls) |
+| Auth flow details beyond the Decision Table | [references/WORKFLOW.md — Phase 2](references/WORKFLOW.md#phase-2--connect--authorize-detailed-tool-calls) |
+| Zombie lock / orphaned process recovery | [references/WORKFLOW.md — Troubleshooting](references/WORKFLOW.md#troubleshooting-instance-lock) |
 | Building an external consumer on the event store | [references/EVENT_INTEGRATION.md](references/EVENT_INTEGRATION.md) |
+| config.yaml full schema or example configs | [references/CONFIG.md](references/CONFIG.md) |
 | Per-tool parameter signatures, return fields, safety constraints | [references/commands/](references/commands/) — device_mgmt · discovery · stream · ptz · events · illumination · image_settings · tracking |
 
 ## Configuration
@@ -287,26 +195,7 @@ Camera configurations are saved in `config.yaml` (skill root). Credentials auto-
 
 ## Limitations
 
-- Cameras and host must be on the same local network
-- RTSP streams require local network connectivity
-- Password-required cameras: the Agent must ask the user for the device password and call `connect_device(camera_name, password=user_input)`
-- ONVIF authentication uses WS-UsernameToken (PasswordDigest) — credentials are auto-injected into RTSP URLs internally
-- Screenshot/recording requires `opencv-python` (included in requirements.txt)
-- MCP server mode uses stdio transport only
+- Cameras and host must be on the same LAN
+- Password-required cameras: ask user for password → `connect_device(camera_name, password=user_input)`
+- Screenshot/recording requires `opencv-python` (in requirements.txt)
 
-## References
-
-Load a reference **only when its trigger fires** — do not pre-read.
-
-| Trigger | Read |
-|---------|------|
-| Need per-tool parameter signatures, return fields, or safety constraints | [references/commands/](references/commands/) (device_mgmt · discovery · stream · ptz · events · illumination · image_settings · tracking) |
-| Need complete tool-call sequences for core workflow (Phase 0–4) | [references/WORKFLOW.md](references/WORKFLOW.md) |
-| Device discovery protocol internals (WS-Discovery, XPAI private, USB) | [references/commands/discovery.md](references/commands/discovery.md) |
-| Connection & auth flow details beyond the Decision Table | [references/commands/device_mgmt.md](references/commands/device_mgmt.md) |
-| PTZ dual-protocol architecture or physical limit guard details | [references/commands/ptz.md](references/commands/ptz.md) |
-| Event monitoring architecture (Guardian mode foundation) | [references/commands/events.md](references/commands/events.md) |
-| Illumination mode control architecture (XPAI private protocol) | [references/commands/illumination.md](references/commands/illumination.md) |
-| config.yaml full schema or example configs | [references/CONFIG.md](references/CONFIG.md) |
-| Building an external consumer on the event store (schema 1.0, consumer contract) | [references/EVENT_INTEGRATION.md](references/EVENT_INTEGRATION.md) |
-| Python dependencies list | [requirements.txt](requirements.txt) |
