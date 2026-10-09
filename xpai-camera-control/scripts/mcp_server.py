@@ -24,7 +24,7 @@ TOOLS = [
 
     Tool(
         name="get_registered_cameras",
-        description="从 config.yaml 加载所有已注册摄像头的配置信息（含凭据）。不扫描网络，仅读取本地保存的记录。会话开始时首先调用，获取已注册摄像头列表。",
+        description="读取 config.yaml 中所有已注册摄像头配置（含凭据），不扫描网络。会话开始时首先调用。",
         inputSchema={
             "type": "object",
             "properties": {},
@@ -33,7 +33,7 @@ TOOLS = [
     ),
     Tool(
         name="register_camera",
-        description="将摄像头凭据写入 config.yaml 持久化，供后续 connect_device 自动加载。支持重命名：当传入新名称但 IP 或 SN 与已有条目匹配时，自动替换旧名称。通常由 connect_device 内部自动调用，无需手动使用。",
+        description="将摄像头凭据写入 config.yaml 持久化。支持按 IP/SN 匹配自动替换旧条目（重命名）。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -76,7 +76,7 @@ TOOLS = [
                 "camera_name": {"type": "string", "description": "摄像头名称"},
                 "password": {"type": ["string", "integer", "number"], "description": "用户密码（可选；纯数字密码请务必以字符串传入；数字也会自动转为字符串）"},
                 "ip": {"type": "string", "description": "设备 IP"},
-                "port": {"type": "integer", "description": "ONVIF 端口（可选；不传或传错时工具会自动探测验证真实端口）"},
+                "port": {"type": "integer", "description": "ONVIF 端口"},
                 "rtsp_port": {"type": "integer", "description": "RTSP 端口"},
                 "rtsp_path": {"type": "string", "description": "RTSP 路径"},
                 "username": {"type": ["string", "integer", "number"], "description": "登录用户名（数字会自动转为字符串）"},
@@ -101,7 +101,7 @@ TOOLS = [
 
     Tool(
         name="get_audio_video_stream",
-        description="获取摄像头的 RTSP 实时视频流 URL 及元数据（编码格式、分辨率、帧率）。仅返回流地址，不抓取画面。截图用 capture_video_screenshot，录像用 toggle_recording。",
+        description="获取 RTSP 流地址及元数据（编码、分辨率、帧率），不抓取画面。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -113,7 +113,7 @@ TOOLS = [
                 },
                 "timeout_seconds": {
                     "type": "number",
-                    "description": "本次流探测的最长等待秒数（默认 20，上限 120）。已知启动慢的设备可传大值；超时会返回明确的超时错误而不是无限等待",
+                    "description": "最长等待秒数（默认 20，上限 120）",
                 },
             },
             "required": ["camera_name"],
@@ -121,7 +121,7 @@ TOOLS = [
     ),
     Tool(
         name="capture_video_screenshot",
-        description="从视频流中截取一帧画面保存为 JPEG 图片（单帧快照）。录像请用 toggle_recording。默认保存到 snapshots/ 目录。相机正在录像时会拒绝截图（避免耗尽设备 RTSP 会话名额），需先停止录像。",
+        description="从 RTSP 流截取一帧保存为 JPEG，默认保存到 snapshots/ 目录。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -129,7 +129,7 @@ TOOLS = [
                 "save_path": {"type": "string", "description": "保存目录"},
                 "timeout_seconds": {
                     "type": "number",
-                    "description": "本次截图的最长等待秒数（默认 20，上限 120）。已知启动慢的设备可传大值；超时会返回明确的超时错误而不是无限等待",
+                    "description": "最长等待秒数（默认 20，上限 120）",
                 },
             },
             "required": ["camera_name"],
@@ -137,7 +137,7 @@ TOOLS = [
     ),
     Tool(
         name="toggle_recording",
-        description="启动、停止或查询本地 MP4 录像。action=start 开始录像（可选 duration 秒数自动停止）；action=stop 停止并返回文件路径和时长；action=status 查询当前录像状态。默认保存到 video/ 目录。多台设备同时录像时请逐台调用（每台间隔 2-3 秒），避免并发启动失败。长时间录像（超过 10 分钟）可能因网络或设备波动而无声中断：若宿主具备定时任务能力，长录像期间请每隔 5 分钟左右用 action=status 巡检；若不具备，启动前须告知用户此风险，且在用户询问进度时先用 action=status 核实实际状态再回答，发现已停止则重新调用 start 续录。录像异常（启动失败/中途停止）时，可查看与视频同名的 .log 文件（正常录制完成且无异常时会自动删除）获取 ffmpeg 退出原因。",
+        description="启动、停止或查询本地 MP4 录像，默认保存到 video/ 目录。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -145,12 +145,12 @@ TOOLS = [
                 "action": {
                     "type": "string",
                     "enum": ["start", "stop", "status"],
-                    "description": "start = 开始录像 / stop = 停止录像 / status = 查询录像状态",
+                    "description": "start / stop / status",
                 },
-                "save_path": {"type": "string", "description": "录像保存目录（默认 video/）"},
+                "save_path": {"type": "string", "description": "录像保存目录"},
                 "duration": {
                     "type": "number",
-                    "description": "录像时长（秒），仅 start 时有效；设置后后台自动停止，无需手动调 stop",
+                    "description": "录像时长（秒），仅 start 有效，设置后自动停止",
                 },
             },
             "required": ["camera_name", "action"],
@@ -158,7 +158,7 @@ TOOLS = [
     ),
     Tool(
         name="manage_storage_status",
-        description="查询录像/截图的磁盘占用与可用空间，或设置存储路径、文件格式(mp4/avi/jpg)与存储策略(overwrite/stop_when_full/circular)。",
+        description="查询磁盘占用与可用空间，或设置存储路径、格式与策略。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -187,7 +187,7 @@ TOOLS = [
 
     Tool(
         name="control_ptz",
-        description="控制云台转动方向或变焦。支持 8 方向(up/down/left/right/upleft/upright/downleft/downright)和变焦(zoom_in/zoom_out)。转动量通过 duration_seconds(秒)或 degrees(角度)二选一指定。内置物理极限保护，到达边界时自动提前停止。",
+        description="控制云台转动方向或变焦，支持 8 方向和变焦。转动量通过 duration_seconds 或 degrees 二选一指定。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -199,16 +199,16 @@ TOOLS = [
                 },
                 "speed": {
                     "type": "number",
-                    "description": "速度 0.0–1.0（当前 SK 方向命令不支持调速，仅影响返回值估算）",
+                    "description": "速度 0.0–1.0",
                     "default": 0.5,
                 },
                 "duration_seconds": {
                     "type": "number",
-                    "description": "转动时长（秒，时间模式；与 degrees 二选一，都不传时默认 1.0）",
+                    "description": "转动时长（秒），与 degrees 二选一",
                 },
                 "degrees": {
                     "type": "number",
-                    "description": "转动角度（角度模式，按 1秒=34度 换算为时间执行；与 duration_seconds 二选一）",
+                    "description": "转动角度，与 duration_seconds 二选一",
                 },
             },
             "required": ["camera_name", "direction"],
@@ -216,7 +216,7 @@ TOOLS = [
     ),
     Tool(
         name="get_ptz_parameters",
-        description="读取云台当前位置坐标、运动范围和状态（只读查询）。修改云台位置请用 control_ptz。",
+        description="读取云台当前位置坐标和运动范围（只读）。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -227,7 +227,7 @@ TOOLS = [
     ),
     Tool(
         name="calibrate_ptz",
-        description="云台物理校准与归位。set_home=执行固件级校准并存储初始位（约 10-30 秒）；go_home=精确移动到已存储的初始位。与 control_ptz（普通方向转动）不同，这是硬件校准操作。",
+        description="云台物理校准与归位（硬件校准操作）。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -257,7 +257,7 @@ TOOLS = [
 
     Tool(
         name="manage_camera_events",
-        description="摄像头告警事件管理。action=start 启动后台告警监听（需用户确认，含移动/人形/车辆等检测 + 自动快照）；action=stop 停止监听；action=poll 读取已积累的事件；action=wait 阻塞等待新事件到达（单次最长 60 秒）。",
+        description="摄像头告警事件管理：start 启动监听 / stop 停止 / poll 读取事件 / wait 等待新事件。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -268,7 +268,7 @@ TOOLS = [
                 },
                 "camera_name": {
                     "type": "string",
-                    "description": "摄像头名称（start/stop 必填；poll/wait 省略则面向全部相机）",
+                    "description": "摄像头名称（start/stop 必填）",
                 },
                 "debounce_seconds": {
                     "type": "number",
@@ -292,7 +292,7 @@ TOOLS = [
 
     Tool(
         name="start_webrtc_stream",
-        description="启动 WebRTC 实时预览，将 RTSP 流转为浏览器可直接播放的 WebRTC 流，返回 HTTP 访问地址。与 get_audio_video_stream（仅返回 RTSP URL）不同，此工具提供浏览器可视化预览。",
+        description="启动 WebRTC 实时预览，返回浏览器访问地址。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -322,7 +322,7 @@ TOOLS = [
 
     Tool(
         name="manage_illumination",
-        description="查询或设置摄像头补光与夜视模式。仅支持日夜切换(daynightmode)与补光方式(filllightmode)两项调节（多数设备只支持这两项）。与 manage_image_settings（控制画面参数如亮度对比度）不同，本工具控制物理补光硬件。",
+        description="查询或设置补光与夜视模式（daynightmode / filllightmode）。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -336,10 +336,10 @@ TOOLS = [
                     "description": "摄像头名称",
                 },
                 "daynightmode": {
-                    "description": "日夜模式: 0白天/1夜晚/2自动/3定时/4智能（别名: day/night/auto/timer/smart 或 白天/夜晚/自动/定时/智能）",
+                    "description": "0白天/1夜晚/2自动/3定时/4智能",
                 },
                 "filllightmode": {
-                    "description": "补光方式: 0全彩/1红外/2智能夜视（别名: color/ir/smart 或 全彩/红外/智能夜视）",
+                    "description": "0全彩/1红外/2智能夜视",
                 },
             },
             "required": ["action", "camera_name"],
@@ -348,7 +348,7 @@ TOOLS = [
 
     Tool(
         name="manage_image_settings",
-        description="查询或设置摄像头画面参数：亮度(brightness)、对比度(contrast)、饱和度(saturation)、锐度(sharpness)、图像翻转(flip: 0正常/1对角翻转/2水平翻转/3垂直翻转)。纯SK私有协议单通道，无ONVIF回退。与 manage_illumination（控制物理补光灯/夜视模式）不同，本工具调节画面成像参数。",
+        description="查询或设置画面参数：亮度、对比度、饱和度、锐度、图像翻转。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -380,7 +380,7 @@ TOOLS = [
                 "flip": {
                     "type": "integer",
                     "enum": [0, 1, 2, 3],
-                    "description": "图像翻转：0-正常、1-对角翻转、2-水平翻转、3-垂直翻转",
+                    "description": "0正常/1对角/2水平/3垂直",
                 },
             },
             "required": ["action", "camera_name"],
@@ -389,7 +389,7 @@ TOOLS = [
 
     Tool(
         name="query_tracking_capabilities",
-        description="查询摄像头的智能侦测与追踪能力（人形追踪/车辆追踪/区域检测/移动侦测/越界侦测），返回各侦测类型的可用参数和当前设置值。只读查询，修改设置请用 set_tracking。",
+        description="查询智能侦测与追踪能力（人形/车辆/区域/移动/越界）。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -399,7 +399,7 @@ TOOLS = [
                 },
                 "detect_type": {
                     "type": "string",
-                    "description": "侦测类型: human(人形)/vehicle(车辆)/area(区域)/motion(移动)/line(越界)/all(全部)",
+                    "description": "human / vehicle / area / motion / line / all",
                     "default": "all",
                 },
             },
@@ -408,7 +408,7 @@ TOOLS = [
     ),
     Tool(
         name="set_tracking",
-        description="开启或关闭摄像头的智能侦测与追踪功能（人形追踪/车辆追踪/区域检测/移动侦测/越界侦测）。修改硬件设置，需用户确认。仅传需修改的参数，未传的参数保持不变。查询能力请用 query_tracking_capabilities。",
+        description="开启或关闭智能侦测与追踪功能，仅传需修改的参数。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -418,7 +418,7 @@ TOOLS = [
                 },
                 "detect_type": {
                     "type": "string",
-                    "description": "侦测类型: human(人形追踪)/vehicle(车辆追踪)/area(区域检测)/motion(移动侦测)/line(越界侦测)",
+                    "description": "human / vehicle / area / motion / line",
                 },
                 "enable": {
                     "type": "boolean",
@@ -426,11 +426,11 @@ TOOLS = [
                 },
                 "tracking": {
                     "type": "boolean",
-                    "description": "是否开启追踪（仅 human/vehicle/motion 有效）",
+                    "description": "是否开启追踪",
                 },
                 "sensitivity_level": {
                     "type": "integer",
-                    "description": "灵敏度等级 0-3 (0关闭/1低/2中/3高)",
+                    "description": "灵敏度 0-3",
                 },
             },
             "required": ["camera_name", "detect_type"],
@@ -580,7 +580,7 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     else:
         raise ValueError(f"Unknown tool: {name}")
 
-server = Server("xpai-camera-control", version="0.6.0")
+server = Server("xpai-camera-control", version="0.7.0")
 
 @server.list_tools()
 async def handle_list_tools() -> list[Tool]:
@@ -606,11 +606,7 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any] | None) -> list[
             text=json.dumps({
                 "success": False,
                 "error_code": "timeout",
-                "error_message": (
-                    f"工具 {name} 执行超时（超过 {budget:.0f}s 预算），已放弃本次执行。"
-                    f"若设备响应慢，可传更大的 timeout_seconds 重试；"
-                    f"否则请检查设备在线状态与网络连通性。"
-                ),
+                "error_message": f"工具 {name} 执行超时（{budget:.0f}s），已放弃。可传更大的 timeout_seconds 重试。",
             }, ensure_ascii=False, indent=2),
         )]
     except Exception as e:

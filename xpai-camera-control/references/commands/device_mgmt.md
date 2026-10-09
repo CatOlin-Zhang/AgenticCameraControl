@@ -80,7 +80,7 @@ Search for available cameras on the local network. The tool automatically select
 |--------|--------|
 | **Safety** | None (writes `config.yaml`: registers discovered devices, removes unreachable stale entries) |
 | **Returns** | `SearchResult` (see field tables below) |
-| **Parameters** | `timeout`: overall time cap in seconds (default 15.0). Discovery returns early once it goes quiet (the tool re-probes in short rounds and stops after 2 consecutive rounds with no new device), so the cap is rarely reached. The tool internally tries all available protocols (Skyworth private, JCP, ONVIF WS-Discovery, USB) and merges results first-wins by IP. |
+| **Parameters** | `timeout`: discovery timeout in seconds (default 15.0). The tool internally tries all available protocols (ONVIF WS-Discovery, XPAI private, USB) and merges results. |
 | **Implementation** | Internally dispatches to the corresponding discovery protocol; results are normalized into `DiscoveredDevice` objects |
 
 **SearchResult return fields:**

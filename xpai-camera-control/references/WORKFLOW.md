@@ -50,6 +50,7 @@ search_devices()
 - **Search writes config.yaml**: discovered reachable devices are registered (basic info only — no password), and registered entries that are neither discovered nor reachable are removed. Re-running `search_devices()` is the supported way to refresh IP changes, newly added cameras, and departed cameras.
 
 For protocol-level details (multicast addresses, message formats), see [Discovery — How Discovery Works](commands/discovery.md#how-discovery-works-internal).
+For protocol-level details (multicast addresses, message formats), see [Discovery — How Discovery Works](commands/discovery.md#how-discovery-works-internal).
 
 ---
 

@@ -1,5 +1,7 @@
 # XPAI Discovery
+# XPAI Discovery
 
+XPAI private protocol discovery — `scripts/toolkit/discovery.py`
 XPAI private protocol discovery — `scripts/toolkit/discovery.py`
 
 > **MCP-only:** Device discovery is performed exclusively through the MCP tool `search_devices()` (in `device_mgmt.py`). This module (`discovery.py`) is an internal implementation detail — never import it directly or reference its functions.
