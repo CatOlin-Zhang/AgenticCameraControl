@@ -1,13 +1,14 @@
 import json
 import time
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import Enum
 from typing import Dict, Optional, Tuple
 
 try:
-    from . import sk_proto
+    from . import camera_proto
 except ImportError:
-    import sk_proto
+    import camera_proto
 
 try:
     from .illumination import _envelope
@@ -136,11 +137,11 @@ def _get_camera(camera_name: str):
     return _find_camera(camera_name)
 
 def _sk_ptz_get(cam) -> Optional[dict]:
-    ok, data, status = _envelope(sk_proto.ptz_get(
+    ok, data, status = _envelope(camera_proto.ptz_get(
         cam.ip, cam.sn_code, cam.username, cam.password, _SK_PTZ_TIMEOUT))
     if not ok or not data:
         return None
-    if not sk_proto.code_ok(data.get("code", "")):
+    if not camera_proto.code_ok(data.get("code", "")):
         return None
 
     pos_sub = data.get("position", {})
@@ -162,11 +163,11 @@ def _sk_ptz_get(cam) -> Optional[dict]:
     }
 
 def _sk_ptz_set(cam, payload: dict) -> Tuple[bool, str]:
-    ok, data, status = _envelope(sk_proto.ptz_set(
+    ok, data, status = _envelope(camera_proto.ptz_set(
         cam.ip, cam.sn_code, cam.username, cam.password, payload, _SK_PTZ_TIMEOUT))
     if not ok or not data:
         return False, f"SK SET_PTZ 请求失败 (status={status})"
-    if not sk_proto.code_ok(data.get("code", "")):
+    if not camera_proto.code_ok(data.get("code", "")):
         return False, f"SK SET_PTZ 返回 code={data.get('code')} msg={data.get('msg')}"
     return True, ""
 
@@ -258,6 +259,149 @@ def _guarded_wait(
 
     return time.monotonic() - start, limit_reached, final_pos
 
+_ONVIF_MIN_MOVE_TIMEOUT = 1.0
+
+_ONVIF_POSITION_RANGE = 1.0
+
+def _onvif_ptz(cam) -> Tuple[Optional[object], str, str]:
+    try:
+        from .device_mgmt import _connected_devices
+        onvif_cam = (_connected_devices.get(cam.name) or {}).get("onvif_camera")
+        if onvif_cam is None:
+            if not cam.port:
+                return None, "", "缺少 ONVIF 端口，请先调用 connect_device 完成连接"
+            from onvif import ONVIFCamera
+            onvif_cam = ONVIFCamera(
+                host=cam.ip, port=cam.port,
+                user=cam.username or "admin", passwd=cam.password or "",
+            )
+        profiles = onvif_cam.create_media_service().GetProfiles()
+        if not profiles:
+            return None, "", "ONVIF 未返回任何 Profile，设备可能不支持 PTZ"
+        return onvif_cam.create_ptz_service(), profiles[0].token, ""
+    except Exception as e:
+        return None, "", f"ONVIF PTZ 服务初始化失败: {e}"
+
+def _onvif_move(cam, vx: float, vy: float, vz: float, duration: float) -> Tuple[bool, str]:
+    ptz, token, err = _onvif_ptz(cam)
+    if ptz is None:
+        return False, err
+
+    velocity: dict = {}
+    if vx or vy:
+        velocity["PanTilt"] = {"x": vx, "y": vy}
+    if vz:
+        velocity["Zoom"] = {"x": vz}
+    if not velocity:
+        return False, "速度向量为零，无有效移动方向"
+
+    try:
+        ptz.ContinuousMove({
+            "ProfileToken": token,
+            "Velocity": velocity,
+            "Timeout": timedelta(seconds=max(_ONVIF_MIN_MOVE_TIMEOUT, duration)),
+        })
+    except Exception as e:
+        return False, f"ONVIF ContinuousMove 失败: {e}"
+
+    time.sleep(duration)
+    try:
+        ptz.Stop({"ProfileToken": token, "PanTilt": True, "Zoom": True})
+    except Exception as e:
+        return False, f"ONVIF 移动已启动但停止失败: {e}"
+    return True, ""
+
+def _onvif_stop(cam) -> Tuple[bool, str]:
+    ptz, token, err = _onvif_ptz(cam)
+    if ptz is None:
+        return False, err
+    try:
+        ptz.Stop({"ProfileToken": token, "PanTilt": True, "Zoom": True})
+        return True, ""
+    except Exception as e:
+        return False, f"ONVIF Stop 失败: {e}"
+
+def _onvif_status(cam) -> Tuple[Optional[dict], str]:
+    ptz, token, err = _onvif_ptz(cam)
+    if ptz is None:
+        return None, err
+    try:
+        status = ptz.GetStatus({"ProfileToken": token})
+    except Exception as e:
+        return None, f"ONVIF GetStatus 失败: {e}"
+
+    pan = tilt = zoom = 0.0
+    available = False
+    position = getattr(status, "Position", None)
+    if position is not None:
+        pan_tilt = getattr(position, "PanTilt", None)
+        if pan_tilt is not None:
+            pan = _safe_float(getattr(pan_tilt, "x", 0.0))
+            tilt = _safe_float(getattr(pan_tilt, "y", 0.0))
+            available = True
+        zoom_pos = getattr(position, "Zoom", None)
+        if zoom_pos is not None:
+            zoom = _safe_float(getattr(zoom_pos, "x", 0.0))
+            available = True
+
+    is_moving = False
+    move_status = getattr(status, "MoveStatus", None)
+    if move_status is not None:
+        for axis in ("PanTilt", "Zoom"):
+            state = getattr(move_status, axis, None)
+            if isinstance(state, str) and state.strip().upper() not in ("", "IDLE"):
+                is_moving = True
+
+    return {
+        "pan": pan, "tilt": tilt, "zoom": zoom,
+        "position_available": available,
+        "is_moving": is_moving,
+    }, ""
+
+def _onvif_control(
+    cam,
+    direction: PTZDirection,
+    speed: float,
+    duration_seconds: Optional[float],
+    degrees: Optional[float],
+) -> PTZMoveResult:
+    if degrees is not None:
+        return PTZMoveResult(
+            success=False, protocol="onvif", degrees=degrees,
+            error_message="ONVIF 位移空间为归一化坐标，无法按角度移动，请改用 duration_seconds",
+        )
+
+    duration = duration_seconds if duration_seconds is not None else 1.0
+
+    if direction in _PTZ_ZOOM:
+        vz = speed if direction is PTZDirection.ZOOM_IN else -speed
+        ok, err = _onvif_move(cam, 0.0, 0.0, vz, duration)
+        method = "onvif_zoom"
+    else:
+        pan_sign, tilt_sign = _DIRECTION_SIGN.get(direction, (0, 0))
+        ok, err = _onvif_move(cam, pan_sign * speed, tilt_sign * speed, 0.0, duration)
+        method = "onvif_time"
+
+    if not ok:
+        return PTZMoveResult(
+            success=False, protocol="onvif",
+            requested_duration_seconds=duration,
+            error_message=err,
+        )
+
+    result = PTZMoveResult(
+        success=True, protocol="onvif",
+        requested_duration_seconds=duration,
+        actual_duration_seconds=duration,
+        method=method,
+    )
+    status, _ = _onvif_status(cam)
+    if status:
+        result.current_pan = status["pan"]
+        result.current_tilt = status["tilt"]
+        result.current_zoom = status["zoom"]
+    return result
+
 def control_ptz(
     camera_name: str,
     direction: PTZDirection,
@@ -292,6 +436,9 @@ def control_ptz(
             success=False,
             error_message=f"摄像头 '{camera_name}' 未注册，请先注册",
         )
+
+    if cam.protocol_type in ("J", "O"):
+        return _onvif_control(cam, direction, speed, duration_seconds, degrees)
 
     if direction in _PTZ_ZOOM:
         sk_cmd = _SK_CMD_MAP.get(direction, "")
@@ -415,6 +562,22 @@ def get_ptz_parameters(
     if not cam:
         return PTZParameters(error_message=f"摄像头 '{camera_name}' 未注册")
 
+    if cam.protocol_type in ("J", "O"):
+        status, err = _onvif_status(cam)
+        if status is None:
+            return PTZParameters(protocol="onvif", error_message=err)
+        return PTZParameters(
+            pan=status["pan"],
+            tilt=status["tilt"],
+            zoom=status["zoom"],
+            pan_range=_ONVIF_POSITION_RANGE,
+            tilt_range=_ONVIF_POSITION_RANGE,
+            zoom_range=_ONVIF_POSITION_RANGE,
+            is_moving=status["is_moving"],
+            protocol="onvif",
+            error_message="" if status["position_available"] else "设备未上报 PTZ 位置",
+        )
+
     pos = _sk_ptz_get(cam)
     if pos is None:
         return PTZParameters(
@@ -444,6 +607,13 @@ def calibrate_ptz(
         return CalibrateResult(
             success=False, protocol="sky_private",
             error_message=f"摄像头 '{camera_name}' 未注册",
+        )
+
+    if cam.protocol_type in ("J", "O"):
+        return CalibrateResult(
+            success=False, protocol="onvif",
+            action=(action or "").strip(),
+            error_message="该协议设备不支持 PTZ 标定，请改用 control_ptz 手动调整视角",
         )
 
     action = (action or "").strip()
@@ -544,6 +714,12 @@ def stop_ptz(
             success=False,
             error_message=f"摄像头 '{camera_name}' 未注册",
         )
+
+    if cam.protocol_type in ("J", "O"):
+        ok, err = _onvif_stop(cam)
+        if ok:
+            return PTZMoveResult(success=True, protocol="onvif")
+        return PTZMoveResult(success=False, protocol="onvif", error_message=err)
 
     ok, err = _sk_ptz_set(cam, {"cmd": "stop"})
     if ok:

@@ -1,8 +1,10 @@
 # PTZ Control
 
-Pan/tilt control with **dual-protocol strategy** — exposed as MCP tools by `scripts/mcp_server.py`
+Pan/tilt control with a **per-protocol backend** — exposed as MCP tools by `scripts/mcp_server.py`
 
-ONVIF PTZ Service is tried first, automatically falling back to the XPAI private protocol (vendor command via TCP channel) when ONVIF is unavailable. Protocol selection and fallback are handled internally — the Agent only sees the `protocol` field in the result.
+The backend is selected by the camera's `protocol_type`: **SK-class** (`S`) uses the XPAI private protocol (vendor command via TCP channel); **JCP-class** (`J`) uses **ONVIF only** (`ContinuousMove` / `Stop` / `GetStatus` on the ONVIF PTZ service, moving by normalized velocity vectors). Selection is handled internally — the Agent only sees the `protocol` field in the result (`"sky_private"` or `"onvif"`).
+
+**J/O-class limits:** `degrees` mode and `calibrate_ptz` are **not supported** on J-class or O-class cameras (ONVIF exposes normalized velocity vectors, not absolute angles); both return an explicit unsupported message. Use `duration_seconds` for J/O-class movement.
 
 > **MCP-only:** All tools below are invoked exclusively through the MCP server (`scripts/mcp_server.py`). Never import this module directly or write standalone scripts to call these functions.
 
@@ -74,6 +76,8 @@ Get current PTZ position, range, and movement state.
 
 Execute PTZ physical calibration or return to stored home position.
 
+> **J/O-class not supported:** on JCP or O-class cameras (`protocol_type="J"`/`"O"`) this returns `success=false`, `protocol="onvif"`, with a message stating calibration is unsupported — use `control_ptz` with `duration_seconds` to adjust the view manually.
+
 | Aspect | Detail |
 |--------|--------|
 | **Safety** | Explicit Prompt |
@@ -85,7 +89,7 @@ Execute PTZ physical calibration or return to stored home position.
 | Field | Type | Description |
 |-------|------|-------------|
 | `success` | bool | Whether calibration completed |
-| `protocol` | string | Protocol used (currently always `"sky_private"`) |
+| `protocol` | string | Protocol used: `"sky_private"` (SK-class) or `"onvif"` (J/O-class; calibration always unsupported there) |
 | `error_message` | string | Failure reason (empty on success) |
 
 ---

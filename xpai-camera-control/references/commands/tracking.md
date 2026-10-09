@@ -9,6 +9,8 @@ Camera intelligent detection and tracking control — exposed as two MCP tools b
 
 **Prerequisite:** Camera must be connected via `connect_device()` and present in the server's connection state (or have cached credentials in `config.yaml`).
 
+> **J/O-class not supported:** this capability uses the Skyworth private protocol and is unavailable on JCP or O-class cameras (`protocol_type="J"`/`"O"`). Calls return immediately with `error_code="UNSUPPORTED_PROTOCOL"` and a clear message — not a timeout or malfunction.
+
 ---
 
 ## Architecture

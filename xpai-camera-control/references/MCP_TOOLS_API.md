@@ -49,7 +49,7 @@
 
 ### `register_camera`
 
-将摄像头凭据写入 `config.yaml` 持久化。支持重命名：当传入新名称但 IP 或 SN 与已有条目匹配时，自动替换旧名称。通常由 `connect_device` 内部自动调用。
+将摄像头凭据写入 `config.yaml` 持久化。支持重命名：当传入新名称但 IP 或 SN 与已有条目匹配时，自动替换旧名称。通常由 `connect_device` / `search_devices` 内部自动调用。
 
 **参数**:
 
@@ -80,13 +80,15 @@
 
 ### `search_devices`
 
-扫描局域网发现可用摄像头（WS-Discovery + 创维私有协议双协议搜索，按 IP 去重）。**发现多个设备时必须将全部设备逐一展示给用户，不得省略。**
+扫描局域网发现可用摄像头（WS-Discovery + 创维私有协议 + JCP 三协议搜索，按 IP 去重，顺序为 创维 → JCP → WS-Discovery，先到先得）。**发现多个设备时必须将全部设备逐一展示给用户，不得省略。**
+
+**搜索即对账 `config.yaml`**：发现且可达（RTSP 探测非 `unreachable`）的设备按 `name → IP → SN` 三级匹配写入注册表（只写基础信息：名称/IP/SN/设备类型/端口，不写密码，既有密码由空值继承保留）；本轮未发现且 IP 探测不通的已注册条目会被删除。任一条发现链路失败时只注册、不删除（半轮扫描不足以证明设备离网）。长时间未使用（IP 可能因 DHCP 变化）或连接失败时，先调用本工具刷新注册表再连接。
 
 **参数**:
 
 | 参数        | 类型     | 必填 | 默认值    | 说明   |
 |-----------|--------|:--:|--------|------|
-| `timeout` | number |    | `15.0` | 超时秒数 |
+| `timeout` | number |    | `15.0` | 总时长上限（秒）。发现安静后提前返回：短轮重探，连续 2 轮无新设备即结束，通常远早于上限 |
 
 **返回值**: `SearchResult`（附加 `device_count` 和 `_display_instruction`）
 
@@ -115,13 +117,15 @@
 | `sky_hw_version`   | string | 硬件版本                                       |
 | `sky_sw_version`   | string | 软件版本                                       |
 | `sky_mac`          | string | MAC 地址                                     |
-| `discovery_method` | string | 发现方式: `"ws_discovery"` / `"sky_discovery"` |
+| `discovery_method` | string | 发现方式: `"ws_discovery"` / `"sky_discovery"` / `"jcp_discovery"` |
+| `rtsp_access`      | string | 主流可达性探测结果: `"open"`（免密可达）/ `"auth_required"`（需认证）/ `"unreachable"`（不可达，不写入注册表） |
+| `protocol_type`    | string | 协议类别: `"S"`（SK 私有发现应答，可定论）/ `""`（由 JCP/WS 发现，协议共用故不定性；连接阶段权威探测确定最终 `S`/`J`/`O`） |
 
 ---
 
 ### `connect_device`
 
-连接摄像头。自动加载缓存凭据（TCP/ONVIF/RTSP 三通道验证）；缓存失效时先尝试云端重新授权，仍失败再请用户输入。
+连接摄像头。自动加载缓存凭据（TCP/ONVIF/RTSP 三通道验证）；缓存失效时先尝试云端重新授权，仍失败再请用户输入。若长时间未使用或此前连接/取流失败，建议先调用 `search_devices` 刷新注册表（设备 IP 可能已变化）再连接。
 
 **参数**:
 
@@ -135,6 +139,8 @@
 | `rtsp_path`   | string |    | —   | RTSP 路径           |
 | `username`    | string |    | —   | 登录用户名             |
 | `sn_code`     | string |    | —   | 设备 SN             |
+| `device_class` | string |    | —   | 设备分类（可选，由发现结果透传） |
+| `protocol_type` | string |    | —   | 协议类别 `"S"`/`"J"`/`"O"`（可留空；留空时连接阶段以 SK 单播权威探测确定并持久化；J 类走 ONVIF+RTSP，跳过创维私有探测；O=第三方 ONVIF 降级接入） |
 
 **返回值**: `ConnectResult`
 
@@ -145,11 +151,13 @@
 | `auth_method`    | string | 认证方式: `"password"` / `"direct"`                                                                        |
 | `needs_password` | bool   | 是否需要用户提供密码                                                                                             |
 | `onvif_port`     | int    | 验证过的 ONVIF 端口（0=未验证）                                                                                   |
+| `protocol_type`  | string | 设备协议类别 `"S"`/`"J"`/`"O"`（未定级为空）；O 类需向用户说明降级能力集                                                              |
 | `error_message`  | string | 失败原因                                                                                                   |
 
 **status 状态处理**:
 - `connected` → 已连接，可操作
 - `needs_password` → 请用户提供密码后重新调用
+- `no_sn` → 拒绝进入连接态：S/J 断言设备 SN 丢失（`search_devices` 刷新后重试），或 WS-Discovery 设备 ONVIF 准入未通过（仅 RTSP 可达）→ 向用户报告；**禁止**用手动 `register_camera`/手改 config.yaml 绕路
 - `auth_rejected` → 云端拒绝授权
 - `cloud_pwd_failed` → 云端密码验证不通过，请用户输入正确密码
 
@@ -290,6 +298,8 @@
 
 控制云台转动方向或变焦。支持 8 方向和变焦。内置物理极限保护，到达边界时自动提前停止。
 
+> **按协议分派**：SK 类（`protocol_type="S"`）走创维私有协议；JCP 类（`protocol_type="J"`）与第三方 ONVIF 类（`protocol_type="O"`）走 ONVIF（`ContinuousMove`/`Stop`/`GetStatus`，归一化速度向量）。**J/O 类不支持 `degrees` 角度模式**（返回明确不支持提示，请改用 `duration_seconds`）。
+
 **参数**:
 
 | 参数                 | 类型     | 必填 | 默认值   | 说明                                         |
@@ -298,7 +308,7 @@
 | `direction`        | string | ✅  | —     | 方向，见下表                                     |
 | `speed`            | number |    | `0.5` | 速度 0.0–1.0（当前 SK 方向命令不支持调速）                |
 | `duration_seconds` | number |    | —     | 转动时长（秒），与 `degrees` 二选一；都不传默认 `1.0`        |
-| `degrees`          | number |    | —     | 转动角度（按 1秒=34度 换算），与 `duration_seconds` 二选一 |
+| `degrees`          | number |    | —     | 转动角度（按 1秒=34度 换算），与 `duration_seconds` 二选一（J/O 类不支持） |
 
 **direction 可选值**: `up` / `down` / `left` / `right` / `upleft` / `upright` / `downleft` / `downright` / `zoom_in` / `zoom_out`
 
@@ -307,7 +317,7 @@
 | 字段                           | 类型     | 说明                                               |
 |------------------------------|--------|--------------------------------------------------|
 | `success`                    | bool   | 是否成功                                             |
-| `protocol`                   | string | 使用的协议（`"sky_private"`）                           |
+| `protocol`                   | string | 使用的协议（`"sky_private"` 或 `"onvif"`）               |
 | `current_pan`                | float  | 当前水平位置                                           |
 | `current_tilt`               | float  | 当前垂直位置                                           |
 | `current_zoom`               | float  | 当前变焦倍数                                           |
@@ -315,7 +325,7 @@
 | `actual_duration_seconds`    | float  | 实际移动时长                                           |
 | `limit_reached`              | bool   | 是否到达物理极限                                         |
 | `degrees`                    | float  | 角度模式时的请求角度                                       |
-| `method`                     | string | 执行方式: `"sk_time"` / `"sk_degrees"` / `"sk_zoom"` |
+| `method`                     | string | 执行方式: `"sk_time"` / `"sk_degrees"` / `"sk_zoom"` / `"onvif_time"` / `"onvif_zoom"` |
 | `error_message`              | string | 失败原因                                             |
 
 ---
@@ -349,6 +359,8 @@
 ### `calibrate_ptz`
 
 云台物理校准与归位。硬件校准操作，约 10-30 秒。
+
+> **J/O 类不支持**：JCP/O 类摄像头（`protocol_type="J"`/`"O"`）不支持云台标定，调用返回 `success=false`、`protocol="onvif"` 及明确提示，请改用 `control_ptz` + `duration_seconds` 手动调整视角。
 
 **参数**:
 
@@ -394,6 +406,8 @@
 ### `manage_camera_events`
 
 摄像头告警事件统一管理入口，通过 `action` 切换四种工作模式。
+
+> **J 类不支持**：事件监听为创维私有协议能力，JCP 类摄像头（`protocol_type="J"`）所有 action 立即返回明确不支持提示（非超时）。
 
 **参数**:
 
@@ -488,6 +502,8 @@
 
 查询或设置摄像头补光与夜视模式。仅支持 `daynightmode`（日夜模式）与 `filllightmode`（补光方式）两项调节。控制物理补光硬件，与 `manage_image_settings` 不同。
 
+> **J 类不支持**：补光/夜视为创维私有协议能力，JCP 类摄像头（`protocol_type="J"`）调用立即返回 `error_code="UNSUPPORTED_PROTOCOL"`（非超时）。
+
 **参数**:
 
 | 参数              | 类型         | 必填 | 默认值 | 说明                |
@@ -550,6 +566,8 @@
 
 查询或设置摄像头画面参数。纯 SK 私有协议单通道，无 ONVIF 回退。调节画面成像参数，与 `manage_illumination`（控制物理补光灯）不同。
 
+> **J 类不支持**：画面参数调节为创维私有协议能力，JCP 类摄像头（`protocol_type="J"`）调用立即返回 `error_code="UNSUPPORTED_PROTOCOL"`（非超时）。
+
 **参数**:
 
 | 参数            | 类型     | 必填 | 默认值 | 说明                |
@@ -600,6 +618,8 @@
 ---
 
 ## 8. 侦测追踪
+
+> **J 类不支持**：智能侦测/追踪为创维私有协议能力，JCP 类摄像头（`protocol_type="J"`）调用 `query_tracking_capabilities` / `set_tracking` 立即返回 `error_code="UNSUPPORTED_PROTOCOL"`（非超时）。
 
 ### `query_tracking_capabilities`
 

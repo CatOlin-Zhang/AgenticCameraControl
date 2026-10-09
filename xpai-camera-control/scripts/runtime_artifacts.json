@@ -1,0 +1,16 @@
+{
+  "package": "camera-proto",
+  "version": "0.1.0",
+  "environment": "production",
+  "platforms": {
+    "win_amd64": {
+      "wheel_filename": "camera_proto-0.1.0-py3-none-win_amd64.whl",
+      "wheel_sha256": "4b59ccf2b4028e552b6748b3ec4656f6aa72ac36fa7af6cff73eca8c3f73b9e9",
+      "library": "camera_proto.dll",
+      "resources": {
+        "camera_proto.dll": "09adf7d6166de736e40bbb0e045ada96b45d0a3337853d9468caee7e0a302386",
+        "cacert.pem": "f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9"
+      }
+    }
+  }
+}

@@ -57,8 +57,38 @@ class StorageResult:
     policy: str = ""
     error_message: str = ""
 
-def _open_rtsp_capture(rtsp_url: str):
+def _rtsp_transport_selectable() -> bool:
+    """当前 cv2 是否支持逐次指定 rtsp_transport。
+
+    版本差异（2026-09 以本地假 RTSP 服务器记录 SETUP Transport 头实测，
+    覆盖 opencv-python 4.8.0 / 4.14.0 / 5.0.0）：
+    - 古董 OpenCV：若存在 CAP_PROP_OPENCV_FFMPEG_CAPTURE_OPTIONS 常量，
+      FFmpeg 默认走 UDP，必须显式指定 rtsp_transport;tcp；
+    - opencv-python ≥4.8（本 skill 支持域）：该常量不存在，RTSP 默认即 TCP，
+      OPENCV_FFMPEG_CAPTURE_OPTIONS 环境变量被忽略，传未知属性 ID 会抛
+      cv2.error —— transport 不可选，UDP 兜底无法表达，也无需表达。
+    """
     import cv2
+    return getattr(cv2, "CAP_PROP_OPENCV_FFMPEG_CAPTURE_OPTIONS", None) is not None
+
+def _rtsp_transport_plan() -> Tuple[str, ...]:
+    """TCP 优先；仅当传输可选时才排入 UDP 兜底
+    （新版 cv2 下两次尝试实际同为 TCP，白白浪费一轮 open 超时预算）。"""
+    return ("tcp", "udp") if _rtsp_transport_selectable() else ("tcp",)
+
+def _open_rtsp_capture(rtsp_url: str, transport: str = "tcp"):
+    import cv2
+    prop = getattr(cv2, "CAP_PROP_OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+    if prop is not None:
+        try:
+            return cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG, [
+                cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000,
+                cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000,
+                prop, f"rtsp_transport;{transport}",
+            ])
+        except (TypeError, AttributeError, cv2.error):
+            pass
+    # 新版 cv2（4.14+/5.x）：无该常量，默认即 TCP；老老版 cv2：无参数数组支持
     try:
         return cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG, [
             cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000,
@@ -66,6 +96,26 @@ def _open_rtsp_capture(rtsp_url: str):
         ])
     except (TypeError, AttributeError):
         return cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+
+def _open_rtsp_capture_with_fallback(rtsp_url: str):
+    """TCP 优先，open 失败且传输可选时回退 UDP（与录像路径 transport 策略对齐）。
+    新版 cv2 传输不可选（默认即 TCP），失败时直接返回未打开的 cap 由调用方处理。"""
+    cap = _open_rtsp_capture(rtsp_url, "tcp")
+    if cap.isOpened():
+        return cap
+    cap.release()
+    if not _rtsp_transport_selectable():
+        return cap
+    return _open_rtsp_capture(rtsp_url, "udp")
+
+def _read_last_frame(cap, attempts: int = 6):
+    """连续 read，返回最后一帧成功画面（给编码器留出出帧时间）。"""
+    frame = None
+    for _ in range(attempts):
+        ret, f = cap.read()
+        if ret and f is not None:
+            frame = f
+    return frame
 
 def get_audio_video_stream(
     camera_name: str,
@@ -168,7 +218,7 @@ def get_audio_video_stream(
                 error_message=f"设备 {camera_name}({ip}) RTSP 流不可达",
             )
 
-    cap = _open_rtsp_capture(rtsp_url)
+    cap = _open_rtsp_capture_with_fallback(rtsp_url)
     if not cap.isOpened():
 
         cap.release()
@@ -176,7 +226,7 @@ def get_audio_video_stream(
             else (conn_info.get("rtsp_sub_path") or "/md0_1")
         if alt_path != rtsp_path:
             rtsp_url = _build_rtsp_url(ip, rtsp_port, alt_path, username, password)
-            cap = _open_rtsp_capture(rtsp_url)
+            cap = _open_rtsp_capture_with_fallback(rtsp_url)
         if not cap.isOpened():
             cap.release()
             return StreamResult(
@@ -261,6 +311,7 @@ def capture_video_screenshot(
         )
 
     def _attempt_capture():
+        frame = None
         if conn_type == "usb":
             dev_idx = conn_info.get("device_index", 0)
             cap = cv2.VideoCapture(dev_idx, cv2.CAP_DSHOW)
@@ -270,6 +321,14 @@ def capture_video_screenshot(
                     success=False,
                     file_path=file_path,
                     error_message=f"USB 摄像头 {dev_idx} 无法打开",
+                )
+            frame = _read_last_frame(cap)
+            cap.release()
+            if frame is None:
+                return ScreenshotResult(
+                    success=False,
+                    file_path=file_path,
+                    error_message="无法从流中读取帧数据",
                 )
         else:
             ip = conn_info.get("ip", "")
@@ -285,33 +344,40 @@ def capture_video_screenshot(
                 if p and p not in paths:
                     paths.append(p)
 
-            for rtsp_path in paths:
-                rtsp_url = _build_rtsp_url(ip, rtsp_port, rtsp_path, username, password)
-                cap = _open_rtsp_capture(rtsp_url)
-                if cap.isOpened():
+            # TCP 优先、UDP 兜底（与录像路径 transport 策略对齐）；
+            # "open 成功但读不到帧"（UDP 丢包的典型形态，如云台转动期码率突发）
+            # 同样换 transport / path 重试，而不是原地报错。
+            opened_any = False
+            transport_plan = _rtsp_transport_plan()
+            for transport in transport_plan:
+                for rtsp_path in paths:
+                    rtsp_url = _build_rtsp_url(ip, rtsp_port, rtsp_path, username, password)
+                    cap = _open_rtsp_capture(rtsp_url, transport)
+                    if not cap.isOpened():
+                        cap.release()
+                        continue
+                    opened_any = True
+                    frame = _read_last_frame(cap)
+                    cap.release()
+                    if frame is not None:
+                        break
+                if frame is not None:
                     break
-                cap.release()
-            else:
+
+            if frame is None:
+                if opened_any:
+                    return ScreenshotResult(
+                        success=False,
+                        file_path=file_path,
+                        error_message="无法从流中读取帧数据",
+                    )
                 return ScreenshotResult(
                     success=False,
                     file_path=file_path,
-                    error_message=f"无法从 {ip}:{rtsp_port} 打开视频流（已尝试 {'、'.join(paths)}），"
+                    error_message=f"无法从 {ip}:{rtsp_port} 打开视频流"
+                                  f"（已尝试 {'、'.join(paths)} × {'/'.join(transport_plan)}），"
                                   f"请检查 RTSP 路径和认证信息",
                 )
-
-        frame = None
-        for _ in range(6):
-            ret, f = cap.read()
-            if ret and f is not None:
-                frame = f
-        cap.release()
-
-        if frame is None:
-            return ScreenshotResult(
-                success=False,
-                file_path=file_path,
-                error_message="无法从流中读取帧数据",
-            )
 
         height, width = frame.shape[:2]
         try:

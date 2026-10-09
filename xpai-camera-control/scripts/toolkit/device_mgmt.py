@@ -24,9 +24,9 @@ except ImportError:
     _yaml_lib = None
 
 try:
-    from . import sk_proto
+    from . import camera_proto
 except ImportError:
-    import sk_proto
+    import camera_proto
 
 from .discovery import (
     SkDiscoveredDevice,
@@ -39,6 +39,7 @@ from .discovery import (
 class DiscoveryMethod(str, Enum):
     WS_DISCOVERY = "ws_discovery"
     SKY_DISCOVERY = "sky_discovery"
+    JCP_DISCOVERY = "jcp_discovery"
     USB = "usb"
 
 class DeviceClass(str, Enum):
@@ -78,6 +79,8 @@ class DiscoveredDevice:
     sky_gateway: str = ""
     sky_mac: str = ""
     discovery_method: str = ""
+    protocol_type: str = ""
+    rtsp_access: str = ""
     supported_illumination_modes: List[str] = field(default_factory=list)
 
 @dataclass
@@ -94,6 +97,7 @@ class ConnectResult:
     error_message: str = ""
     needs_password: bool = False
     onvif_port: int = 0
+    protocol_type: str = ""
 
 @dataclass
 class DisconnectResult:
@@ -115,6 +119,8 @@ class CameraConfig:
     device_class: str = ""
     sn_code: str = ""
     pkdk: str = ""
+    protocol_type: str = ""
+    onvif_sn: str = ""
 
     device_index: int = 0
     device_model: str = ""
@@ -352,6 +358,8 @@ def register_camera(
     device_model: str = "",
     product_version: str = "",
     illumination_modes: Optional[List[str]] = None,
+    protocol_type: str = "",
+    onvif_sn: str = "",
 ) -> RegisterResult:
     import os
     import yaml
@@ -374,7 +382,7 @@ def register_camera(
 
     cameras = data.get("cameras", [])
 
-    if not password or not sn_code:
+    if not password or not sn_code or not protocol_type or not onvif_sn:
         existing = None
         for cam in cameras:
             if cam.get("name") == name:
@@ -395,6 +403,10 @@ def register_camera(
                 password = existing["password"]
             if not sn_code:
                 sn_code = existing.get("sn_code") or existing.get("sn") or ""
+            if not protocol_type:
+                protocol_type = existing.get("protocol_type") or ""
+            if not onvif_sn:
+                onvif_sn = existing.get("onvif_sn") or ""
 
     new_entry = {
         "name": name,
@@ -419,6 +431,10 @@ def register_camera(
         new_entry["device_index"] = device_index
         new_entry["device_model"] = device_model
         new_entry["product_version"] = product_version
+    if protocol_type:
+        new_entry["protocol_type"] = protocol_type
+    if onvif_sn:
+        new_entry["onvif_sn"] = onvif_sn
     if illumination_modes:
         new_entry["illumination_modes"] = illumination_modes
 
@@ -443,6 +459,13 @@ def register_camera(
                 cameras[i] = new_entry
                 found = True
                 break
+
+    if not found and onvif_sn:
+        for i, cam in enumerate(cameras):
+            if cam.get("onvif_sn") == onvif_sn:
+                cameras[i] = new_entry
+                found = True
+                break
     if not found:
         cameras.append(new_entry)
 
@@ -462,18 +485,23 @@ def search_devices(
 
     if method is not None:
         if method == DiscoveryMethod.SKY_DISCOVERY:
-            return _search_sky_devices(timeout)
+            result = _search_sky_devices(timeout)
+        elif method == DiscoveryMethod.JCP_DISCOVERY:
+            result = _search_jcp_devices(timeout)
         elif method == DiscoveryMethod.USB:
 
             return SearchResult(success=True, devices=[], error_message="USB 扫描已禁用")
         else:
-            return _search_ws_discovery_devices(timeout)
+            result = _search_ws_discovery_devices(timeout)
+        if result.success:
+            _sync_registry_with_discovery(result.devices)
+        return result
 
     all_devices: List[DiscoveredDevice] = []
     seen_ips: set = set()
     errors: List[str] = []
 
-    for search_fn in (_search_sky_devices, _search_ws_discovery_devices):
+    for search_fn in (_search_sky_devices, _search_jcp_devices, _search_ws_discovery_devices):
         try:
             result = search_fn(timeout)
             if result.success:
@@ -493,14 +521,118 @@ def search_devices(
             error_message="; ".join(errors),
         )
 
+    _sync_registry_with_discovery(all_devices, prune=not errors)
     return SearchResult(success=True, devices=all_devices)
+
+def _sync_registry_with_discovery(
+    devices: List[DiscoveredDevice],
+    prune: bool = True,
+) -> None:
+
+    try:
+        existing = _load_config_cameras()
+    except Exception:
+        return
+
+    for dev in devices:
+        if dev.rtsp_access == "unreachable":
+            continue
+        name = _dev_to_name(dev)
+        prev = _match_config_entry(existing, name, dev.ip, dev.sn_code)
+        device_class = (
+            dev.device_class.value if isinstance(dev.device_class, DeviceClass)
+            else str(dev.device_class)
+        )
+        try:
+            # 承接原条目中搜索拿不到的字段（已验证端口/补光缓存等），避免整条替换导致回退
+            register_camera(
+                name=name,
+                ip=dev.ip,
+                port=dev.onvif_port or (prev.port if prev else 0),
+                username=(
+                    "" if device_class == DeviceClass.DIRECT_CONNECT.value
+                    else ((prev.username if prev else "") or "admin")
+                ),
+                password="",
+                rtsp_port=dev.rtsp_port,
+                rtsp_path=(dev.supported_media[0] if dev.supported_media else "/md0_0"),
+                rtsp_sub_path=(prev.rtsp_sub_path if prev else "") or "/md0_1",
+                device_class=device_class,
+                connection_type=(prev.connection_type if prev else "") or "onvif",
+                sn_code=dev.sn_code,
+                pkdk=prev.pkdk if prev else "",
+                illumination_modes=(prev.illumination_modes or None) if prev else None,
+                protocol_type=dev.protocol_type,
+            )
+        except Exception:
+            continue
+
+    # 任一发现链路失败时"本轮未发现"不可靠，只注册不清理
+    if not prune:
+        return
+
+    discovered_ips = {d.ip for d in devices if d.ip}
+    discovered_sns = {d.sn_code for d in devices if d.sn_code}
+    for prev in existing:
+        if prev.connection_type == "usb" or not _is_ipv4_literal(prev.ip):
+            continue
+        if prev.ip in discovered_ips or (prev.sn_code and prev.sn_code in discovered_sns):
+            continue
+        try:
+            access = _probe_stream_access(prev.ip, prev.rtsp_port, prev.rtsp_path)
+        except Exception:
+            continue
+        if access == "unreachable":
+            _remove_camera_config(prev.name)
+
+def _match_config_entry(
+    entries: List[CameraConfig], name: str, ip: str, sn_code: str,
+    onvif_sn: str = "",
+) -> Optional[CameraConfig]:
+    for cam in entries:
+        if name and cam.name == name:
+            return cam
+    for cam in entries:
+        if ip and cam.ip == ip:
+            return cam
+    if sn_code:
+        for cam in entries:
+            if cam.sn_code == sn_code:
+                return cam
+    if onvif_sn:
+        for cam in entries:
+            if cam.onvif_sn == onvif_sn:
+                return cam
+    return None
+
+def _is_ipv4_literal(value: str) -> bool:
+    parts = (value or "").split(".")
+    if len(parts) != 4:
+        return False
+    return all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+
+_SEARCH_SETTLE_WINDOW = 1.0
+_SEARCH_SETTLE_ROUNDS = 2
 
 def _search_sky_devices(timeout: float) -> SearchResult:
     try:
-        sky_devices = discover_sky_devices(timeout=timeout)
-        devices = []
-        for sd in sky_devices:
+        deadline = time.monotonic() + timeout
+        discovered: Dict[str, Any] = {}
+        empty_rounds = 0
+        while empty_rounds < _SEARCH_SETTLE_ROUNDS:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            batch = discover_sky_devices(timeout=min(_SEARCH_SETTLE_WINDOW, remaining))
+            found_new = False
+            for sd in batch:
+                if sd.ip not in discovered:
+                    discovered[sd.ip] = sd
+                    found_new = True
+            empty_rounds = 0 if found_new else empty_rounds + 1
 
+        devices = []
+        for sd in discovered.values():
             rtsp_path = sd.rtsp_paths[0] if sd.rtsp_paths else "/md0_0"
             access = _probe_stream_access(sd.ip, sd.rtsp_port, rtsp_path)
             device_class = (
@@ -532,6 +664,8 @@ def _search_sky_devices(timeout: float) -> SearchResult:
                 sky_gateway=sd.gateway,
                 sky_mac=sd.mac,
                 discovery_method="sky_discovery",
+                protocol_type="S",
+                rtsp_access=access,
             )
             devices.append(dev)
         return SearchResult(
@@ -543,6 +677,60 @@ def _search_sky_devices(timeout: float) -> SearchResult:
             success=False,
             error_message=str(e),
         )
+
+def _search_jcp_devices(timeout: float) -> SearchResult:
+    try:
+        deadline = time.monotonic() + min(timeout, 5.0)
+        discovered: Dict[str, Dict[str, Any]] = {}
+        empty_rounds = 0
+        while empty_rounds < _SEARCH_SETTLE_ROUNDS:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            batch = camera_proto.jcp_search(timeout=min(_SEARCH_SETTLE_WINDOW, remaining))
+            found_new = False
+            for jd in batch:
+                dev_ip = jd.get("ip", "")
+                if dev_ip and dev_ip not in discovered:
+                    discovered[dev_ip] = jd
+                    found_new = True
+            empty_rounds = 0 if found_new else empty_rounds + 1
+
+        devices = []
+        notes = []
+        for jd in discovered.values():
+            dev_ip = jd.get("ip", "")
+            sn = (jd.get("sn") or "").strip()
+            raw_port = jd.get("rtsp_port", camera_proto.JCP_RTSP_PORT)
+            try:
+                rtsp_port = int(raw_port)
+                if not 1 <= rtsp_port <= 65535:
+                    raise ValueError
+            except (TypeError, ValueError):
+                rtsp_port = camera_proto.JCP_RTSP_PORT
+                notes.append(f"{dev_ip}: 忽略无效 JCP RTSP 端口 {raw_port!r}，使用 {rtsp_port}")
+
+            access = _probe_stream_access(dev_ip, rtsp_port, camera_proto.JCP_RTSP_PATH_MAIN)
+            devices.append(DiscoveredDevice(
+                ip=dev_ip,
+                onvif_port=0,
+                rtsp_port=rtsp_port,
+                device_class=(
+                    DeviceClass.DIRECT_CONNECT if access == "open"
+                    else DeviceClass.PASSWORD_REQUIRED
+                ),
+                sn_code=sn,
+                model=jd.get("model", ""),
+                manufacturer=jd.get("name", ""),
+                supported_media=[camera_proto.JCP_RTSP_PATH_MAIN, camera_proto.JCP_RTSP_PATH_SUB],
+                sky_mac=jd.get("mac", ""),
+                discovery_method="jcp_discovery",
+                protocol_type="",
+                rtsp_access=access,
+            ))
+        return SearchResult(success=True, devices=devices, error_message="; ".join(notes))
+    except Exception as e:
+        return SearchResult(success=False, error_message=f"JCP 发现失败: {e}")
 
 def _search_usb_devices(timeout: float) -> SearchResult:
     try:
@@ -594,12 +782,14 @@ def _search_ws_discovery_devices(timeout: float) -> SearchResult:
         )
 
     found: Dict[str, dict] = {}
-    deadline = time.time() + probe_wait
-    while time.time() < deadline:
+    deadline = time.monotonic() + probe_wait
+    last_new = time.monotonic()
+    while time.monotonic() < deadline:
         try:
             ready, _, _ = select.select(socks, [], [], 0.5)
         except Exception:
             break
+        got_new = False
         for s in ready:
             try:
                 data, addr = s.recvfrom(65535)
@@ -608,6 +798,11 @@ def _search_ws_discovery_devices(timeout: float) -> SearchResult:
             info = _parse_ws_probe_match(data)
             if info and addr[0] not in found:
                 found[addr[0]] = info
+                got_new = True
+        if got_new:
+            last_new = time.monotonic()
+        elif time.monotonic() - last_new >= _SEARCH_SETTLE_WINDOW:
+            break
     for s in socks:
         try:
             s.close()
@@ -632,6 +827,8 @@ def _search_ws_discovery_devices(timeout: float) -> SearchResult:
             model=info["model"],
             manufacturer=info["brand"],
             discovery_method="ws_discovery",
+            protocol_type="",
+            rtsp_access=access,
         ))
 
     return SearchResult(success=True, devices=devices)
@@ -726,6 +923,65 @@ def _probe_sn_via_sky(ip: str, timeout: float = 3.0) -> str:
     except Exception:
         return ""
 
+def _probe_sn_via_jcp(ip: str, timeout: float = 3.0) -> str:
+    try:
+        for dev in camera_proto.jcp_search(timeout=timeout):
+            if dev.get("ip") == ip:
+                return (dev.get("sn") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+def _probe_sn_and_protocol(ip: str, timeout: float = 3.0) -> Tuple[str, str]:
+    """Return (protocol_type, sn).
+
+    SK is probed first: a device answering both discoveries must stay on the SK
+    path, since SK exposes strictly more capabilities than JCP.
+    """
+
+    sn = _probe_sn_via_sky(ip, timeout=timeout)
+    if sn:
+        return "S", sn
+    sn = _probe_sn_via_jcp(ip, timeout=timeout)
+    if sn:
+        return "J", sn
+    return "", ""
+
+def _apply_onvif_stream_paths(camera_name: str, main: str, sub: str) -> Tuple[str, str]:
+    """Override the assumed RTSP paths with the ONVIF-reported ones.
+
+    ONVIF GetStreamUri is the device's own answer, so it outranks any per-model guess.
+    """
+
+    conn = _connected_devices.get(camera_name) or {}
+    cam = conn.get("onvif_camera")
+    if cam is None:
+        return main, sub
+    try:
+        media = cam.create_media_service()
+        paths = []
+        for profile in media.GetProfiles()[:2]:
+            uri = media.GetStreamUri({
+                "StreamSetup": {
+                    "Stream": "RTP-Unicast",
+                    "Transport": {"Protocol": "RTSP"},
+                },
+                "ProfileToken": profile.token,
+            })
+            path = urlparse(uri.Uri).path
+            paths.append(path if path.startswith("/") else "")
+    except Exception:
+        return main, sub
+
+    if len(paths) > 0 and paths[0]:
+        main = paths[0]
+    if len(paths) > 1 and paths[1]:
+        sub = paths[1]
+    if conn:
+        conn["rtsp_path"] = main
+        conn["rtsp_sub_path"] = sub
+    return main, sub
+
 def _cloud_auth_and_connect(
     camera_name: str,
     ip: str,
@@ -735,7 +991,19 @@ def _cloud_auth_and_connect(
     rtsp_path: str,
     username: str,
     cached: Optional[CameraConfig] = None,
+    protocol_type: str = "",
 ) -> ConnectResult:
+
+    if protocol_type == "O":
+        return ConnectResult(
+            success=False, status="needs_password",
+            needs_password=True,
+            error_message=(
+                f"设备 {camera_name}({ip}) 为第三方 ONVIF(O) 类设备，无 SK/JCP SN，"
+                f"不支持云端授权。请直接输入密码后调用 connect_device。"
+            ),
+            protocol_type="O",
+        )
 
     if not sn_code:
         return ConnectResult(
@@ -766,6 +1034,7 @@ def _cloud_auth_and_connect(
         device_class="password_required",
         sn_code=sn_code,
         connection_type=cached.connection_type if cached else "onvif",
+        protocol_type=protocol_type,
     )
 
     poll_interval = 5
@@ -783,21 +1052,31 @@ def _cloud_auth_and_connect(
             )
             if conn.success:
 
+                effective_port = conn.onvif_port or port
+                main_path, sub_path = rtsp_path, ""
+                if protocol_type in ("J", "O"):
+                    main_path, sub_path = _apply_onvif_stream_paths(
+                        camera_name, rtsp_path, cached.rtsp_sub_path if cached else "/md0_1",
+                    )
+
                 register_camera(
                     name=camera_name, ip=ip,
-                    port=conn.onvif_port or port,
+                    port=effective_port,
                     username=username, password=result.device_pwd,
-                    rtsp_port=rtsp_port, rtsp_path=rtsp_path,
+                    rtsp_port=rtsp_port, rtsp_path=main_path,
+                    rtsp_sub_path=sub_path or "/md0_1",
                     device_class="password_required",
                     sn_code=sn_code,
                     connection_type=cached.connection_type if cached else "onvif",
+                    protocol_type=protocol_type,
                 )
 
-                _probe_and_save_illumination(
-                    camera_name, ip,
-                    conn.onvif_port or port,
-                    username, result.device_pwd, cached,
-                )
+                if protocol_type not in ("J", "O"):
+                    _probe_and_save_illumination(
+                        camera_name, ip, effective_port,
+                        username, result.device_pwd, cached,
+                    )
+                conn.protocol_type = protocol_type
                 return conn
             else:
 
@@ -848,11 +1127,13 @@ def connect_device(
     username: str = "admin",
     sn_code: str = "",
     device_class: str = "",
+    protocol_type: str = "",
 ) -> ConnectResult:
 
     cached = _find_cached_camera(camera_name)
 
     effective_sn = (cached.sn_code if cached and cached.sn_code else "") or sn_code
+    effective_protocol = (cached.protocol_type if cached else "") or protocol_type
     if cached and cached.ip:
         dev_ip = cached.ip
         dev_port = cached.port
@@ -877,7 +1158,7 @@ def connect_device(
 
     if dev_pwd:
         max_attempts = 3 if (cached and not password) else 1
-        last_result = None
+        last_result = ConnectResult(success=False, status="failed")
         for attempt in range(1, max_attempts + 1):
             last_result = _try_connect_with_password(
                 camera_name, dev_ip, dev_port, dev_rtsp_port, dev_rtsp_path,
@@ -890,40 +1171,74 @@ def connect_device(
 
         if last_result.success:
 
+            cached_class = cached.protocol_type if cached else ""
+            conn_state = _connected_devices.get(camera_name) or {}
+            probed_protocol = ""
+            if not effective_sn or not effective_protocol:
+                probed_protocol, probed_sn = _probe_sn_and_protocol(dev_ip)
+                effective_sn = effective_sn or probed_sn
+                effective_protocol = effective_protocol or probed_protocol
+            if cached_class == "O" and effective_sn and probed_protocol:
+                effective_protocol = probed_protocol
             if not effective_sn:
-                effective_sn = _probe_sn_via_sky(dev_ip, timeout=3.0)
-            if not effective_sn:
-
-                _connected_devices.pop(camera_name, None)
-                return ConnectResult(
-                    success=False, status="no_sn",
-                    error_message=(
-                        f"设备 {camera_name}({dev_ip}) 密码验证通过但 SN 探测失败，"
-                        f"已拒绝进入连接态（连接态设备必须在 config 中注册 SN，"
-                        f"否则 SK 私有功能将全部失效）。"
-                        f"请确认设备为 SK 协议设备后重试。"
-                    ),
-                )
+                if cached_class in ("S", "J"):
+                    _connected_devices.pop(camera_name, None)
+                    return ConnectResult(
+                        success=False, status="no_sn",
+                        error_message=(
+                            f"设备 {camera_name}({dev_ip}) 密码验证通过但 SN 探测失败，"
+                            f"已拒绝进入连接态（连接态设备必须在 config 中注册 SN，"
+                            f"否则依赖 SN 的功能将全部失效）。"
+                            f"请确认设备支持 SK 或 JCP 发现协议后重试。"
+                        ),
+                        protocol_type=cached_class,
+                    )
+                if cached_class == "O" or conn_state.get("onvif_verified"):
+                    effective_protocol = "O"
+                else:
+                    _connected_devices.pop(camera_name, None)
+                    return ConnectResult(
+                        success=False, status="failed",
+                        error_message=(
+                            f"设备 {camera_name}({dev_ip}) 仅 RTSP 可达，ONVIF 控制面验证未通过"
+                            f"且无 SK/JCP 应答，无法确认设备身份，已拒绝进入连接态。"
+                        ),
+                    )
 
             verified_port = last_result.onvif_port
             port_changed = bool(verified_port) and (not cached or cached.port != verified_port)
-            if not cached or cached.password != dev_pwd or port_changed:
+            protocol_changed = bool(effective_protocol) and (
+                not cached or cached.protocol_type != effective_protocol
+            )
+            main_path, sub_path = dev_rtsp_path, ""
+            if effective_protocol in ("J", "O"):
+                main_path, sub_path = _apply_onvif_stream_paths(
+                    camera_name, dev_rtsp_path,
+                    (cached.rtsp_sub_path if cached else "") or "/md0_1",
+                )
+            if not cached or cached.password != dev_pwd or port_changed or protocol_changed:
                 register_camera(
                     name=camera_name, ip=dev_ip,
                     port=verified_port or (cached.port if cached else 0),
                     username=dev_username, password=dev_pwd,
-                    rtsp_port=dev_rtsp_port, rtsp_path=dev_rtsp_path,
+                    rtsp_port=dev_rtsp_port, rtsp_path=main_path,
+                    rtsp_sub_path=sub_path or (cached.rtsp_sub_path if cached else "") or "/md0_1",
                     device_class=dev_class or "password_required",
                     sn_code=effective_sn or (cached.sn_code if cached else ""),
                     connection_type=cached.connection_type if cached else "onvif",
+                    protocol_type=effective_protocol,
+                    onvif_sn=conn_state.get("onvif_sn", "") or (cached.onvif_sn if cached else ""),
                 )
 
-            _probe_and_save_illumination(
-                camera_name, dev_ip,
-                verified_port or (cached.port if cached else 0),
-                dev_username, dev_pwd, cached,
-            )
-            return last_result
+            if effective_protocol not in ("J", "O"):
+                _probe_and_save_illumination(
+                    camera_name, dev_ip,
+                    verified_port or (cached.port if cached else 0),
+                    dev_username, dev_pwd, cached,
+                )
+            ok_result: ConnectResult = last_result
+            ok_result.protocol_type = effective_protocol
+            return ok_result
 
         if cached and not password:
 
@@ -932,6 +1247,7 @@ def connect_device(
                     camera_name, dev_ip, dev_port, effective_sn,
                     dev_rtsp_port, dev_rtsp_path, dev_username,
                     cached=cached,
+                    protocol_type=effective_protocol,
                 )
                 if cloud_result.success:
                     return cloud_result
@@ -953,34 +1269,76 @@ def connect_device(
         )
 
     if dev_class == "password_required":
+        if not effective_sn or not effective_protocol:
+            probed_protocol, probed_sn = _probe_sn_and_protocol(dev_ip)
+            effective_sn = effective_sn or probed_sn
+            effective_protocol = effective_protocol or probed_protocol
+        if not effective_sn and effective_protocol not in ("S", "J"):
+            return ConnectResult(
+                success=False, status="needs_password",
+                needs_password=True,
+                error_message=(
+                    f"设备 {camera_name}({dev_ip}) 为非 XPAI 的 ONVIF 设备（无 SN，"
+                    f"无云端授权通道），请直接提供设备密码后重试。"
+                ),
+                protocol_type=effective_protocol,
+            )
         return _cloud_auth_and_connect(
             camera_name, dev_ip, dev_port, effective_sn,
             dev_rtsp_port, dev_rtsp_path, dev_username,
             cached=cached,
+            protocol_type=effective_protocol,
         )
 
     access = _probe_stream_access(dev_ip, dev_rtsp_port, dev_rtsp_path)
 
     if access == "open":
 
-        probed_sn = effective_sn or _probe_sn_via_sky(dev_ip, timeout=3.0)
-
-        if not probed_sn:
-            return ConnectResult(
-                success=False, status="no_sn",
-                error_message=(
-                    f"设备 {camera_name}({dev_ip}) 免密可达但 SN 探测失败，"
-                    f"已拒绝进入连接态（连接态设备必须在 config 中注册 SN，"
-                    f"否则 SK 私有功能将全部失效）。"
-                    f"请确认设备为 SK 协议设备且网络可达后重试。"
-                ),
-            )
+        cached_class = cached.protocol_type if cached else ""
+        probed_sn = effective_sn
+        probed_protocol = ""
+        if not probed_sn or not effective_protocol:
+            probed_protocol, probed_sn = _probe_sn_and_protocol(dev_ip)
+            effective_protocol = effective_protocol or probed_protocol
+        if cached_class == "O" and probed_sn and probed_protocol:
+            effective_protocol = probed_protocol
 
         verified_port = _probe_onvif_port(dev_ip, hint_port=dev_port)
 
-        sk_http_ok = False
-        if probed_sn:
-            sk_http_ok = _verify_sk_http(dev_ip, probed_sn)
+        onvif_cam = None
+        onvif_serial = ""
+        if verified_port or dev_port:
+            try:
+                from onvif import ONVIFCamera
+                onvif_cam = ONVIFCamera(host=dev_ip, port=verified_port or dev_port,
+                                        user=dev_username or "admin", passwd=dev_pwd or "")
+                dev_info = onvif_cam.create_devicemgmt_service().GetDeviceInformation()
+                onvif_serial = getattr(dev_info, "SerialNumber", "") or ""
+            except Exception:
+                onvif_cam = None
+
+        if not probed_sn:
+            if cached_class in ("S", "J"):
+                return ConnectResult(
+                    success=False, status="no_sn",
+                    error_message=(
+                        f"设备 {camera_name}({dev_ip}) 免密可达但 SN 探测失败，"
+                        f"已拒绝进入连接态（连接态设备必须在 config 中注册 SN，"
+                        f"否则依赖 SN 的功能将全部失效）。"
+                        f"请确认设备支持 SK 或 JCP 发现协议且网络可达后重试。"
+                    ),
+                    protocol_type=cached_class,
+                )
+            if cached_class == "O" or onvif_cam is not None:
+                effective_protocol = "O"
+            else:
+                return ConnectResult(
+                    success=False, status="failed",
+                    error_message=(
+                        f"设备 {camera_name}({dev_ip}) 仅 RTSP 可达，ONVIF 控制面验证未通过"
+                        f"且无 SK/JCP 应答，无法确认设备身份，已拒绝进入连接态。"
+                    ),
+                )
 
         conn_info = {
             "ip": dev_ip,
@@ -993,43 +1351,64 @@ def connect_device(
             "password": "",
             "sn_code": probed_sn,
         }
-
-        if verified_port or dev_port:
-            try:
-                from onvif import ONVIFCamera
-                cam = ONVIFCamera(host=dev_ip, port=verified_port or dev_port,
-                                  user=dev_username or "admin", passwd=dev_pwd or "")
-                cam.create_devicemgmt_service().GetDeviceInformation()
-                conn_info["onvif_camera"] = cam
-            except Exception:
-                pass
+        if onvif_cam is not None:
+            conn_info["onvif_camera"] = onvif_cam
+            conn_info["onvif_verified"] = True
+            conn_info["onvif_sn"] = onvif_serial
         _connected_devices[camera_name] = conn_info
 
-        if not cached or not cached.sn_code:
+        main_path, sub_path = dev_rtsp_path, conn_info["rtsp_sub_path"]
+        if effective_protocol in ("J", "O"):
+            main_path, sub_path = _apply_onvif_stream_paths(camera_name, main_path, sub_path)
+
+        protocol_changed = bool(effective_protocol) and (
+            not cached or cached.protocol_type != effective_protocol
+        )
+        if not cached or not cached.sn_code or protocol_changed:
             register_camera(
                 name=camera_name, ip=dev_ip, port=verified_port,
                 username="", password="",
-                rtsp_port=dev_rtsp_port, rtsp_path=dev_rtsp_path,
+                rtsp_port=dev_rtsp_port, rtsp_path=main_path,
+                rtsp_sub_path=sub_path,
                 device_class="direct_connect",
                 sn_code=probed_sn,
+                protocol_type=effective_protocol,
+                onvif_sn=onvif_serial or (cached.onvif_sn if cached else ""),
             )
 
-        _probe_and_save_illumination(
-            camera_name, dev_ip, verified_port or dev_port,
-            dev_username or "", dev_pwd or "", cached,
-        )
+        if effective_protocol not in ("J", "O"):
+            _probe_and_save_illumination(
+                camera_name, dev_ip, verified_port or dev_port,
+                dev_username or "", dev_pwd or "", cached,
+            )
         return ConnectResult(
             success=True,
             auth_method="direct",
             status="connected",
+            protocol_type=effective_protocol,
         )
 
     if access == "auth_required":
 
+        if not effective_sn or not effective_protocol:
+            probed_protocol, probed_sn = _probe_sn_and_protocol(dev_ip)
+            effective_sn = effective_sn or probed_sn
+            effective_protocol = effective_protocol or probed_protocol
+        if not effective_sn and effective_protocol not in ("S", "J"):
+            return ConnectResult(
+                success=False, status="needs_password",
+                needs_password=True,
+                error_message=(
+                    f"设备 {camera_name}({dev_ip}) 为非 XPAI 的 ONVIF 设备（无 SN，"
+                    f"无云端授权通道），请直接提供设备密码后重试。"
+                ),
+                protocol_type=effective_protocol,
+            )
         return _cloud_auth_and_connect(
             camera_name, dev_ip, dev_port, effective_sn,
             dev_rtsp_port, dev_rtsp_path, dev_username,
             cached=cached,
+            protocol_type=effective_protocol,
         )
 
     return ConnectResult(
@@ -1039,13 +1418,6 @@ def connect_device(
     )
 
 _connected_devices: Dict[str, dict] = {}
-
-def _verify_sk_http(ip: str, sn: str, timeout: float = 5.0) -> bool:
-    try:
-        env = sk_proto.verify_sk_http(ip, timeout=timeout)
-        return bool(env.get("available"))
-    except Exception:
-        return False
 
 def _probe_and_save_illumination(
     camera_name: str,
@@ -1122,7 +1494,7 @@ def _try_connect_with_password(
     _cached_cfg = _find_cached_camera(camera_name)
     sub_path = (_cached_cfg.rtsp_sub_path if _cached_cfg and _cached_cfg.rtsp_sub_path else "") or "/md0_1"
 
-    env = sk_proto.device_get_info(ip, username, password, timeout=5.0)
+    env = camera_proto.device_get_info(ip, username, password, timeout=5.0)
     resp = env.get("body") if env.get("ok") else None
     tcp_ok = False
     if resp is not None:
@@ -1132,7 +1504,7 @@ def _try_connect_with_password(
         tcp_ok = (
             _tcp_http_status == 200
             or (not _tcp_http_status and
-                (_tcp_resp_code == "" or sk_proto.code_accept(_tcp_resp_code)))
+                (_tcp_resp_code == "" or camera_proto.code_accept(_tcp_resp_code)))
         )
         if tcp_ok:
             _connected_devices[camera_name] = {
@@ -1149,7 +1521,7 @@ def _try_connect_with_password(
             from onvif import ONVIFCamera
             cam = ONVIFCamera(host=ip, port=effective_port, user=username, passwd=password)
             dev_svc = cam.create_devicemgmt_service()
-            dev_svc.GetDeviceInformation()
+            dev_info = dev_svc.GetDeviceInformation()
             onvif_ok = True
 
             conn = _connected_devices.get(camera_name, {
@@ -1159,6 +1531,8 @@ def _try_connect_with_password(
                 "username": username, "password": password,
             })
             conn["onvif_camera"] = cam
+            conn["onvif_verified"] = True
+            conn["onvif_sn"] = getattr(dev_info, "SerialNumber", "") or ""
             _connected_devices[camera_name] = conn
         except Exception:
             pass
@@ -1457,6 +1831,8 @@ def _load_config_cameras() -> List[CameraConfig]:
                 device_class=entry.get("device_class", ""),
                 sn_code=entry.get("sn", entry.get("sn_code", "")),
                 pkdk=entry.get("pkdk", ""),
+                protocol_type=entry.get("protocol_type", ""),
+                onvif_sn=entry.get("onvif_sn", ""),
                 device_index=int(entry.get("device_index", 0)),
                 device_model=entry.get("device_model", ""),
                 product_version=entry.get("product_version", ""),
@@ -1471,7 +1847,7 @@ def request_cloud_auth(sn: str) -> CloudAuthRequestResult:
     claw_id = get_or_create_claw_id()
 
     try:
-        env = sk_proto.cloud_auth_request(sn, claw_id, timeout=10.0)
+        env = camera_proto.cloud_auth_request(sn, claw_id, timeout=10.0)
     except Exception as e:
         return CloudAuthRequestResult(
             success=False,
@@ -1518,7 +1894,7 @@ def poll_auth_status(
     claw_id = get_or_create_claw_id()
 
     try:
-        env = sk_proto.cloud_auth_check(camera.sn_code, claw_id, timeout=10.0)
+        env = camera_proto.cloud_auth_check(camera.sn_code, claw_id, timeout=10.0)
     except Exception as e:
         return AuthStatusResult(
             status=AuthStatus.ERROR,
@@ -1613,6 +1989,17 @@ def _find_camera(name: str):
         if (cam.name or "").strip().lower() == target:
             return cam
     return None
+
+def _is_non_sk_camera(name: str) -> bool:
+    cam = _find_camera(name)
+    return bool(cam and cam.protocol_type in ("J", "O"))
+
+_PROTOCOL_LABELS = {"J": "JCP(J) 协议", "O": "第三方 ONVIF(O) 协议"}
+
+def _unsupported_protocol_message(name: str, capability: str) -> str:
+    cam = _find_camera(name)
+    label = _PROTOCOL_LABELS.get((cam.protocol_type if cam else "") or "", "非 SK 协议")
+    return f"该摄像头为 {label}设备，不支持{capability}（此能力为创维私有协议专有）"
 
 def _dev_to_name(dev) -> str:
     base = dev.model or dev.sn_code or "camera"

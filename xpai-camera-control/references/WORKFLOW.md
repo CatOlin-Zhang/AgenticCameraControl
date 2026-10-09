@@ -11,6 +11,12 @@ Notation used below: `tool_name(arg1=value, arg2=value)` describes a single MCP 
 ## Phase 0 — Session Init: Detailed Tool Calls
 
 ```text
+0. If this is the first camera work after a long idle period (hours/days), or a previous
+   connect/stream call failed on a camera that used to work:
+   search_devices()
+   → refreshes stale IPs in config.yaml (DHCP lease changes) and drops cameras that are gone
+   then continue with the steps below
+
 1. get_registered_cameras()
    → list of CameraConfig entries from config.yaml (name, ip, ports, credentials, device_class)
 
@@ -41,7 +47,9 @@ search_devices()
 - `discovery_method` tells you which protocol found each device (`"ws_discovery"` / `"sky_discovery"` / `"usb"`)
 - `sky_*` fields are populated for Skyworth devices, empty for others
 - `device_class` is auto-classified via RTSP probe: `"password_required"` or `"direct_connect"`
+- **Search writes config.yaml**: discovered reachable devices are registered (basic info only — no password), and registered entries that are neither discovered nor reachable are removed. Re-running `search_devices()` is the supported way to refresh IP changes, newly added cameras, and departed cameras.
 
+For protocol-level details (multicast addresses, message formats), see [Discovery — How Discovery Works](commands/discovery.md#how-discovery-works-internal).
 For protocol-level details (multicast addresses, message formats), see [Discovery — How Discovery Works](commands/discovery.md#how-discovery-works-internal).
 
 ---
@@ -112,6 +120,25 @@ Step 2d — Authorization rejected (auth_rejected):
   No further action available unless user provides password directly.
 ```
 
+### Third-party ONVIF camera (O-class, degraded)
+
+```text
+# WS-Discovery found a camera that never answers SK/JCP discovery (sn_code empty)
+connect_device(camera_name="office_thirdparty", password=<user_input>)
+→ SK TCP 9010 probe fails (expected for non-XPAI), SK/JCP SN probes empty
+→ ONVIF admission passes (port probe + GetDeviceInformation)
+→ success=true, status="connected", protocol_type="O"
+→ config.yaml: protocol_type: O, onvif_sn: <ONVIF SerialNumber>, sn_code: '' (empty)
+→ available: RTSP streaming/screenshot/recording/WebRTC (ONVIF GetStreamUri paths), ONVIF PTZ
+→ unavailable (immediate UNSUPPORTED_PROTOCOL / clear message): cloud authorization,
+  illumination, image settings, detection/tracking, alarm events, PTZ degrees/calibration
+
+# RTSP-only device (ONVIF admission fails):
+connect_device(camera_name="rtsp_only_cam", password=<user_input>)
+→ success=false, status="no_sn" — explicit message: RTSP-only, ONVIF control plane
+  unverified, identity unconfirmed. Report to user; no workaround via register_camera.
+```
+
 ### Cloud-authorized camera (handled internally)
 
 Cloud authorization is now fully handled inside `connect_device`. The Agent does **not** need to call any separate cloud auth tool. The `big_connect` and `poll_auth_status` tools have been deprecated as external MCP tools.
@@ -170,7 +197,7 @@ Step 3 — Agent delivers BOTH results to the user:
 
 ## Phase 4 — PTZ Control: Detailed Tool Calls
 
-PTZ uses a **dual-protocol strategy**: ONVIF is tried first, automatically falling back to the Skyworth private protocol when unavailable. All return results include a `protocol` field indicating which protocol was actually used.
+PTZ backend is selected by `protocol_type`: **S-class** uses the Skyworth private protocol; **J-class and O-class** use **ONVIF only** (no private-protocol fallback). All return results include a `protocol` field indicating which protocol was actually used.
 
 ### Directional movement (8 directions + Chinese aliases)
 
@@ -223,7 +250,7 @@ get_ptz_parameters(camera_name="客厅摄像头")
 stop_ptz(camera_name="客厅摄像头")
 ```
 
-### Physical calibration (private protocol only)
+### Physical calibration (S-class only; J/O-class not supported)
 
 ```text
 # Calibrate PTZ zero point (takes 10-30 seconds, Skyworth cameras only)
@@ -260,76 +287,3 @@ Query and adjust camera illumination parameters. Dual-protocol: XPAI private (TC
 | **Safety** | `action="set"` modifies a hardware setting — requires explicit user confirmation. Always call `get` first to retrieve `capabilities` (parameter ranges), then call `set` with only the parameters to change |
 | **Detailed reference** | [commands/illumination.md](commands/illumination.md) — full parameter table (15 params), return fields, dual-protocol details |
 | **Architecture** | [commands/illumination.md — Architecture](commands/illumination.md#architecture) |
-
----
-
-## Common Operation Sequences
-
-Quick reference for frequent task patterns:
-
-### Connect → Screenshot
-
-```text
-1. connect_device(camera_name="客厅摄像头")        → success=true
-2. capture_video_screenshot(camera_name="客厅摄像头") → file_path
-3. get_audio_video_stream(camera_name="客厅摄像头")   → stream_url
-# Deliver BOTH: show screenshot image + tell user the RTSP URL
-```
-
-### Connect → PTZ Control
-
-```text
-1. connect_device(camera_name="客厅摄像头")                    → success=true
-2. capture_video_screenshot(camera_name="客厅摄像头")          → reference frame (before PTZ)
-3. control_ptz(camera_name="客厅摄像头", direction="right", speed=0.5) → check degraded
-4. If degraded=true → MUST relay degrade_reason to user
-5. stop_ptz(camera_name="客厅摄像头")                          → emergency stop
-6. capture_video_screenshot(camera_name="客厅摄像头")          → current frame (after PTZ)
-7. Compare before/after frames → estimate shift % → report to user
-```
-
-### Event Monitoring
-
-```text
-1. connect_device(camera_name="前门")                          → success=true
-2. manage_camera_events(action="start", camera_name="前门")    → user confirms first!
-3. Loop: manage_camera_events(action="wait", timeout_seconds=60)
-   → see commands/events.md for full details
-```
-
-### Illumination
-
-```text
-1. connect_device(camera_name="前门")                          → success=true
-2. manage_illumination(action="get", camera_name="前门")       → capabilities + current
-3. If supported → manage_illumination(action="set", daynightmode=2)  → user confirms first!
-   → see commands/illumination.md for full parameter list
-```
-
----
-
-## Troubleshooting: Instance Lock
-
-The server uses a three-layer defense (stdio watchdog + lease heartbeat + triple-verification recovery) to auto-recover stale locks. If auto-recovery fails (exit code 71), manually recover:
-
-### Zombie Lock (stale process, host abandoned)
-
-```
-netstat -ano | findstr 49740
-Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" | Select CommandLine
-taskkill /PID <PID> /F
-```
-
-Exit codes: `70` = watchdog self-cleanup; `71` = instance lock conflict.
-
-### Orphaned MCP Server Process
-
-Some Agent hosts don't terminate the MCP server when a session ends. The orphaned process keeps its lease heartbeat fresh, so it legitimately holds the lock.
-
-**Recovery:**
-1. Read `pid` from `.instance_lease.json` in the skill root (heartbeat writes `pid`/`port`/`ts` every 5s), or `netstat -ano | findstr 49740`
-2. Verify: `Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" | Select CommandLine`
-3. Kill: `taskkill /PID <PID> /F /T`
-4. Restart the session / MCP client
-
-> **Caution:** killing the PID breaks whatever session still owns it — confirm with the user that the previous session is truly gone first.
