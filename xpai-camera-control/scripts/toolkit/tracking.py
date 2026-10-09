@@ -3,14 +3,14 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 try:
-    from . import sk_proto
+    from . import camera_proto
 except ImportError:
-    import sk_proto
+    import camera_proto
 
 try:
-    from .device_mgmt import resolve_target, CameraConfig
+    from .device_mgmt import resolve_target, CameraConfig, _is_non_sk_camera, _unsupported_protocol_message
 except ImportError:
-    from device_mgmt import resolve_target, CameraConfig
+    from device_mgmt import resolve_target, CameraConfig, _is_non_sk_camera, _unsupported_protocol_message
 
 try:
     from .illumination import (
@@ -140,162 +140,162 @@ _RESP_HEAD = {"service_type", "msg_id", "cmd_name", "ver", "code", "msg",
               "channel", "sequence"}
 
 def _sk_human_option(cam) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_get_option(
-        sk_proto.DETECT_HUMAN, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_get_option(
+        camera_proto.DETECT_HUMAN, cam.ip, cam.sn_code, cam.username, cam.password,
         _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
     caps = resp.get("humandetect")
-    _ok = sk_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
+    _ok = camera_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
     return {"ok": _ok, "capabilities": caps if isinstance(caps, list) else [],
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
 def _sk_human_cur(cam) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_get(
-        sk_proto.DETECT_HUMAN, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_get(
+        camera_proto.DETECT_HUMAN, cam.ip, cam.sn_code, cam.username, cam.password,
         _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
     current = {k: v for k, v in resp.items() if k not in _RESP_HEAD}
-    _ok = sk_proto.code_ok(resp.get("code", ""))
+    _ok = camera_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "current": current,
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
 def _sk_human_set(cam, payload: Dict[str, Any]) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_set(
-        sk_proto.DETECT_HUMAN, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_set(
+        camera_proto.DETECT_HUMAN, cam.ip, cam.sn_code, cam.username, cam.password,
         payload, _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
-    _ok = sk_proto.code_ok(resp.get("code", ""))
+    _ok = camera_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "code": resp.get("code", ""), "msg": resp.get("msg", ""),
             "status": status, "raw": resp}
 
 def _sk_vehicle_option(cam) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_get_option(
-        sk_proto.DETECT_VEHICLE, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_get_option(
+        camera_proto.DETECT_VEHICLE, cam.ip, cam.sn_code, cam.username, cam.password,
         _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
     caps = resp.get("objectdetect")
-    _ok = sk_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
+    _ok = camera_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
     return {"ok": _ok, "capabilities": caps if isinstance(caps, list) else [],
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
 def _sk_vehicle_cur(cam) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_get(
-        sk_proto.DETECT_VEHICLE, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_get(
+        camera_proto.DETECT_VEHICLE, cam.ip, cam.sn_code, cam.username, cam.password,
         _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
     current = {k: v for k, v in resp.items() if k not in _RESP_HEAD}
-    _ok = sk_proto.code_ok(resp.get("code", ""))
+    _ok = camera_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "current": current,
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
 def _sk_vehicle_set(cam, payload: Dict[str, Any]) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_set(
-        sk_proto.DETECT_VEHICLE, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_set(
+        camera_proto.DETECT_VEHICLE, cam.ip, cam.sn_code, cam.username, cam.password,
         payload, _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
-    _ok = sk_proto.code_ok(resp.get("code", ""))
+    _ok = camera_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "code": resp.get("code", ""), "msg": resp.get("msg", ""),
             "status": status, "raw": resp}
 
 def _sk_area_option(cam) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_get_option(
-        sk_proto.DETECT_REGION, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_get_option(
+        camera_proto.DETECT_REGION, cam.ip, cam.sn_code, cam.username, cam.password,
         _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
     caps = resp.get("vgrectdetect")
-    _ok = sk_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
+    _ok = camera_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
     return {"ok": _ok, "capabilities": caps if isinstance(caps, list) else [],
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
 def _sk_area_cur(cam) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_get(
-        sk_proto.DETECT_REGION, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_get(
+        camera_proto.DETECT_REGION, cam.ip, cam.sn_code, cam.username, cam.password,
         _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
     current = {k: v for k, v in resp.items() if k not in _RESP_HEAD}
-    _ok = sk_proto.code_ok(resp.get("code", ""))
+    _ok = camera_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "current": current,
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
 def _sk_area_set(cam, payload: Dict[str, Any]) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_set(
-        sk_proto.DETECT_REGION, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_set(
+        camera_proto.DETECT_REGION, cam.ip, cam.sn_code, cam.username, cam.password,
         payload, _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
-    _ok = sk_proto.code_ok(resp.get("code", ""))
+    _ok = camera_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "code": resp.get("code", ""), "msg": resp.get("msg", ""),
             "status": status, "raw": resp}
 
 def _sk_motion_option(cam) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_get_option(
-        sk_proto.DETECT_MOTION, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_get_option(
+        camera_proto.DETECT_MOTION, cam.ip, cam.sn_code, cam.username, cam.password,
         _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
     caps = resp.get("motiondetect")
-    _ok = sk_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
+    _ok = camera_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
     return {"ok": _ok, "capabilities": caps if isinstance(caps, list) else [],
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
 def _sk_motion_cur(cam) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_get(
-        sk_proto.DETECT_MOTION, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_get(
+        camera_proto.DETECT_MOTION, cam.ip, cam.sn_code, cam.username, cam.password,
         _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
     current = {k: v for k, v in resp.items() if k not in _RESP_HEAD}
-    _ok = sk_proto.code_ok(resp.get("code", ""))
+    _ok = camera_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "current": current,
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
 def _sk_motion_set(cam, payload: Dict[str, Any]) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_set(
-        sk_proto.DETECT_MOTION, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_set(
+        camera_proto.DETECT_MOTION, cam.ip, cam.sn_code, cam.username, cam.password,
         payload, _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
-    _ok = sk_proto.code_ok(resp.get("code", ""))
+    _ok = camera_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "code": resp.get("code", ""), "msg": resp.get("msg", ""),
             "status": status, "raw": resp}
 
 def _sk_line_option(cam) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_get_option(
-        sk_proto.DETECT_LINE, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_get_option(
+        camera_proto.DETECT_LINE, cam.ip, cam.sn_code, cam.username, cam.password,
         _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
     caps = resp.get("vglinedetect")
-    _ok = sk_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
+    _ok = camera_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
     return {"ok": _ok, "capabilities": caps if isinstance(caps, list) else [],
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
 def _sk_line_cur(cam) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_get(
-        sk_proto.DETECT_LINE, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_get(
+        camera_proto.DETECT_LINE, cam.ip, cam.sn_code, cam.username, cam.password,
         _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
     current = {k: v for k, v in resp.items() if k not in _RESP_HEAD}
-    _ok = sk_proto.code_ok(resp.get("code", ""))
+    _ok = camera_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "current": current,
             "code": resp.get("code", ""), "status": status, "raw": resp}
 
 def _sk_line_set(cam, payload: Dict[str, Any]) -> Dict[str, Any]:
-    ok, resp, status = _envelope(sk_proto.detect_set(
-        sk_proto.DETECT_LINE, cam.ip, cam.sn_code, cam.username, cam.password,
+    ok, resp, status = _envelope(camera_proto.detect_set(
+        camera_proto.DETECT_LINE, cam.ip, cam.sn_code, cam.username, cam.password,
         payload, _SK_TRACKING_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": status}
-    _ok = sk_proto.code_ok(resp.get("code", ""))
+    _ok = camera_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "code": resp.get("code", ""), "msg": resp.get("msg", ""),
             "status": status, "raw": resp}
 
@@ -530,6 +530,12 @@ def manage_tracking(
 ):
     resolved_name = camera_name or name
     dt = detect_type or "all"
+
+    if _is_non_sk_camera(resolved_name):
+        return TrackingSetResult(
+            ok=False, error_code="UNSUPPORTED_PROTOCOL",
+            message=_unsupported_protocol_message(resolved_name, "智能侦测/追踪"),
+        )
 
     if action == TrackingAction.QUERY:
         return big_tracking_query(name=resolved_name, detect_type=dt, answers=answers)

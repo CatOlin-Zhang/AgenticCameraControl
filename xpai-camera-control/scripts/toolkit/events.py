@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from . import sk_proto
+    from . import camera_proto
 except ImportError:
-    import sk_proto
+    import camera_proto
 
 _SKILL_ROOT = Path(__file__).resolve().parents[2]
 EVENTS_DIR = _SKILL_ROOT / "events"
@@ -291,6 +291,8 @@ class _CameraEventMonitor:
         self._threads: List[threading.Thread] = []
         self._channels: Dict[str, bool] = {}
         self._rtsp_session_id: str = ""
+        self._rtsp_cseq: int = 0
+        self._rtsp_auth_ctx: Tuple[str, str, bool] = ("", "", False)
         self._last_error: str = ""
         self._last_emit: Dict[Tuple[str, str], float] = {}
         self._last_snapshot: float = 0.0
@@ -413,7 +415,10 @@ class _CameraEventMonitor:
             except Exception as e:
                 self._last_error = f"{type(e).__name__}: {e}"
             finally:
+                if sock is not None:
+                    self._send_rtsp_teardown(sock)
                 self._rtsp_session_id = ""
+                self._rtsp_auth_ctx = ("", "", False)
                 if sock is not None:
                     try:
                         sock.close()
@@ -429,6 +434,52 @@ class _CameraEventMonitor:
             if self._stop_event.wait(backoff):
                 return
             backoff = min(backoff * 2, 30.0)
+
+    def _send_rtsp_teardown(self, sock: socket.socket) -> None:
+        """close 前尽力发 TEARDOWN，让设备立即释放 RTSP 会话名额，
+        而不是等设备端超时 GC（避免网络抖动反复重连在设备上叠加僵尸会话）。
+        尽力而为：任何失败都静默忽略（半开连接下 sendall 可能抛错），
+        不阻塞重连/停止流程。"""
+        try:
+            session_id = self._rtsp_session_id
+            if not session_id:
+                return
+            import base64
+            import hashlib
+
+            base_url = f"rtsp://{self.ip}:{self.rtsp_port}{self.rtsp_path}"
+            realm, nonce, use_basic = self._rtsp_auth_ctx
+            auth = ""
+            if self.username:
+                if nonce:
+                    ha1 = hashlib.md5(
+                        f"{self.username}:{realm}:{self.password}".encode()
+                    ).hexdigest()
+                    ha2 = hashlib.md5(f"TEARDOWN:{base_url}".encode()).hexdigest()
+                    resp = hashlib.md5(f"{ha1}:{nonce}:{ha2}".encode()).hexdigest()
+                    auth = (
+                        f'Authorization: Digest username="{self.username}", '
+                        f'realm="{realm}", nonce="{nonce}", '
+                        f'uri="{base_url}", response="{resp}"\r\n'
+                    )
+                elif use_basic:
+                    token = base64.b64encode(
+                        f"{self.username}:{self.password}".encode()
+                    ).decode()
+                    auth = f"Authorization: Basic {token}\r\n"
+            req = (
+                f"TEARDOWN {base_url} RTSP/1.0\r\n"
+                f"CSeq: {self._rtsp_cseq + 1}\r\n"
+                f"User-Agent: {camera_proto.rtsp_ua()}\r\n"
+                f"Session: {session_id}\r\n"
+                f"{auth}\r\n"
+            )
+            sock.settimeout(1.0)
+            sock.sendall(req.encode("utf-8"))
+        except Exception:
+            # 包括半开连接的 OSError、native DLL 缺失的 RuntimeError 等——
+            # 本方法在 finally 中调用，任何异常外泄都会杀死监听线程
+            pass
 
     def _open_rtsp_alarm_session(self) -> socket.socket:
         import base64
@@ -471,7 +522,7 @@ class _CameraEventMonitor:
             req = (
                 f"{method} {url} RTSP/1.0\r\n"
                 f"CSeq: {cseq_counter[0]}\r\n"
-                f"User-Agent: {sk_proto.rtsp_ua()}\r\n"
+                f"User-Agent: {camera_proto.rtsp_ua()}\r\n"
                 f"{build_auth(method, url)}{extra}\r\n"
             )
             sock.sendall(req.encode("utf-8"))
@@ -572,11 +623,13 @@ class _CameraEventMonitor:
         if "200" not in play_status:
             raise RuntimeError(f"PLAY {play_target} 失败: {play_status}")
         self._rtsp_session_id = session_id
+        self._rtsp_cseq = cseq_counter[0]
+        self._rtsp_auth_ctx = (digest_realm, digest_nonce, use_basic)
 
         return sock
 
     def _read_alarm_stream(self, sock: socket.socket) -> None:
-        parser = sk_proto.AlarmParser()
+        parser = camera_proto.AlarmParser()
         last_keepalive = time.time()
         cseq = 10
         base_url = f"rtsp://{self.ip}:{self.rtsp_port}{self.rtsp_path}"
@@ -593,7 +646,7 @@ class _CameraEventMonitor:
                     try:
                         sock.sendall(
                             f"OPTIONS {base_url} RTSP/1.0\r\nCSeq: {cseq}\r\n"
-                            f"User-Agent: {sk_proto.rtsp_ua()}\r\n{session_hdr}\r\n".encode()
+                            f"User-Agent: {camera_proto.rtsp_ua()}\r\n{session_hdr}\r\n".encode()
                         )
                     except OSError:
                         return
@@ -854,6 +907,17 @@ def manage_camera_events(
     limit: int = 100,
     timeout_seconds: float = 60.0,
 ):
+    if camera_name:
+        try:
+            from .device_mgmt import _is_non_sk_camera, _unsupported_protocol_message
+        except ImportError:
+            from device_mgmt import _is_non_sk_camera, _unsupported_protocol_message
+        if _is_non_sk_camera(camera_name):
+            msg = _unsupported_protocol_message(camera_name, "告警事件监听")
+            if action in (EventAction.START, EventAction.STOP):
+                return EventMonitorResult(success=False, error_message=msg)
+            return PendingEventsResult(success=False, error_message=msg)
+
     if action in (EventAction.START, EventAction.STOP):
         if not camera_name:
             return EventMonitorResult(

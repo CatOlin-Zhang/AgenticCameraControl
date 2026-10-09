@@ -11,6 +11,12 @@ Notation used below: `tool_name(arg1=value, arg2=value)` describes a single MCP 
 ## Phase 0 — Session Init: Detailed Tool Calls
 
 ```text
+0. If this is the first camera work after a long idle period (hours/days), or a previous
+   connect/stream call failed on a camera that used to work:
+   search_devices()
+   → refreshes stale IPs in config.yaml (DHCP lease changes) and drops cameras that are gone
+   then continue with the steps below
+
 1. get_registered_cameras()
    → list of CameraConfig entries from config.yaml (name, ip, ports, credentials, device_class)
 
@@ -41,8 +47,9 @@ search_devices()
 - `discovery_method` tells you which protocol found each device (`"ws_discovery"` / `"sky_discovery"` / `"usb"`)
 - `sky_*` fields are populated for Skyworth devices, empty for others
 - `device_class` is auto-classified via RTSP probe: `"password_required"` or `"direct_connect"`
+- **Search writes config.yaml**: discovered reachable devices are registered (basic info only — no password), and registered entries that are neither discovered nor reachable are removed. Re-running `search_devices()` is the supported way to refresh IP changes, newly added cameras, and departed cameras.
 
-For protocol-level details (multicast addresses, message formats), see [ARCHITECTURE.md — Device Discovery](ARCHITECTURE.md#device-discovery).
+For protocol-level details (multicast addresses, message formats), see [Discovery — How Discovery Works](commands/discovery.md#how-discovery-works-internal).
 
 ---
 
@@ -112,6 +119,25 @@ Step 2d — Authorization rejected (auth_rejected):
   No further action available unless user provides password directly.
 ```
 
+### Third-party ONVIF camera (O-class, degraded)
+
+```text
+# WS-Discovery found a camera that never answers SK/JCP discovery (sn_code empty)
+connect_device(camera_name="office_thirdparty", password=<user_input>)
+→ SK TCP 9010 probe fails (expected for non-XPAI), SK/JCP SN probes empty
+→ ONVIF admission passes (port probe + GetDeviceInformation)
+→ success=true, status="connected", protocol_type="O"
+→ config.yaml: protocol_type: O, onvif_sn: <ONVIF SerialNumber>, sn_code: '' (empty)
+→ available: RTSP streaming/screenshot/recording/WebRTC (ONVIF GetStreamUri paths), ONVIF PTZ
+→ unavailable (immediate UNSUPPORTED_PROTOCOL / clear message): cloud authorization,
+  illumination, image settings, detection/tracking, alarm events, PTZ degrees/calibration
+
+# RTSP-only device (ONVIF admission fails):
+connect_device(camera_name="rtsp_only_cam", password=<user_input>)
+→ success=false, status="no_sn" — explicit message: RTSP-only, ONVIF control plane
+  unverified, identity unconfirmed. Report to user; no workaround via register_camera.
+```
+
 ### Cloud-authorized camera (handled internally)
 
 Cloud authorization is now fully handled inside `connect_device`. The Agent does **not** need to call any separate cloud auth tool. The `big_connect` and `poll_auth_status` tools have been deprecated as external MCP tools.
@@ -142,7 +168,7 @@ toggle_recording(camera_name="客厅摄像头", action="start")
 toggle_recording(camera_name="客厅摄像头", action="stop")
 ```
 
-> For non-ASCII path handling and same-process connection requirements, see [ARCHITECTURE.md — Known Issues](ARCHITECTURE.md#known-issues--implementation-notes).
+> For non-ASCII path handling and same-process connection requirements, see [SKILL.md — Gotchas](../SKILL.md#gotchas).
 
 ### End-to-End: User says "I want to see the camera"
 
@@ -170,7 +196,7 @@ Step 3 — Agent delivers BOTH results to the user:
 
 ## Phase 4 — PTZ Control: Detailed Tool Calls
 
-PTZ uses a **dual-protocol strategy**: ONVIF is tried first, automatically falling back to the Skyworth private protocol when unavailable. All return results include a `protocol` field indicating which protocol was actually used.
+PTZ backend is selected by `protocol_type`: **S-class** uses the Skyworth private protocol; **J-class and O-class** use **ONVIF only** (no private-protocol fallback). All return results include a `protocol` field indicating which protocol was actually used.
 
 ### Directional movement (8 directions + Chinese aliases)
 
@@ -223,7 +249,7 @@ get_ptz_parameters(camera_name="客厅摄像头")
 stop_ptz(camera_name="客厅摄像头")
 ```
 
-### Physical calibration (private protocol only)
+### Physical calibration (S-class only; J/O-class not supported)
 
 ```text
 # Calibrate PTZ zero point (takes 10-30 seconds, Skyworth cameras only)
@@ -248,15 +274,15 @@ Receive alarm events (motion, human, vehicle, tamper, line-crossing, …) with l
 | **Prerequisite** | Camera connected via `connect_device()` |
 | **Safety** | `action="start"` spawns a background listener — requires explicit user confirmation |
 | **Detailed reference** | [commands/events.md](commands/events.md) — full parameter/return fields, schema 1.0 format, event store contract |
-| **Architecture** | [ARCHITECTURE.md — Event Monitoring Architecture](ARCHITECTURE.md#event-monitoring-architecture-guardian-mode-foundation) |
+| **Architecture** | [commands/events.md — Architecture](commands/events.md#architecture) |
 
 ### Illumination Mode Control (`manage_illumination`)
 
-Query and adjust camera illumination parameters. Dual-protocol: Skyworth private (TCP channel, 15 parameters) + ONVIF Imaging fallback (mode only). Single tool, `action` switches mode: `get` / `set`.
+Query and adjust camera illumination parameters. Dual-protocol: XPAI private (TCP channel, 15 parameters) + ONVIF Imaging fallback (mode only). Single tool, `action` switches mode: `get` / `set`.
 
 | Aspect | Detail |
 |--------|--------|
 | **Prerequisite** | Camera connected via `connect_device()`; capability auto-probed at connect time and cached in `config.yaml` as `illumination_modes` |
 | **Safety** | `action="set"` modifies a hardware setting — requires explicit user confirmation. Always call `get` first to retrieve `capabilities` (parameter ranges), then call `set` with only the parameters to change |
 | **Detailed reference** | [commands/illumination.md](commands/illumination.md) — full parameter table (15 params), return fields, dual-protocol details |
-| **Architecture** | [ARCHITECTURE.md — Illumination Mode Control Architecture](ARCHITECTURE.md#illumination-mode-control-architecture) |
+| **Architecture** | [commands/illumination.md — Architecture](commands/illumination.md#architecture) |

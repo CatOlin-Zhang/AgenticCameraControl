@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 try:
-    from . import sk_proto
+    from . import camera_proto
 except ImportError:
-    import sk_proto
+    import camera_proto
 
 SUBTYPE_NAMES = {
     "1": "枪机",
@@ -61,7 +61,7 @@ class SkDiscoveredDevice:
                 for s in ch.stream.split(","):
                     s = s.strip()
                     if s:
-                        paths.append(s)
+                        paths.append(s if s.startswith("/") else "/" + s)
         return paths
 
 def _get_local_ip() -> Optional[str]:
@@ -132,7 +132,7 @@ def discover_sky_devices(
     discovered: Dict[str, SkDiscoveredDevice] = {}
 
     try:
-        responses = sk_proto.discovery_search(timeout=timeout, target_sn=target_sn)
+        responses = camera_proto.discovery_search(timeout=timeout, target_sn=target_sn)
     except Exception:
         responses = []
 
@@ -224,7 +224,7 @@ def _silent_discover(
     discovered: Dict[str, SkDiscoveredDevice] = {}
 
     try:
-        responses = sk_proto.discovery_search(timeout=timeout)
+        responses = camera_proto.discovery_search(timeout=timeout)
     except Exception:
         return []
 
@@ -245,6 +245,6 @@ def probe_device_sn(
     timeout: float = 3.0,
 ) -> str:
     try:
-        return sk_proto.probe_device_sn(ip=ip, timeout=timeout)
+        return camera_proto.probe_device_sn(ip=ip, timeout=timeout)
     except Exception:
         return ""

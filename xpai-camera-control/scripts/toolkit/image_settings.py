@@ -3,14 +3,14 @@ from enum import Enum
 from typing import Any, Dict, Optional
 
 try:
-    from . import sk_proto
+    from . import camera_proto
 except ImportError:
-    import sk_proto
+    import camera_proto
 
 try:
-    from .device_mgmt import resolve_target, CameraConfig
+    from .device_mgmt import resolve_target, CameraConfig, _is_non_sk_camera, _unsupported_protocol_message
 except ImportError:
-    from device_mgmt import resolve_target, CameraConfig
+    from device_mgmt import resolve_target, CameraConfig, _is_non_sk_camera, _unsupported_protocol_message
 
 try:
     from .illumination import (
@@ -75,23 +75,23 @@ class ImageSetResult:
     needs_input: list = field(default_factory=list)
 
 def _sk_query_option(cam) -> Dict[str, Any]:
-    ok, resp, _status = _envelope(sk_proto.image_get_option(
+    ok, resp, _status = _envelope(camera_proto.image_get_option(
         cam.ip, cam.sn_code, cam.username, cam.password, _SK_IMAGE_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": _status}
     caps = resp.get("image")
-    _ok = sk_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
+    _ok = camera_proto.code_ok(resp.get("code", "")) and isinstance(caps, list)
     return {"ok": _ok, "capabilities": caps if isinstance(caps, list) else [],
             "code": resp.get("code", ""), "status": _status, "raw": resp}
 
 def _sk_query_current(cam) -> Dict[str, Any]:
-    ok, resp, _status = _envelope(sk_proto.image_get(
+    ok, resp, _status = _envelope(camera_proto.image_get(
         cam.ip, cam.sn_code, cam.username, cam.password, _SK_IMAGE_TIMEOUT))
     if not ok or not resp:
         return {"ok": False, "status": _status}
     _head = {"service_type", "msg_id", "cmd_name", "ver", "code", "msg", "channel", "sequence"}
     current = {k: v for k, v in resp.items() if k not in _head}
-    _ok = sk_proto.code_ok(resp.get("code", ""))
+    _ok = camera_proto.code_ok(resp.get("code", ""))
     return {"ok": _ok, "current": current,
             "code": resp.get("code", ""), "status": _status, "raw": resp}
 
@@ -131,13 +131,13 @@ def _sk_set(cam, updates: Dict[str, Any]) -> ImageSetResult:
     payload = dict(base["current"])
     payload.update(updates)
 
-    ok, resp, _status = _envelope(sk_proto.image_set(
+    ok, resp, _status = _envelope(camera_proto.image_set(
         cam.ip, cam.sn_code, cam.username, cam.password, payload, _SK_IMAGE_TIMEOUT))
     if not ok or not resp:
         return _sk_err(ImageSetResult, "DEVICE_UNREACHABLE" if _status is None else "SET_FAILED",
                        f"设置命令下发失败：{cam.ip}:{_SK_IMAGE_PORT}"
                        + ("" if _status is None else f"（HTTP {_status}）"), camera=cam.name)
-    if not sk_proto.code_ok(resp.get("code", "")):
+    if not camera_proto.code_ok(resp.get("code", "")):
         return _sk_err(ImageSetResult, "SET_FAILED",
                        f"设备拒绝设置（code={resp.get('code')} msg={resp.get('msg')}）", camera=cam.name)
 
@@ -225,6 +225,12 @@ def manage_image_settings(
     answers: Optional[Dict[str, Any]] = None,
 ):
     resolved_name = camera_name or name
+
+    if _is_non_sk_camera(resolved_name):
+        return ImageSetResult(
+            ok=False, error_code="UNSUPPORTED_PROTOCOL",
+            message=_unsupported_protocol_message(resolved_name, "画面参数调节"),
+        )
 
     if action == ImageAction.QUERY:
         return big_image_query(name=resolved_name, answers=answers)

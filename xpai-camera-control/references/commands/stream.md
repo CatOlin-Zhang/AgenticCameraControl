@@ -17,9 +17,9 @@ Fetch the real-time video stream URL.
 | **Parameters** | `camera_name`: camera identifier. `sub_stream`: use sub-stream (lower quality) if `True`. `timeout_seconds`: max wait in seconds for the stream probe (default 20, max 120); raise it for known slow devices. |
 | **Agent behavior** | Output the `stream_url` to the user so they can open it in a media player (VLC, ffplay, PotPlayer) for live viewing. |
 
-**Execution model:** the stream probe runs in a **global serial slot** (mutually exclusive with screenshot / recording establishment) via an ffmpeg/ffprobe subprocess with hard timeouts — on timeout the subprocess is killed and the device RTSP session is released immediately; the call can never hang indefinitely. If the camera is **currently recording**, no second RTSP session is opened: the URL is returned with `success=true`, empty metadata, and an explanatory `error_message`.
+**Execution model:** the stream probe runs **in-process via OpenCV (FFmpeg backend)** with hard per-stage timeouts (8 s open / 5 s read). RTSP media transport is **TCP on all supported OpenCV versions (≥ 4.8, empirically verified)**; the code additionally requests TCP explicitly (with UDP fallback) on legacy builds where the OpenCV API still allows selecting the transport. On open failure the main ↔ sub stream paths are tried in turn. There is **no code-level serial slot** — see the concurrency guidance under `capture_video_screenshot`. The MCP layer enforces a tool-level timeout (`timeout_seconds`).
 
-**Timeout errors:** a tool-level timeout returns `{"success": false, "error_code": "timeout", ...}`; a busy slot returns an error message containing `stream_busy` semantics ("另一个流操作…正在进行"). On timeout, the Agent may retry once with a larger `timeout_seconds`.
+**Timeout errors:** a tool-level timeout returns `{"success": false, "error_code": "timeout", ...}`. On timeout, the Agent may retry once with a larger `timeout_seconds`.
 
 **StreamResult return fields:**
 
@@ -46,9 +46,11 @@ Capture a single frame from the current video stream and save as JPEG.
 | **Parameters** | `camera_name`: camera identifier. `save_path`: output directory path (optional; defaults to `snapshots/`). `timeout_seconds`: max wait in seconds for the frame grab (default 20, max 120); raise it for known slow devices. |
 | **Agent behavior** | Display the screenshot image to the user using the `file_path` (e.g. `![screenshot](file_path)` in markdown). |
 
-**Execution model:** RTSP screenshots run in a **global serial slot** via an ffmpeg subprocess (path main↔sub × transport tcp→udp fallback inside); on timeout the subprocess is killed and the device session released — the call cannot hang indefinitely. **Recording conflict:** if the camera is currently recording, the screenshot is **rejected** (one long session already occupies a device RTSP slot; opening a second may exhaust the device's session limit) — stop the recording first. Multiple cameras: screenshots to *different* cameras are serialized by the slot (one burst at a time), which is intentional to avoid concurrent-decode/session contention.
+**Execution model:** RTSP screenshots run **in-process via OpenCV (FFmpeg backend)** over **TCP** (the default on all supported OpenCV versions ≥ 4.8, empirically verified; explicit TCP-first with UDP fallback applies only on legacy builds where the transport is selectable). Fallback ladder: stream path **main → sub**, and — beyond a plain open-only retry — a path is also retried when the session **opens but yields no decodable frame** (the classic "device accepted the session but the RTP pipeline stalled" shape, e.g. firmware resource contention during PTZ movement, or session-slot exhaustion after long idle). Each open attempt is bounded by 8 s open / 5 s read timeouts; on total failure the whole grab is retried once after 1 s. The MCP layer enforces a tool-level timeout (`timeout_seconds`).
 
-**Timeout errors:** a tool-level timeout returns `{"success": false, "error_code": "timeout", ...}`; a busy slot returns "另一个流操作…正在进行". On timeout, the Agent may retry once with a larger `timeout_seconds`.
+**Concurrency guidance (Agent responsibility — there is no code-level serial slot):** these cameras have very few RTSP session slots and concurrent sessions can hang the device. Do **not** screenshot while the camera is recording (stop the recording first), and do **not** fan out simultaneous screenshots to multiple cameras — serialize such calls yourself.
+
+**Timeout errors:** a tool-level timeout returns `{"success": false, "error_code": "timeout", ...}`. On timeout, the Agent may retry once with a larger `timeout_seconds`.
 
 **ScreenshotResult return fields:**
 
