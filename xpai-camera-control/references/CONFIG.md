@@ -4,7 +4,7 @@ Full schema for `config.yaml` — the configuration file for the Camera Control 
 
 ## File Location
 
-Place `config.yaml` at the skill root (`xpai-camera-control/config.yaml`) to define camera configurations. Cameras discovered at runtime via WS-Discovery, XPAI private protocol, or USB scanning do not need to be pre-configured.
+Place `config.yaml` at the skill root (`xpai-camera-control/config.yaml`) to define camera configurations. Cameras discovered at runtime via the XPAI private protocol, JCP, or WS-Discovery do not need to be pre-configured. USB webcams are not auto-discovered (the USB scan is disabled) — they must be pre-configured here.
 
 **Automatic sync:** `search_devices()` writes every discovered and reachable camera into this file (basic info only — name, IP, SN, device class, ports; never a password) and removes entries that are no longer discoverable **and** unreachable. `connect_device()` persists credentials and the verified ONVIF port after a successful connection. Manual edits are possible but not required.
 
@@ -30,9 +30,9 @@ cameras:
     username: string          # Login username (default: "admin")
     password: string          # Login password
     rtsp_port: int            # RTSP port (default: 554)
-    rtsp_path: string         # Main stream path (default: "/stream1")
+    rtsp_path: string         # Main stream path (default: "/md0_0")
     rtsp_path_main: string    # Alias for rtsp_path (password auth scheme compatibility)
-    rtsp_sub_path: string     # Sub stream path (default: "/stream2")
+    rtsp_sub_path: string     # Sub stream path (default: "/md0_1")
     rtsp_path_sub: string     # Alias for rtsp_sub_path (password auth scheme compatibility)
 
     # Device identity (populated by discovery or manual entry)
@@ -44,8 +44,8 @@ cameras:
     # Device classification
     device_class: string      # "password_required" | "direct_connect" (auto-detected via RTSP probe)
 
-    # Illumination capability (auto-probed at connect time, cached)
-    illumination_modes: list   # Supported illumination modes (e.g. ["OFF", "AUTO", "ON"]); empty = unsupported or not yet probed
+    # Illumination capability (probed at connect time via the SK private protocol, cached)
+    illumination_modes: list   # Supported illumination modes; empty = unsupported or not yet probed
 
     # Protocol classification (resolved and persisted by connect_device via the authoritative SK-first unicast probe)
     protocol_type: string      # "S" (Skyworth private) | "J" (JCP, ONVIF PTZ + RTSP media) | "O" (third-party ONVIF-only, degraded) | "" (not yet resolved; legacy values incl. "W" are treated as SK)
@@ -88,8 +88,8 @@ Unique string identifier for the camera.
 | `username` | `"admin"` | ONVIF login username. |
 | `password` | `""` | ONVIF login password. Auto-cached to config.yaml after successful connection. |
 | `rtsp_port` | `554` | RTSP streaming port. |
-| `rtsp_path` | `"/stream1"` | Main stream RTSP path. Aliases: `rtsp_path_main`. XPAI cameras use vendor-specific paths; the toolkit auto-tries fallback paths when the configured path fails. |
-| `rtsp_sub_path` | `"/stream2"` | Sub stream RTSP path. Aliases: `rtsp_path_sub`. Same fallback behavior as main stream. |
+| `rtsp_path` | `"/md0_0"` | Main stream RTSP path. Aliases: `rtsp_path_main`. XPAI cameras use vendor-specific paths; the toolkit auto-tries fallback paths when the configured path fails. |
+| `rtsp_sub_path` | `"/md0_1"` | Sub stream RTSP path. Aliases: `rtsp_path_sub`. Same fallback behavior as main stream. |
 
 ### Device Identity Parameters
 
@@ -100,7 +100,7 @@ Unique string identifier for the camera.
 | `onvif_sn` | `""` | ONVIF `GetDeviceInformation` SerialNumber, persisted only for O-class entries. Identity/matching only (e.g. re-aligning a registry entry after a DHCP IP change) — **never** used as `sn_code`, never sent to cloud auth or SK HTTP. |
 | `pkdk` | `""` | Device identity token. Populated automatically during registration. |
 | `device_class` | auto | Auto-detected by RTSP probe: 401 response → `"password_required"` (needs username/password); 200 response → `"direct_connect"` (no password, connects immediately). |
-| `illumination_modes` | `[]` | Auto-probed by `connect_device()` via ONVIF Imaging Service `GetMoveOptions`. Contains supported illumination mode strings (e.g. `["OFF", "AUTO", "ON"]`) or empty list when the device does not support illumination mode switching or has not been probed yet. Written to config.yaml after the first successful connection; subsequent sessions read the cache and skip re-probing. |
+| `illumination_modes` | `[]` | Probed by `connect_device()` after a successful connection via the SK private-protocol fill-light capability query (`probe_illumination_capability`, S-class devices only). Contains the supported illumination parameter names/modes or an empty list when the device does not support illumination control or the probe did not succeed. Written to config.yaml after the probe; subsequent sessions read the cache and skip re-probing. |
 | `protocol_type` | `""` | Protocol class resolved and persisted by `connect_device` via the authoritative SK-first unicast probe: `"S"` (Skyworth private — full feature set), `"J"` (JCP — media over RTSP + PTZ over ONVIF; illumination/image/tracking/events and PTZ calibration/degrees are unsupported), or `"O"` (third-party ONVIF-only — same degradation as J plus **no cloud authorization**; asserted only when SK/JCP probes are empty and the ONVIF admission probe passes). `search_devices` only asserts `"S"` when the device answered SK private discovery (conclusive); devices found via JCP/WS-Discovery carry no asserted class, since both protocols are shared with S-class firmware. Empty = not yet resolved (legacy values incl. `"W"` are treated as SK). |
 
 ### RTSP URL Construction

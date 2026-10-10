@@ -29,6 +29,11 @@ except ImportError:
         _merge_capabilities,
     )
 
+try:
+    from ._argnorm import coerce_str
+except ImportError:
+    from _argnorm import coerce_str
+
 class TrackingAction(str, Enum):
     QUERY = "get"
     SET = "set"
@@ -528,6 +533,9 @@ def manage_tracking(
     sensitivity_level: Optional[int] = None,
     answers: Optional[Dict[str, Any]] = None,
 ):
+    camera_name = coerce_str(camera_name)
+    name = coerce_str(name)
+
     resolved_name = camera_name or name
     dt = detect_type or "all"
 

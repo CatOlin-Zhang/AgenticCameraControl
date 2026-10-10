@@ -15,6 +15,11 @@ try:
 except ImportError:
     from illumination import _envelope
 
+try:
+    from ._argnorm import coerce_str
+except ImportError:
+    from _argnorm import coerce_str
+
 class PTZDirection(str, Enum):
     UP = "up"
     DOWN = "down"
@@ -409,6 +414,8 @@ def control_ptz(
     duration_seconds: Optional[float] = None,
     degrees: Optional[float] = None,
 ) -> PTZMoveResult:
+    camera_name = coerce_str(camera_name)
+
     direction = _resolve_direction(direction)
     if not direction:
         return PTZMoveResult(
@@ -558,6 +565,8 @@ def control_ptz(
 def get_ptz_parameters(
     camera_name: str,
 ) -> PTZParameters:
+    camera_name = coerce_str(camera_name)
+
     cam = _get_camera(camera_name)
     if not cam:
         return PTZParameters(error_message=f"摄像头 '{camera_name}' 未注册")
@@ -600,6 +609,8 @@ def calibrate_ptz(
     camera_name: str,
     action: str = "set_home",
 ) -> CalibrateResult:
+    camera_name = coerce_str(camera_name)
+
     global _calibrated_home
 
     cam = _get_camera(camera_name)
@@ -708,6 +719,8 @@ def _move_to_position(
 def stop_ptz(
     camera_name: str,
 ) -> PTZMoveResult:
+    camera_name = coerce_str(camera_name)
+
     cam = _get_camera(camera_name)
     if not cam:
         return PTZMoveResult(

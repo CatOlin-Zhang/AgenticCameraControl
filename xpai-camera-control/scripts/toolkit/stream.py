@@ -11,6 +11,11 @@ import json
 import shutil
 import subprocess
 
+try:
+    from ._argnorm import coerce_str
+except ImportError:
+    from _argnorm import coerce_str
+
 class RecordingAction(str, Enum):
     START = "start"
     STOP = "stop"
@@ -121,6 +126,7 @@ def get_audio_video_stream(
     camera_name: str,
     sub_stream: bool = False,
 ) -> StreamResult:
+    camera_name = coerce_str(camera_name)
 
     from .device_mgmt import _connected_devices, _find_cached_camera
     conn_info = _connected_devices.get(camera_name)
@@ -260,6 +266,8 @@ def capture_video_screenshot(
     camera_name: str,
     save_path: Optional[str] = None,
 ) -> ScreenshotResult:
+    camera_name = coerce_str(camera_name)
+
     import os
     import time
 
@@ -640,6 +648,7 @@ def toggle_recording(
     rtsp_transport: Optional[Any] = None,
     duration: Optional[float] = None,
 ) -> RecordingResult:
+    camera_name = coerce_str(camera_name)
 
     if action == RecordingAction.STATUS:
         state = _recording_states.get(camera_name)
@@ -968,6 +977,8 @@ def manage_storage_status(
     format: Optional[str] = None,
     policy: Optional[str] = None,
 ) -> StorageResult:
+    camera_name = coerce_str(camera_name)
+
     import os
     import shutil
 
@@ -1152,6 +1163,8 @@ def start_webrtc_stream(
     go2rtc_path: Optional[str] = None,
     port: int = 1984,
 ) -> WebRTCResult:
+    camera_name = coerce_str(camera_name)
+
     import subprocess
 
     global _go2rtc_process

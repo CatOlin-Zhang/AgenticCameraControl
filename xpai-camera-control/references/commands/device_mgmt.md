@@ -45,13 +45,13 @@ Read all camera entries from `config.yaml` and return their configurations.
 | `device_index` | int | OpenCV device index (USB only) |
 | `device_model` | string | USB device model name |
 | `product_version` | string | USB product version |
-| `illumination_modes` | list[string] | Supported illumination modes (e.g. `["OFF", "AUTO", "ON"]`); empty = unsupported or not yet probed. Auto-populated by `connect_device()` via ONVIF Imaging Service probe. |
+| `illumination_modes` | list[string] | Supported illumination modes cached from the SK private-protocol fill-light capability probe (S-class devices only); empty = unsupported or not yet probed. Written by `connect_device()` after a successful connection. |
 | `protocol_type` | string | Protocol class for registered cameras: `"S"` (Skyworth private), `"J"` (JCP — media + PTZ over ONVIF), or `"O"` (third-party ONVIF-only, degraded). Written by `connect_device()` via the authoritative SK-first unicast probe; `"O"` is asserted only when SK/JCP probes are empty and the ONVIF admission probe passes (`"W"` and empty both mean no class asserted yet, legacy entries are treated as SK). |
 | `onvif_sn` | string | ONVIF `GetDeviceInformation` SerialNumber (O-class identity/matching only). **Never** used as `sn_code` and never fed to cloud auth or SK HTTP. Empty for S/J/USB entries. |
 
 ---
 
-### `register_camera(name, ip="", port=0, username="admin", password="", rtsp_port=554, rtsp_path="/stream1", device_class="direct_connect", **kwargs) -> RegisterResult`
+### `register_camera(name, ip="", port=0, username="admin", password="", rtsp_port=554, rtsp_path="/md0_0", device_class="direct_connect", rtsp_sub_path="/md0_1", **kwargs) -> RegisterResult`
 
 Write a camera entry to `config.yaml`, persisting credentials for future auto-connect.
 
@@ -80,7 +80,7 @@ Search for available cameras on the local network. The tool automatically select
 |--------|--------|
 | **Safety** | None (writes `config.yaml`: registers discovered devices, removes unreachable stale entries) |
 | **Returns** | `SearchResult` (see field tables below) |
-| **Parameters** | `timeout`: discovery timeout in seconds (default 15.0). The tool internally tries all available protocols (ONVIF WS-Discovery, XPAI private, USB) and merges results. |
+| **Parameters** | `timeout`: discovery timeout in seconds (default 15.0). The tool internally tries all available protocols (XPAI private, JCP, ONVIF WS-Discovery; USB scanning is disabled) and merges results. |
 | **Implementation** | Internally dispatches to the corresponding discovery protocol; results are normalized into `DiscoveredDevice` objects |
 
 **SearchResult return fields:**
@@ -103,7 +103,7 @@ Search for available cameras on the local network. The tool automatically select
 | `model` | string | Device model |
 | `manufacturer` | string | Manufacturer name |
 | `supported_media` | list[string] | Supported media settings |
-| `discovery_method` | string | How the device was found: `"ws_discovery"` / `"sky_discovery"` / `"jcp_discovery"` / `"usb"` |
+| `discovery_method` | string | How the device was found: `"sky_discovery"` / `"jcp_discovery"` / `"ws_discovery"` (USB scanning is disabled; USB webcams are configured manually in config.yaml) |
 | `rtsp_access` | string | Reachability probe result for the main stream: `"open"` (no auth) / `"auth_required"` / `"unreachable"`. Devices reported `"unreachable"` are not written to `config.yaml`. |
 | `protocol_type` | string | Protocol class: `"S"` (device answered SK private discovery — conclusive) or empty (found via JCP/WS-Discovery; no class asserted, since both protocols are shared with S-class firmware). `connect_device` resolves and persists the final class (`"S"`/`"J"`/`"O"`) via the authoritative SK-first unicast probe; `"O"` (third-party ONVIF-only) is asserted at connect time when SK/JCP probes are empty and ONVIF admission passes. |
 | `sky_subtype` | string | XPAI device subtype (1=bullet/2=dome/3=halfdome/5=PTZ/6=bullet+dome); empty for non-XPAI |
@@ -125,7 +125,7 @@ Search for available cameras on the local network. The tool automatically select
 
 ---
 
-### `connect_device(camera_name, password=None, ip=None, port=None, rtsp_port=None, rtsp_path="/stream1", username="admin", sn_code="", device_class="", protocol_type="") -> ConnectResult`
+### `connect_device(camera_name, password=None, ip=None, port=None, rtsp_port=None, rtsp_path="/md0_0", username="admin", sn_code="", device_class="", protocol_type="") -> ConnectResult`
 
 Establish connection to a camera. Uses cached credentials (retry 3x) → user-provided password → RTSP probe, in that order.
 
@@ -149,7 +149,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
 
 **ONVIF port verification:** before ONVIF auth, candidate ports are probed with unauthenticated `GetSystemDateAndTime`. Only ports returning a SOAP Envelope are accepted. Verified ports are written back to config.yaml automatically.
 
-**Illumination capability probing:** after a successful connection (both password-auth and direct-connect paths), `connect_device()` automatically probes the ONVIF Imaging Service for supported illumination modes via `probe_illumination_capability()`. The result is persisted to `config.yaml` as `illumination_modes`. The probe is non-blocking — failures are silently ignored so they never delay the connection flow. If `illumination_modes` is already cached in config.yaml from a previous session, re-probing is skipped.
+**Illumination capability probing:** after a successful connection on the password-auth and direct-connect paths (S-class devices only), `connect_device()` automatically probes the SK private-protocol fill-light capability via `probe_illumination_capability()`. The result is persisted to `config.yaml` as `illumination_modes`; probe failures are silently ignored (the field stays empty) so they never delay the connection flow. If `illumination_modes` is already cached in config.yaml from a previous session, re-probing is skipped.
 
 **J-class (JCP) connection:** JCP cameras connect over **ONVIF + RTSP** — the SK private TCP/HTTP probe is not required (it fails on these devices, which is expected). The SN gate falls back to JCP discovery when the SK SN probe returns nothing, so J-class devices are no longer rejected with `status="no_sn"`. On success the tool persists `protocol_type="J"`, the verified ONVIF port, and the ONVIF-authoritative main/sub RTSP paths (from `GetStreamUri`). The SK-only illumination probe is skipped for J-class.
 
@@ -188,7 +188,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
   "success": false,
   "auth_method": "",
   "status": "needs_password",
-  "error_message": "缓存凭据已失效（TCP/ONVIF/RTSP 均连接失败），云端重新授权也未能获取可用密码。请直接输入设备 客厅摄像头(192.168.1.100) 的当前密码。",
+  "error_message": "Cached credentials have expired (TCP/ONVIF/RTSP all failed), and cloud re-authorization could not obtain a usable password. Please enter the current password for device living_room_camera (192.168.1.100) directly.",
   "needs_password": true,
   "onvif_port": 0
 }
@@ -213,7 +213,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
   "success": false,
   "auth_method": "",
   "status": "needs_password",
-  "error_message": "设备 客厅摄像头(192.168.1.100) 需要密码才能访问，请提供摄像头的管理密码（默认用户名一般为 admin）。",
+  "error_message": "Device living_room_camera (192.168.1.100) requires a password. Please provide the camera's admin password (default username is usually admin).",
   "needs_password": true,
   "onvif_port": 0
 }
@@ -226,7 +226,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
   "success": false,
   "auth_method": "",
   "status": "failed",
-  "error_message": "密码认证失败: TCP/ONVIF/RTSP 均连接失败",
+  "error_message": "Password authentication failed: TCP/ONVIF/RTSP all failed",
   "needs_password": true,
   "onvif_port": 8000
 }
@@ -238,7 +238,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
   "success": false,
   "auth_method": "",
   "status": "failed",
-  "error_message": "TCP/ONVIF 连接成功但 RTSP 认证失败（密码可能对 RTSP 无效）",
+  "error_message": "TCP/ONVIF connected successfully but RTSP authentication failed (the password may be invalid for RTSP)",
   "needs_password": false,
   "onvif_port": 8000
 }
@@ -250,7 +250,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
   "success": false,
   "auth_method": "",
   "status": "cloud_pwd_failed",
-  "error_message": "云端下发的密码无法通过设备 客厅摄像头(192.168.1.100) 的验证（TCP/ONVIF 连接成功但 RTSP 认证失败（密码可能对 RTSP 无效）），设备可能修改过局域网密码或存在凭据隔离。请输入正确局域网密码。",
+  "error_message": "The password delivered by the cloud failed verification on device living_room_camera (192.168.1.100) (TCP/ONVIF connected successfully but RTSP authentication failed (the password may be invalid for RTSP)). The device may have had its LAN password changed or has credential isolation. Please enter the correct LAN password.",
   "needs_password": true,
   "onvif_port": 0
 }

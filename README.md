@@ -73,8 +73,7 @@ Server 通过 stdio 传输协议与 MCP 客户端通信，兼容 Claude Desktop 
   "mcpServers": {
     "xpai-camera-control": {
       "command": "python",
-      "args": ["scripts/mcp_server.py"],
-      "cwd": "/path/to/xpai-camera-control"
+      "args": ["/path/to/xpai-camera-control/scripts/mcp_server.py"]
     }
   }
 }
@@ -92,11 +91,13 @@ AgenticCameraControl/
     ├── scripts/
     │   ├── mcp_server.py         # MCP Server 入口（20 个工具注册）
     │   ├── _paths.py             # 路径解析
+    │   ├── prepare_runtime.py    # 原生组件准备（启动时校验/安装原生库）
+    │   ├── runtime_artifacts.json # 原生组件清单（版本与哈希）
     │   └── toolkit/              # 工具函数集（纯 Python 源码）
     │       ├── __init__.py       # 统一导出入口
     │       ├── device_mgmt.py    # 设备管理与连接
     │       ├── discovery.py      # 设备发现
-    │       ├── sk_proto.py       # Skyworth 私有协议实现
+    │       ├── camera_proto.py   # Skyworth 私有协议原生绑定（ctypes）
     │       ├── stream.py         # 音视频流与存储
     │       ├── ptz.py            # 云台控制
     │       ├── events.py         # 报警事件接收与本地存储
@@ -108,7 +109,8 @@ AgenticCameraControl/
     │   ├── CONFIG.md             # config.yaml 完整 schema
     │   ├── WORKFLOW.md           # 工作流详解（含故障排查）
     │   ├── MCP_TOOLS_API.md      # 20 个 MCP 工具完整 API 文档
-    │   └── EVENT_INTEGRATION.md  # 事件存储外部消费契约
+    │   ├── EVENT_INTEGRATION.md  # 事件存储外部消费契约
+    │   └── RUNTIME.md            # 原生组件维护与发布参考
     ├── snapshots/                # 截图保存目录（运行时自动创建）
     ├── video/                    # 录像保存目录（运行时自动创建）
     ├── events/                   # 事件持久化目录（运行时自动创建）
@@ -125,7 +127,7 @@ AgenticCameraControl/
 |-------------------------|------------------------------|-----------------------------------------------------------------------------------------|
 | `device_mgmt.py`        | 设备注册、搜索、连接、断开                | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md)       |
 | `discovery.py`          | 局域网设备发现（内部模块）                | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md)           |
-| `sk_proto.py`           | Skyworth 私有协议底层实现（内部模块）       | —                                                                                       |
+| `camera_proto.py`       | Skyworth 私有协议原生绑定（内部模块）        | —                                                                                       |
 | `stream.py`             | 视频流、截图、录像、存储、WebRTC          | [commands/stream.md](xpai-camera-control/references/commands/stream.md)                 |
 | `ptz.py`                | 云台方向控制/校准/停止                 | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md)                       |
 | `events.py`             | 报警事件订阅、联动抓拍、事件存储与消费          | [commands/events.md](xpai-camera-control/references/commands/events.md)                 |
@@ -154,7 +156,7 @@ AgenticCameraControl/
 | 使用阶段仅局域网通信    | 使用阶段所有网络流量限于局域网内，无外网通信；为保障用户安全，连接阶段会与远程服务器确认连接状态        |
 | 文件写入受限        | 仅写入 `config.yaml`、`snapshots/`、`video/`、`events/`              |
 | 无系统修改         | 不修改注册表、环境变量、系统服务                                               |
-| 无进程派生         | 不启动子进程或外部程序（Agent 框架下的定时任务与守护进程不在此限制内）                         |
+| 受限进程派生       | 仅在录像（ffmpeg）与 WebRTC 预览（go2rtc）功能中启动对应外部程序；其余场景不派生子进程（Agent 框架下的定时任务与守护进程不在此限制内）   |
 
 ### 配置
 
@@ -266,8 +268,7 @@ Add the following to your MCP client configuration (e.g. Claude Desktop):
   "mcpServers": {
     "xpai-camera-control": {
       "command": "python",
-      "args": ["scripts/mcp_server.py"],
-      "cwd": "/path/to/xpai-camera-control"
+      "args": ["/path/to/xpai-camera-control/scripts/mcp_server.py"]
     }
   }
 }
@@ -285,11 +286,13 @@ AgenticCameraControl/
     ├── scripts/
     │   ├── mcp_server.py         # MCP Server entry point (20 tools registered)
     │   ├── _paths.py             # Path resolution
+    │   ├── prepare_runtime.py    # Native runtime preparation (validates/installs native libraries at startup)
+    │   ├── runtime_artifacts.json # Native component manifest (versions & hashes)
     │   └── toolkit/              # Tool functions (pure Python source)
     │       ├── __init__.py       # Unified export entry
     │       ├── device_mgmt.py    # Device management & connection
     │       ├── discovery.py      # Device discovery
-    │       ├── sk_proto.py       # Skyworth private protocol implementation
+    │       ├── camera_proto.py   # Skyworth private protocol native bindings (ctypes)
     │       ├── stream.py         # Audio/video streaming & storage
     │       ├── ptz.py            # PTZ control
     │       ├── events.py         # Alarm event receiving & local store
@@ -301,7 +304,8 @@ AgenticCameraControl/
     │   ├── CONFIG.md             # config.yaml full schema
     │   ├── WORKFLOW.md           # Workflow details (incl. troubleshooting)
     │   ├── MCP_TOOLS_API.md      # Complete API doc for all 20 MCP tools
-    │   └── EVENT_INTEGRATION.md  # Event storage external consumer contract
+    │   ├── EVENT_INTEGRATION.md  # Event storage external consumer contract
+    │   └── RUNTIME.md            # Native component maintenance & release reference
     ├── snapshots/                # Screenshot directory (auto-created at runtime)
     ├── video/                    # Recording directory (auto-created at runtime)
     ├── events/                   # Event persistence directory (auto-created at runtime)
@@ -318,7 +322,7 @@ AgenticCameraControl/
 |---------------------------|-----------------------------------------------------------------------|-----------------------------------------------------------------------------------------|
 | `device_mgmt.py`          | Device registration, search, connection, disconnection                | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md)       |
 | `discovery.py`            | LAN device discovery (internal module)                                | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md)           |
-| `sk_proto.py`             | Skyworth private protocol implementation (internal module)            | —                                                                                       |
+| `camera_proto.py`         | Skyworth private protocol native bindings (internal module)            | —                                                                                       |
 | `stream.py`               | Video streaming, screenshots, recording, storage, WebRTC              | [commands/stream.md](xpai-camera-control/references/commands/stream.md)                 |
 | `ptz.py`                  | PTZ directional control / calibration / stop                          | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md)                       |
 | `events.py`               | Alarm event subscription, snapshot linkage, event store & consumption | [commands/events.md](xpai-camera-control/references/commands/events.md)                 |
@@ -347,7 +351,7 @@ This skill package operates within strict security constraints to ensure no unex
 | LAN-only during usage              | All network traffic stays within the local network during usage; during the connection phase, the system communicates with a remote server to verify connection status for user security.                                                         |
 | Restricted file writes             | Only writes to `config.yaml`, `snapshots/`, `video/`, and `events/`                                                                                                                                                                              |
 | No system modifications            | No registry changes, environment variable modifications, or system service installations.                                                                                                                                                        |
-| No process spawning                | No subprocesses or external programs are launched (scheduled tasks and daemons under Agent frameworks are not subject to this restriction).                                                                                                      |
+| Restricted process spawning        | External programs are launched only for recording (ffmpeg) and WebRTC preview (go2rtc); no subprocesses in any other scenario (scheduled tasks and daemons under Agent frameworks are not subject to this restriction).  |
 
 ### Configuration
 

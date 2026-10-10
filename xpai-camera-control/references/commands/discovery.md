@@ -1,7 +1,5 @@
 # XPAI Discovery
-# XPAI Discovery
 
-XPAI private protocol discovery — `scripts/toolkit/discovery.py`
 XPAI private protocol discovery — `scripts/toolkit/discovery.py`
 
 > **MCP-only:** Device discovery is performed exclusively through the MCP tool `search_devices()` (in `device_mgmt.py`). This module (`discovery.py`) is an internal implementation detail — never import it directly or reference its functions.
@@ -17,7 +15,8 @@ XPAI private protocol discovery — `scripts/toolkit/discovery.py`
 | WS-Discovery (ONVIF) | Multicast (standard ONVIF) | All ONVIF cameras (including XPAI) |
 | XPAI private (SK) | UDP broadcast/unicast | Skyworth devices only (richer metadata: SN, channels, MAC) |
 | JCP | UDP multicast `230.230.230.230:8002` + per-interface subnet broadcast, fixed bind port 8002 | JCP devices; SN parsed from the `Device-VerKernel` reply field (portion before the dash) |
-| USB enumeration | Local | USB webcams |
+
+USB enumeration is **disabled**: USB webcams are not auto-discovered — pre-configure them in config.yaml (`connection_type: usb`) instead.
 
 Results are normalized into a unified `DiscoveredDevice` structure. XPAI-specific fields (SN, subtype, channels, MAC, etc.) are populated under `sky_*` prefixed attributes when the XPAI protocol is used.
 

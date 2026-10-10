@@ -20,21 +20,21 @@ This protocol exposes **2 controllable parameters**:
 
 | Value | Mode | Description |
 |-------|------|-------------|
-| 0 | 白天模式 | Day mode (lights off) |
-| 1 | 夜晚模式 | Night mode (lights on) |
-| 2 | 自动模式 | Auto (sensor-driven) |
-| 3 | 定时模式 | Timer (scheduled on/off) |
-| 4 | 智能模式 | Smart (AI-driven) |
+| 0 | Day mode | Day mode (lights off) |
+| 1 | Night mode | Night mode (lights on) |
+| 2 | Auto mode | Auto (sensor-driven) |
+| 3 | Timer mode | Timer (scheduled on/off) |
+| 4 | Smart mode | Smart (AI-driven) |
 
 **Fill light mode** (`filllightmode`):
 
 | Value | Mode | Description |
 |-------|------|-------------|
-| 0 | 全彩模式 | Full-color (white light) |
-| 1 | 红外模式 | Infrared (IR) |
-| 2 | 智能夜视 | Smart night vision (auto-switch) |
+| 0 | Full-color mode | Full-color (white light) |
+| 1 | Infrared mode | Infrared (IR) |
+| 2 | Smart night vision | Smart night vision (auto-switch) |
 
-Both parameters accept either the integer value or a string alias (`day`/`night`/`auto`/`timer`/`smart` for daynightmode, `color`/`ir`/`smart` for filllightmode, plus the Chinese equivalents 白天/夜晚/自动/定时/智能、全彩/红外/智能夜视).
+Both parameters accept either the integer value or a string alias (`day`/`night`/`auto`/`timer`/`smart` for daynightmode, `color`/`ir`/`smart` for filllightmode, plus the Chinese aliases 白天/夜晚/自动/定时/智能 and 全彩/红外/智能夜视).
 
 > The remaining firmware fields (white-light brightness, IR brightness, sensitivity values, timer schedule, etc.) are not exposed — they are read as part of the baseline and passed through unchanged on write (most devices only support the two modes above).
 
@@ -65,7 +65,7 @@ Query the device's illumination capability and all current settings.
 
 **Returns** `FilllightQueryResult` with:
 - `channel`: protocol channel used (`"sk"`)
-- `capabilities`: list of parameter descriptions with ranges and current values (e.g. `[{"name": "daynightmode", "label": "开灯设置（日夜模式）", "type": "int", "min": 0, "max": 4, "current": 2, "current_text": "自动模式", "options": {...}}, ...]`)
+- `capabilities`: list of parameter descriptions with ranges and current values (e.g. `[{"name": "daynightmode", "label": "Light setting (day/night mode)", "type": "int", "min": 0, "max": 4, "current": 2, "current_text": "Auto mode", "options": {...}}, ...]`)
 - `current`: current values of the exposed parameters only (e.g. `{"daynightmode": 2, "filllightmode": 1}`)
 
 ---

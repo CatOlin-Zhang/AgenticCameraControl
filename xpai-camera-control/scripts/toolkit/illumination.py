@@ -12,6 +12,11 @@ try:
 except ImportError:
     from device_mgmt import resolve_target, CameraConfig, _is_non_sk_camera, _unsupported_protocol_message
 
+try:
+    from ._argnorm import coerce_str
+except ImportError:
+    from _argnorm import coerce_str
+
 class IlluminationAction(str, Enum):
     QUERY = "get"
     SET = "set"
@@ -308,6 +313,8 @@ def manage_illumination(
     filllightmode=None,
     answers: Optional[Dict[str, Any]] = None,
 ):
+    camera_name = coerce_str(camera_name)
+    name = coerce_str(name)
 
     resolved_name = camera_name or name
 

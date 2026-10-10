@@ -10,8 +10,7 @@ Alarm/event subscription, snapshot linkage, and on-disk event store — exposed 
 
 ## Architecture
 
-**Single event source — XPAI private protocol** :
-**Single event source — XPAI private protocol** :
+**Single event source — XPAI private protocol**:
 
 1. **XPAI private protocol** — alarm messages are pushed **over a persistent RTSP session**: after `DESCRIBE` / `SETUP` / `PLAY` with the private alarm User-Agent, the device reports alarm JSON (~94 bytes) on interleaved channel `0x65`. Any non-200 handshake step aborts into a reconnect backoff (2 s → 30 s exponential cap). The listener status exposes `rtsp_session` and `last_error`, so failed handshakes are visible instead of silently half-open.
 

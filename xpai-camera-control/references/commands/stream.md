@@ -26,7 +26,7 @@ Fetch the real-time video stream URL.
 | Field | Type | Description |
 |-------|------|-------------|
 | `success` | bool | Whether the stream URL was retrieved |
-| `stream_url` | string | RTSP URL with auto-injected credentials (e.g. `rtsp://admin:***@192.168.1.100:554/stream1`) |
+| `stream_url` | string | RTSP URL with auto-injected credentials (e.g. `rtsp://admin:***@192.168.1.100:554/md0_0`) |
 | `codec` | string | Video codec: `"H.264"` / `"H.265"` / `"MJPEG"` |
 | `resolution` | string | Resolution string (e.g. `"2560x1440"`) |
 | `fps` | float | Frame rate |
@@ -83,7 +83,8 @@ Start, stop, or query the status of local video recording.
 | `success` | bool | Whether the operation succeeded |
 | `is_recording` | bool | Current recording state (`true` after start, `false` after stop/status query) |
 | `file_path` | string | Recording file path (populated on stop) |
-| `duration_seconds` | float | Recorded duration in seconds (populated on stop) |
+| `duration_seconds` | float | Recorded duration in seconds (populated on stop; elapsed time on `status`) |
+| `auto_stop` | bool | Whether a fixed-duration auto-stop is set (`duration` was passed on `start`) |
 | `error_message` | string | Failure reason (empty on success) |
 
 ---

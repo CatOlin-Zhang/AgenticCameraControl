@@ -1,686 +1,691 @@
-# XPAI Camera Control — MCP Server 工具函数技术文档
+# XPAI Camera Control — MCP Server Tools API Reference
 
-> **版本**: v0.6.0 | **传输协议**: stdio (JSON-RPC) | **服务名**: `xpai-camera-control`
+> **Version**: v0.7.0 | **Transport**: stdio (JSON-RPC) | **Service name**: `xpai-camera-control`
 
-所有工具函数通过 MCP (Model Context Protocol) 暴露，调用方发送 JSON-RPC 请求，返回值统一序列化为 JSON 对象。调用异常时返回 `{"success": false, "error": "<错误信息>"}`。
-
----
-
-## 目录
-
-1. [设备管理 (Device Management)](#1-设备管理)
-2. [音视频流与存储 (Stream)](#2-音视频流与存储)
-3. [云台控制 (PTZ)](#3-云台控制)
-4. [事件监听 (Events)](#4-事件监听)
-5. [WebRTC 实时预览](#5-webrtc-实时预览)
-6. [补光控制 (Illumination)](#6-补光控制)
-7. [图像参数设置 (Image Settings)](#7-图像参数设置)
-8. [侦测追踪 (Tracking)](#8-侦测追踪)
+All tool functions are exposed via MCP (Model Context Protocol). The caller sends JSON-RPC requests, and return values are uniformly serialized as JSON objects. On failure, `{"success": false, "error": "<error message>"}` is returned.
 
 ---
 
-## 1. 设备管理
+## Table of Contents
+
+1. [Device Management](#1-device-management)
+2. [Stream & Storage](#2-stream--storage)
+3. [PTZ Control](#3-ptz-control)
+4. [Event Listening](#4-event-listening)
+5. [WebRTC Live Preview](#5-webrtc-live-preview)
+6. [Illumination Control](#6-illumination-control)
+7. [Image Settings](#7-image-settings)
+8. [Detection & Tracking](#8-detection--tracking)
+
+---
+
+## 1. Device Management
 
 ### `get_registered_cameras`
 
-从 `config.yaml` 加载所有已注册摄像头的配置信息（含凭据）。不扫描网络，仅读取本地保存的记录。**会话开始时首先调用**。
+Load the configuration of all registered cameras (including credentials) from `config.yaml`. Does not scan the network; only reads locally saved records. **Call this first at the start of a session**.
 
-**参数**: 无
+**Parameters**: none
 
-**返回值**: `CameraConfig[]`
+**Returns**: `CameraConfig[]`
 
-| 字段                   | 类型       | 说明                                         |
-|----------------------|----------|--------------------------------------------|
-| `name`               | string   | 摄像头名称                                      |
-| `connection_type`    | string   | `"onvif"` / `"usb"`                        |
-| `ip`                 | string   | IP 地址                                      |
-| `port`               | int      | ONVIF 端口（0=未知）                             |
-| `username`           | string   | 登录用户名                                      |
-| `password`           | string   | 登录密码                                       |
-| `rtsp_port`          | int      | RTSP 端口                                    |
-| `rtsp_path`          | string   | 主流路径                                       |
-| `rtsp_sub_path`      | string   | 子流路径                                       |
-| `device_class`       | string   | `"password_required"` / `"direct_connect"` |
-| `sn_code`            | string   | 序列号                                        |
-| `pkdk`               | string   | 设备公钥标识                                     |
-| `illumination_modes` | string[] | 支持的补光模式列表                                  |
+| Field                  | Type     | Description                                       |
+|------------------------|----------|--------------------------------------------------|
+| `name`                 | string   | Camera name                                      |
+| `connection_type`      | string   | `"onvif"` / `"usb"`                        |
+| `ip`                   | string   | IP address                                       |
+| `port`                 | int      | ONVIF port (0 = unknown)                         |
+| `username`             | string   | Login username                                   |
+| `password`             | string   | Login password                                   |
+| `rtsp_port`            | int      | RTSP port                                        |
+| `rtsp_path`            | string   | Main stream path                                |
+| `rtsp_sub_path`        | string   | Sub stream path                                 |
+| `device_class`         | string   | `"password_required"` / `"direct_connect"` |
+| `sn_code`              | string   | Serial number                                   |
+| `pkdk`                 | string   | Device public key identifier                    |
+| `illumination_modes`   | string[] | List of supported illumination modes            |
 
 ---
 
 ### `register_camera`
 
-将摄像头凭据写入 `config.yaml` 持久化。支持重命名：当传入新名称但 IP 或 SN 与已有条目匹配时，自动替换旧名称。通常由 `connect_device` / `search_devices` 内部自动调用。
+Persist camera credentials to `config.yaml`. Renaming is supported: when a new name is passed but the IP or SN matches an existing entry, the old name is replaced automatically. Usually called internally by `connect_device` / `search_devices`.
 
-**参数**:
+**Parameters**:
 
-| 参数                | 类型     | 必填 | 默认值                | 说明                                         |
-|-------------------|--------|:--:|--------------------|--------------------------------------------|
-| `name`            | string | ✅  | —                  | 摄像头唯一名称                                    |
-| `ip`              | string |    | `""`               | IP 地址                                      |
-| `port`            | int    |    | `0`                | ONVIF 端口（只传验证过的真实端口）                       |
-| `username`        | string |    | `"admin"`          | 登录用户名                                      |
-| `password`        | string |    | `""`               | 登录密码                                       |
-| `rtsp_port`       | int    |    | `554`              | RTSP 端口                                    |
-| `rtsp_path`       | string |    | `"/md0_0"`         | 主流路径                                       |
-| `device_class`    | string |    | `"direct_connect"` | `"password_required"` / `"direct_connect"` |
-| `connection_type` | string |    | `"onvif"`          | `"onvif"` / `"usb"`                        |
-| `sn_code`         | string |    | `""`               | 序列号                                        |
-| `pkdk`            | string |    | `""`               | 设备公钥标识                                     |
-| `rtsp_sub_path`   | string |    | `"/md0_1"`         | 子流路径                                       |
+| Parameter         | Type   | Required | Default              | Description                                       |
+|-------------------|--------|:--:|----------------------|--------------------------------------------------|
+| `name`            | string | ✅  | —                    | Unique camera name                               |
+| `ip`              | string |    | `""`                 | IP address                                       |
+| `port`            | int    |    | `0`                  | ONVIF port (pass only verified real ports)       |
+| `username`        | string |    | `"admin"`             | Login username                                   |
+| `password`        | string |    | `""`                 | Login password                                   |
+| `rtsp_port`       | int    |    | `554`                | RTSP port                                        |
+| `rtsp_path`       | string |    | `"/md0_0"`           | Main stream path                                 |
+| `device_class`    | string |    | `"direct_connect"`   | `"password_required"` / `"direct_connect"` |
+| `connection_type` | string |    | `"onvif"`            | `"onvif"` / `"usb"`                        |
+| `sn_code`         | string |    | `""`                 | Serial number                                    |
+| `pkdk`            | string |    | `""`                 | Device public key identifier                     |
+| `rtsp_sub_path`   | string |    | `"/md0_1"`           | Sub stream path                                  |
+| `device_index`    | int    |    | `0`                  | OpenCV device index (USB only)                   |
+| `device_model`    | string |    | `""`                 | USB device model name (informational, USB only)  |
+| `product_version` | string |    | `""`                 | USB product version (informational, USB only)    |
 
-**返回值**: `RegisterResult`
+**Returns**: `RegisterResult`
 
-| 字段              | 类型     | 说明          |
-|-----------------|--------|-------------|
-| `success`       | bool   | 注册是否成功      |
-| `camera_name`   | string | 注册的摄像头名称    |
-| `error_message` | string | 失败原因（成功时为空） |
+| Field            | Type   | Description                        |
+|------------------|--------|------------------------------------|
+| `success`        | bool   | Whether registration succeeded     |
+| `camera_name`    | string | Registered camera name             |
+| `error_message`  | string | Failure reason (empty on success)  |
 
 ---
 
 ### `search_devices`
 
-扫描局域网发现可用摄像头（WS-Discovery + 创维私有协议 + JCP 三协议搜索，按 IP 去重，顺序为 创维 → JCP → WS-Discovery，先到先得）。**发现多个设备时必须将全部设备逐一展示给用户，不得省略。**
+Scan the LAN to discover available cameras (WS-Discovery + Skyworth private protocol + JCP, three protocols, deduplicated by IP in the order Skyworth → JCP → WS-Discovery, first-come-first-served). **When multiple devices are found, present every one of them to the user individually — never omit any.**
 
-**搜索即对账 `config.yaml`**：发现且可达（RTSP 探测非 `unreachable`）的设备按 `name → IP → SN` 三级匹配写入注册表（只写基础信息：名称/IP/SN/设备类型/端口，不写密码，既有密码由空值继承保留）；本轮未发现且 IP 探测不通的已注册条目会被删除。任一条发现链路失败时只注册、不删除（半轮扫描不足以证明设备离网）。长时间未使用（IP 可能因 DHCP 变化）或连接失败时，先调用本工具刷新注册表再连接。
+**Searching also reconciles `config.yaml`**: devices that are discovered and reachable (RTSP probe not `unreachable`) are written into the registry via three-level matching on `name → IP → SN` (basic info only: name/IP/SN/device class/ports, never a password; existing passwords are preserved via empty-value inheritance). Registered entries not found this round and whose IP is unreachable are removed. If any discovery link fails, only registration happens — no removals (a half round of scanning is insufficient to prove a device has left the network). When a camera has not been used for a long time (its IP may have changed via DHCP) or a connection fails, call this tool first to refresh the registry before connecting.
 
-**参数**:
+**Parameters**:
 
-| 参数        | 类型     | 必填 | 默认值    | 说明   |
-|-----------|--------|:--:|--------|------|
-| `timeout` | number |    | `15.0` | 总时长上限（秒）。发现安静后提前返回：短轮重探，连续 2 轮无新设备即结束，通常远早于上限 |
+| Parameter | Type   | Required | Default | Description                                                                                                                                   |
+|-----------|--------|:--:|---------|------------------------------------------------------------------------------------------------------------------------------------------------|
+| `timeout` | number |    | `15.0`  | Overall time limit (seconds). Returns early once discovery goes quiet: short re-probe rounds, ending after 2 consecutive rounds with no new devices — usually well before the limit |
 
-**返回值**: `SearchResult`（附加 `device_count` 和 `_display_instruction`）
+**Returns**: `SearchResult` (with additional `device_count` and `_display_instruction` fields)
 
-| 字段                     | 类型                 | 说明         |
-|------------------------|--------------------|------------|
-| `success`              | bool               | 搜索是否成功     |
-| `devices`              | DiscoveredDevice[] | 发现的设备列表    |
-| `device_count`         | int                | 设备数量（附加字段） |
-| `_display_instruction` | string             | 展示指令（附加字段） |
-| `error_message`        | string             | 失败原因       |
+| Field                  | Type               | Description                            |
+|------------------------|--------------------|----------------------------------------|
+| `success`              | bool               | Whether the search succeeded           |
+| `devices`              | DiscoveredDevice[] | List of discovered devices             |
+| `device_count`         | int                | Number of devices (additional field)   |
+| `_display_instruction` | string             | Display instruction (additional field) |
+| `error_message`        | string             | Failure reason                         |
 
-**DiscoveredDevice 字段**:
+**DiscoveredDevice fields**:
 
-| 字段                 | 类型     | 说明                                         |
-|--------------------|--------|--------------------------------------------|
-| `ip`               | string | IP 地址                                      |
-| `onvif_port`       | int    | ONVIF 端口（0=未知）                             |
-| `rtsp_port`        | int    | RTSP 端口                                    |
-| `device_class`     | string | `"password_required"` / `"direct_connect"` |
-| `sn_code`          | string | 设备序列号                                      |
-| `model`            | string | 设备型号                                       |
-| `manufacturer`     | string | 厂商                                         |
-| `sky_subtype`      | string | 设备子类型: `1`枪机/`2`球机/`3`半球/`5`摇头机/`6`枪球      |
-| `sky_name`         | string | 设备名称                                       |
-| `sky_channels`     | int    | 通道数（0=非创维, 1=单目, 2=双目）                     |
-| `sky_hw_version`   | string | 硬件版本                                       |
-| `sky_sw_version`   | string | 软件版本                                       |
-| `sky_mac`          | string | MAC 地址                                     |
-| `discovery_method` | string | 发现方式: `"ws_discovery"` / `"sky_discovery"` / `"jcp_discovery"` |
-| `rtsp_access`      | string | 主流可达性探测结果: `"open"`（免密可达）/ `"auth_required"`（需认证）/ `"unreachable"`（不可达，不写入注册表） |
-| `protocol_type`    | string | 协议类别: `"S"`（SK 私有发现应答，可定论）/ `""`（由 JCP/WS 发现，协议共用故不定性；连接阶段权威探测确定最终 `S`/`J`/`O`） |
+| Field               | Type   | Description                                         |
+|--------------------|--------|-----------------------------------------------------|
+| `ip`               | string | IP address                                          |
+| `onvif_port`       | int    | ONVIF port (0 = unknown)                            |
+| `rtsp_port`        | int    | RTSP port                                           |
+| `device_class`     | string | `"password_required"` / `"direct_connect"`     |
+| `sn_code`          | string | Device serial number                                |
+| `model`            | string | Device model                                        |
+| `manufacturer`     | string | Manufacturer                                        |
+| `sky_subtype`      | string | Device subtype: `1` bullet / `2` PTZ dome / `3` hemispheric / `5` pan-tilt / `6` bullet-PTZ combo |
+| `sky_name`         | string | Device name                                         |
+| `sky_channels`     | int    | Channel count (0 = non-Skyworth, 1 = single-lens, 2 = dual-lens) |
+| `sky_hw_version`   | string | Hardware version                                    |
+| `sky_sw_version`   | string | Software version                                    |
+| `sky_mac`          | string | MAC address                                         |
+| `discovery_method` | string | Discovery method: `"ws_discovery"` / `"sky_discovery"` / `"jcp_discovery"` |
+| `rtsp_access`      | string | Main stream reachability probe result: `"open"` (reachable without auth) / `"auth_required"` (authentication required) / `"unreachable"` (unreachable, not written to the registry) |
+| `protocol_type`    | string | Protocol class: `"S"` (answered SK private discovery, conclusive) / `""` (found via JCP/WS, protocol shared so not asserted; the connect-phase authoritative probe determines the final `S`/`J`/`O`) |
 
 ---
 
 ### `connect_device`
 
-连接摄像头。自动加载缓存凭据（TCP/ONVIF/RTSP 三通道验证）；缓存失效时先尝试云端重新授权，仍失败再请用户输入。若长时间未使用或此前连接/取流失败，建议先调用 `search_devices` 刷新注册表（设备 IP 可能已变化）再连接。
+Connect to a camera. Automatically loads cached credentials (validated across the TCP/ONVIF/RTSP channels); when the cache is invalid, cloud re-authorization is attempted first, and only if that fails is the user asked for input. If the camera has not been used for a long time or a previous connection/stream attempt failed, call `search_devices` first to refresh the registry (the device IP may have changed) before connecting.
 
-**参数**:
+**Parameters**:
 
-| 参数            | 类型     | 必填 | 默认值 | 说明                |
-|---------------|--------|:--:|-----|-------------------|
-| `camera_name` | string | ✅  | —   | 摄像头名称             |
-| `password`    | string |    | —   | 用户密码（可选）          |
-| `ip`          | string |    | —   | 设备 IP             |
-| `port`        | int    |    | —   | ONVIF 端口（不传则自动探测） |
-| `rtsp_port`   | int    |    | —   | RTSP 端口           |
-| `rtsp_path`   | string |    | —   | RTSP 路径           |
-| `username`    | string |    | —   | 登录用户名             |
-| `sn_code`     | string |    | —   | 设备 SN             |
-| `device_class` | string |    | —   | 设备分类（可选，由发现结果透传） |
-| `protocol_type` | string |    | —   | 协议类别 `"S"`/`"J"`/`"O"`（可留空；留空时连接阶段以 SK 单播权威探测确定并持久化；J 类走 ONVIF+RTSP，跳过创维私有探测；O=第三方 ONVIF 降级接入） |
+| Parameter       | Type   | Required | Default | Description                          |
+|-----------------|--------|:--:|---------|---------------------------------------|
+| `camera_name`   | string | ✅  | —       | Camera name                          |
+| `password`      | string |    | —       | User password (optional)             |
+| `ip`            | string |    | —       | Device IP                            |
+| `port`          | int    |    | —       | ONVIF port (auto-probed if omitted)  |
+| `rtsp_port`     | int    |    | —       | RTSP port                            |
+| `rtsp_path`     | string |    | —       | RTSP path                            |
+| `username`      | string |    | —       | Login username                       |
+| `sn_code`       | string |    | —       | Device SN                            |
+| `device_class`  | string |    | —       | Device class (optional, passed through from discovery results) |
+| `protocol_type` | string |    | —       | Protocol class `"S"`/`"J"`/`"O"` (may be left empty; when empty, the connect phase determines and persists it via the authoritative SK unicast probe; J-class uses ONVIF+RTSP and skips the Skyworth private probe; O = third-party ONVIF degraded access) |
 
-**返回值**: `ConnectResult`
+**Returns**: `ConnectResult`
 
-| 字段               | 类型     | 说明                                                                                                     |
-|------------------|--------|--------------------------------------------------------------------------------------------------------|
-| `success`        | bool   | 连接是否成功                                                                                                 |
+| Field             | Type   | Description                                                                                              |
+|------------------|--------|----------------------------------------------------------------------------------------------------------|
+| `success`        | bool   | Whether the connection succeeded                                                                        |
 | `status`         | string | `"connected"` / `"needs_password"` / `"no_sn"` / `"failed"` / `"auth_rejected"` / `"cloud_pwd_failed"` |
-| `auth_method`    | string | 认证方式: `"password"` / `"direct"`                                                                        |
-| `needs_password` | bool   | 是否需要用户提供密码                                                                                             |
-| `onvif_port`     | int    | 验证过的 ONVIF 端口（0=未验证）                                                                                   |
-| `protocol_type`  | string | 设备协议类别 `"S"`/`"J"`/`"O"`（未定级为空）；O 类需向用户说明降级能力集                                                              |
-| `error_message`  | string | 失败原因                                                                                                   |
+| `auth_method`    | string | Auth method: `"password"` / `"direct"`                                                                     |
+| `needs_password` | bool   | Whether the user needs to provide a password                                                            |
+| `onvif_port`     | int    | Verified ONVIF port (0 = unverified)                                                                    |
+| `protocol_type`  | string | Device protocol class `"S"`/`"J"`/`"O"` (empty if unresolved); for O-class, explain the degraded capability set to the user |
+| `error_message`  | string | Failure reason                                                                                          |
 
-**status 状态处理**:
-- `connected` → 已连接，可操作
-- `needs_password` → 请用户提供密码后重新调用
-- `no_sn` → 拒绝进入连接态：S/J 断言设备 SN 丢失（`search_devices` 刷新后重试），或 WS-Discovery 设备 ONVIF 准入未通过（仅 RTSP 可达）→ 向用户报告；**禁止**用手动 `register_camera`/手改 config.yaml 绕路
-- `auth_rejected` → 云端拒绝授权
-- `cloud_pwd_failed` → 云端密码验证不通过，请用户输入正确密码
+**status handling**:
+- `connected` → connected, ready to operate
+- `needs_password` → ask the user for the password, then call again
+- `no_sn` → refuses to enter the connected state: the SN of an S/J-asserted device is missing (retry after refreshing with `search_devices`), or the ONVIF admission probe failed for a WS-Discovery device (only RTSP reachable) → report to the user; **never** bypass it via manual `register_camera` / hand-editing config.yaml
+- `auth_rejected` → the cloud refused authorization
+- `cloud_pwd_failed` → cloud password verification failed; ask the user to enter the correct password
 
 ---
 
 ### `disconnect_device`
 
-断开摄像头连接，释放所有资源。
+Disconnect a camera and release all resources.
 
-**参数**:
+**Parameters**:
 
-| 参数            | 类型     | 必填 | 说明    |
-|---------------|--------|:--:|-------|
-| `camera_name` | string | ✅  | 摄像头名称 |
+| Parameter     | Type   | Required | Description |
+|--------------|--------|:--:|-------------|
+| `camera_name` | string | ✅  | Camera name |
 
-**返回值**: `DisconnectResult`
+**Returns**: `DisconnectResult`
 
-| 字段                 | 类型     | 说明        |
-|--------------------|--------|-----------|
-| `success`          | bool   | 断开是否成功    |
-| `session_released` | bool   | 是否释放了云端会话 |
-| `error_message`    | string | 失败原因      |
+| Field               | Type   | Description                     |
+|--------------------|--------|---------------------------------|
+| `success`          | bool   | Whether disconnection succeeded |
+| `session_released` | bool   | Whether the cloud session was released |
+| `error_message`    | string | Failure reason                  |
 
 ---
 
-## 2. 音视频流与存储
+## 2. Stream & Storage
 
 ### `get_audio_video_stream`
 
-获取摄像头的 RTSP 实时视频流 URL 及元数据。仅返回流地址，不抓取画面。
+Get the camera's live RTSP video stream URL and metadata. Returns the stream URL only; does not capture frames.
 
-**参数**:
+**Parameters**:
 
-| 参数            | 类型     | 必填 | 默认值     | 说明         |
-|---------------|--------|:--:|---------|------------|
-| `camera_name` | string | ✅  | —       | 摄像头名称      |
-| `sub_stream`  | bool   |    | `false` | 使用子码流（低画质） |
+| Parameter     | Type   | Required | Default  | Description                    |
+|--------------|--------|:--:|----------|---------------------------------|
+| `camera_name` | string | ✅  | —        | Camera name                     |
+| `sub_stream`  | bool   |    | `false`  | Use the sub stream (lower quality) |
+| `timeout_seconds` | number |    | `20`     | Max wait in seconds for the stream probe (capped at 120); enforced by the MCP layer — raise it for known slow devices on retry |
 
-**返回值**: `StreamResult`
+**Returns**: `StreamResult`
 
-| 字段              | 类型     | 说明                           |
-|-----------------|--------|------------------------------|
-| `success`       | bool   | 是否成功                         |
-| `stream_url`    | string | RTSP 流地址（含凭据）                |
-| `codec`         | string | 编码格式（如 `"H.264"`, `"H.265"`） |
-| `resolution`    | string | 分辨率（如 `"1920x1080"`）         |
-| `fps`           | float  | 帧率                           |
-| `bitrate`       | int    | 码率                           |
-| `error_message` | string | 失败原因                         |
+| Field            | Type   | Description                              |
+|-----------------|--------|------------------------------------------|
+| `success`       | bool   | Whether the operation succeeded          |
+| `stream_url`    | string | RTSP stream URL (with credentials)       |
+| `codec`         | string | Codec (e.g. `"H.264"`, `"H.265"`)       |
+| `resolution`    | string | Resolution (e.g. `"1920x1080"`)          |
+| `fps`           | float  | Frame rate                               |
+| `bitrate`       | int    | Bitrate                                  |
+| `error_message` | string | Failure reason                           |
 
 ---
 
 ### `capture_video_screenshot`
 
-从视频流中截取一帧画面保存为 JPEG 图片（单帧快照）。默认保存到 `snapshots/` 目录。
+Capture a single frame from the video stream and save it as a JPEG image (single-frame snapshot). Defaults to the `snapshots/` directory.
 
-**参数**:
+**Parameters**:
 
-| 参数            | 类型     | 必填 | 默认值          | 说明          |
-|---------------|--------|:--:|--------------|-------------|
-| `camera_name` | string | ✅  | —            | 摄像头名称       |
-| `save_path`   | string |    | `snapshots/` | 保存目录或完整文件路径 |
+| Parameter     | Type   | Required | Default      | Description                          |
+|--------------|--------|:--:|--------------|---------------------------------------|
+| `camera_name` | string | ✅  | —            | Camera name                          |
+| `save_path`   | string |    | `snapshots/` | Save directory or full file path     |
+| `timeout_seconds` | number |    | `20`     | Max wait in seconds for the frame grab (capped at 120); enforced by the MCP layer — raise it for known slow devices on retry |
 
-**返回值**: `ScreenshotResult`
+**Returns**: `ScreenshotResult`
 
-| 字段              | 类型     | 说明       |
-|-----------------|--------|----------|
-| `success`       | bool   | 是否成功     |
-| `file_path`     | string | 截图文件路径   |
-| `width`         | int    | 图片宽度（像素） |
-| `height`        | int    | 图片高度（像素） |
-| `error_message` | string | 失败原因     |
+| Field            | Type   | Description              |
+|-----------------|--------|--------------------------|
+| `success`       | bool   | Whether the operation succeeded |
+| `file_path`     | string | Screenshot file path     |
+| `width`         | int    | Image width (pixels)     |
+| `height`        | int    | Image height (pixels)    |
+| `error_message` | string | Failure reason           |
 
 ---
 
 ### `toggle_recording`
 
-启动、停止或查询本地 MP4 录像。默认保存到 `video/` 目录。
+Start, stop, or query local MP4 recording. Defaults to the `video/` directory.
 
-**参数**:
+**Parameters**:
 
-| 参数            | 类型     | 必填 | 默认值      | 说明                                |
-|---------------|--------|:--:|----------|-----------------------------------|
-| `camera_name` | string | ✅  | —        | 摄像头名称                             |
-| `action`      | string | ✅  | —        | `"start"` / `"stop"` / `"status"` |
-| `save_path`   | string |    | `video/` | 录像保存目录                            |
-| `duration`    | number |    | —        | 录像时长（秒），仅 `start` 时有效，设置后自动停止     |
+| Parameter     | Type   | Required | Default  | Description                                                    |
+|--------------|--------|:--:|----------|-----------------------------------------------------------------|
+| `camera_name` | string | ✅  | —        | Camera name                                                     |
+| `action`      | string | ✅  | —        | `"start"` / `"stop"` / `"status"`                             |
+| `save_path`   | string |    | `video/` | Recording save directory                                        |
+| `duration`    | number |    | —        | Recording duration (seconds); valid for `start` only; auto-stops when set |
 
-**返回值**: `RecordingResult`
+**Returns**: `RecordingResult`
 
-| 字段                 | 类型     | 说明        |
-|--------------------|--------|-----------|
-| `success`          | bool   | 是否成功      |
-| `is_recording`     | bool   | 当前是否正在录像  |
-| `file_path`        | string | 录像文件路径    |
-| `duration_seconds` | float  | 录像时长（秒）   |
-| `auto_stop`        | bool   | 是否设置了自动停止 |
-| `error_message`    | string | 失败/异常原因   |
+| Field               | Type   | Description                        |
+|--------------------|--------|------------------------------------|
+| `success`          | bool   | Whether the operation succeeded    |
+| `is_recording`     | bool   | Whether currently recording        |
+| `file_path`        | string | Recording file path                |
+| `duration_seconds` | float  | Recording duration (seconds)       |
+| `auto_stop`        | bool   | Whether auto-stop is set           |
+| `error_message`    | string | Failure/exception reason           |
 
-**注意**:
-- 多台设备同时录像时逐台调用（每台间隔 2-3 秒），避免并发启动失败
-- 长时间录像（>10 分钟）可能因网络波动中断，建议定期用 `status` 巡检
-- 录像异常时可查看与视频同名的 `.log` 文件获取 ffmpeg 退出原因
+**Notes**:
+- When recording multiple devices simultaneously, call them one by one (2-3 seconds apart) to avoid concurrent startup failures
+- Long recordings (>10 minutes) may be interrupted by network fluctuations; inspect periodically with `status`
+- On recording errors, check the `.log` file with the same name as the video for the ffmpeg exit reason
 
 ---
 
 ### `manage_storage_status`
 
-查询录像/截图的磁盘占用与可用空间，或设置存储路径、文件格式与存储策略。
+Query disk usage and available space for recordings/screenshots, or set the storage path, file format, and storage policy.
 
-**参数**:
+**Parameters**:
 
-| 参数            | 类型     | 必填 | 默认值       | 说明                                                         |
-|---------------|--------|:--:|-----------|------------------------------------------------------------|
-| `camera_name` | string | ✅  | —         | 摄像头名称                                                      |
-| `action`      | string |    | `"query"` | `"query"` / `"set"`                                        |
-| `path`        | string |    | —         | 存储路径（仅 `set`）                                              |
-| `format`      | string |    | —         | `"mp4"` / `"avi"` / `"jpg"`（仅 `set`）                       |
-| `policy`      | string |    | —         | `"overwrite"` / `"stop_when_full"` / `"circular"`（仅 `set`） |
+| Parameter     | Type   | Required | Default   | Description                                                           |
+|--------------|--------|:--:|-----------|------------------------------------------------------------------------|
+| `camera_name` | string | ✅  | —         | Camera name                                                            |
+| `action`      | string |    | `"query"` | `"query"` / `"set"`                                                  |
+| `path`        | string |    | —         | Storage path (`set` only)                                              |
+| `format`      | string |    | —         | `"mp4"` / `"avi"` / `"jpg"` (`set` only)                             |
+| `policy`      | string |    | —         | `"overwrite"` / `"stop_when_full"` / `"circular"` (`set` only)       |
 
-**返回值**: `StorageResult`
+**Returns**: `StorageResult`
 
-| 字段                   | 类型     | 说明       |
-|----------------------|--------|----------|
-| `success`            | bool   | 是否成功     |
-| `used_space_mb`      | float  | 已用空间（MB） |
-| `available_space_mb` | float  | 可用空间（MB） |
-| `storage_path`       | string | 当前存储路径   |
-| `format`             | string | 当前文件格式   |
-| `policy`             | string | 当前存储策略   |
-| `error_message`      | string | 失败原因     |
+| Field                 | Type   | Description              |
+|----------------------|--------|--------------------------|
+| `success`            | bool   | Whether it succeeded     |
+| `used_space_mb`      | float  | Used space (MB)          |
+| `available_space_mb` | float  | Available space (MB)     |
+| `storage_path`       | string | Current storage path     |
+| `format`             | string | Current file format      |
+| `policy`             | string | Current storage policy   |
+| `error_message`      | string | Failure reason           |
 
 ---
 
-## 3. 云台控制
+## 3. PTZ Control
 
 ### `control_ptz`
 
-控制云台转动方向或变焦。支持 8 方向和变焦。内置物理极限保护，到达边界时自动提前停止。
+Control the PTZ rotation direction or zoom. Supports 8 directions and zoom. Built-in physical limit protection stops movement early when a boundary is reached.
 
-> **按协议分派**：SK 类（`protocol_type="S"`）走创维私有协议；JCP 类（`protocol_type="J"`）与第三方 ONVIF 类（`protocol_type="O"`）走 ONVIF（`ContinuousMove`/`Stop`/`GetStatus`，归一化速度向量）。**J/O 类不支持 `degrees` 角度模式**（返回明确不支持提示，请改用 `duration_seconds`）。
+> **Dispatched by protocol**: SK-class (`protocol_type="S"`) uses the Skyworth private protocol; JCP-class (`protocol_type="J"`) and third-party ONVIF-class (`protocol_type="O"`) use ONVIF (`ContinuousMove`/`Stop`/`GetStatus`, normalized velocity vectors). **J/O-class does not support the `degrees` angle mode** (returns an explicit unsupported notice; use `duration_seconds` instead).
 
-**参数**:
+**Parameters**:
 
-| 参数                 | 类型     | 必填 | 默认值   | 说明                                         |
-|--------------------|--------|:--:|-------|--------------------------------------------|
-| `camera_name`      | string | ✅  | —     | 摄像头名称                                      |
-| `direction`        | string | ✅  | —     | 方向，见下表                                     |
-| `speed`            | number |    | `0.5` | 速度 0.0–1.0（当前 SK 方向命令不支持调速）                |
-| `duration_seconds` | number |    | —     | 转动时长（秒），与 `degrees` 二选一；都不传默认 `1.0`        |
-| `degrees`          | number |    | —     | 转动角度（按 1秒=34度 换算），与 `duration_seconds` 二选一（J/O 类不支持） |
+| Parameter          | Type   | Required | Default | Description                                         |
+|--------------------|--------|:--:|---------|------------------------------------------------------|
+| `camera_name`      | string | ✅  | —       | Camera name                                          |
+| `direction`        | string | ✅  | —       | Direction, see the list below                        |
+| `speed`            | number |    | `0.5`   | Speed 0.0–1.0 (speed adjustment not supported by current SK direction commands) |
+| `duration_seconds` | number |    | —       | Rotation duration (seconds); mutually exclusive with `degrees`; defaults to `1.0` when neither is given |
+| `degrees`          | number |    | —       | Rotation angle (converted at 1 second = 34 degrees); mutually exclusive with `duration_seconds` (not supported by J/O-class) |
 
-**direction 可选值**: `up` / `down` / `left` / `right` / `upleft` / `upright` / `downleft` / `downright` / `zoom_in` / `zoom_out`
+**direction values**: `up` / `down` / `left` / `right` / `upleft` / `upright` / `downleft` / `downright` / `zoom_in` / `zoom_out`
 
-**返回值**: `PTZMoveResult`
+**Returns**: `PTZMoveResult`
 
-| 字段                           | 类型     | 说明                                               |
-|------------------------------|--------|--------------------------------------------------|
-| `success`                    | bool   | 是否成功                                             |
-| `protocol`                   | string | 使用的协议（`"sky_private"` 或 `"onvif"`）               |
-| `current_pan`                | float  | 当前水平位置                                           |
-| `current_tilt`               | float  | 当前垂直位置                                           |
-| `current_zoom`               | float  | 当前变焦倍数                                           |
-| `requested_duration_seconds` | float  | 请求的移动时长                                          |
-| `actual_duration_seconds`    | float  | 实际移动时长                                           |
-| `limit_reached`              | bool   | 是否到达物理极限                                         |
-| `degrees`                    | float  | 角度模式时的请求角度                                       |
-| `method`                     | string | 执行方式: `"sk_time"` / `"sk_degrees"` / `"sk_zoom"` / `"onvif_time"` / `"onvif_zoom"` |
-| `error_message`              | string | 失败原因                                             |
+| Field                        | Type   | Description                                                    |
+|------------------------------|--------|----------------------------------------------------------------|
+| `success`                    | bool   | Whether the operation succeeded                                |
+| `protocol`                   | string | Protocol used (`"sky_private"` or `"onvif"`)                   |
+| `current_pan`                | float  | Current pan position                                           |
+| `current_tilt`               | float  | Current tilt position                                          |
+| `current_zoom`               | float  | Current zoom factor                                            |
+| `requested_duration_seconds` | float  | Requested move duration                                        |
+| `actual_duration_seconds`    | float  | Actual move duration                                           |
+| `limit_reached`              | bool   | Whether a physical limit was reached                           |
+| `degrees`                    | float  | Requested angle in degrees mode                                |
+| `method`                     | string | Execution method: `"sk_time"` / `"sk_degrees"` / `"sk_zoom"` / `"onvif_time"` / `"onvif_zoom"` |
+| `error_message`              | string | Failure reason                                                 |
 
 ---
 
 ### `get_ptz_parameters`
 
-读取云台当前位置坐标、运动范围和状态（只读查询）。
+Read the PTZ's current position coordinates, movement ranges, and status (read-only query).
 
-**参数**:
+**Parameters**:
 
-| 参数            | 类型     | 必填 | 说明    |
-|---------------|--------|:--:|-------|
-| `camera_name` | string | ✅  | 摄像头名称 |
+| Parameter     | Type   | Required | Description |
+|--------------|--------|:--:|-------------|
+| `camera_name` | string | ✅  | Camera name |
 
-**返回值**: `PTZParameters`
+**Returns**: `PTZParameters`
 
-| 字段              | 类型     | 说明     |
-|-----------------|--------|--------|
-| `pan`           | float  | 当前水平位置 |
-| `tilt`          | float  | 当前垂直位置 |
-| `zoom`          | float  | 当前变焦倍数 |
-| `pan_range`     | float  | 水平运动范围 |
-| `tilt_range`    | float  | 垂直运动范围 |
-| `zoom_range`    | float  | 变焦范围   |
-| `is_moving`     | bool   | 是否正在移动 |
-| `protocol`      | string | 使用的协议  |
-| `error_message` | string | 查询失败原因 |
+| Field            | Type   | Description              |
+|-----------------|--------|--------------------------|
+| `pan`           | float  | Current pan position     |
+| `tilt`          | float  | Current tilt position    |
+| `zoom`          | float  | Current zoom factor      |
+| `pan_range`     | float  | Pan movement range       |
+| `tilt_range`    | float  | Tilt movement range      |
+| `zoom_range`    | float  | Zoom range               |
+| `is_moving`     | bool   | Whether currently moving |
+| `protocol`      | string | Protocol used            |
+| `error_message` | string | Query failure reason     |
 
 ---
 
 ### `calibrate_ptz`
 
-云台物理校准与归位。硬件校准操作，约 10-30 秒。
+Physical PTZ calibration and homing. A hardware calibration operation, takes about 10-30 seconds.
 
-> **J/O 类不支持**：JCP/O 类摄像头（`protocol_type="J"`/`"O"`）不支持云台标定，调用返回 `success=false`、`protocol="onvif"` 及明确提示，请改用 `control_ptz` + `duration_seconds` 手动调整视角。
+> **Not supported by J/O-class**: JCP/O-class cameras (`protocol_type="J"`/`"O"`) do not support PTZ calibration; the call returns `success=false`, `protocol="onvif"`, and an explicit notice — use `control_ptz` + `duration_seconds` to adjust the viewing angle manually.
 
-**参数**:
+**Parameters**:
 
-| 参数            | 类型     | 必填 | 默认值          | 说明                                        |
-|---------------|--------|:--:|--------------|-------------------------------------------|
-| `camera_name` | string | ✅  | —            | 摄像头名称                                     |
-| `action`      | string |    | `"set_home"` | `"set_home"` 校准并存位 / `"go_home"` 回到存储的初始位 |
+| Parameter     | Type   | Required | Default       | Description                                                |
+|--------------|--------|:--:|---------------|-------------------------------------------------------------|
+| `camera_name` | string | ✅  | —             | Camera name                                                 |
+| `action`      | string |    | `"set_home"` | `"set_home"` calibrate and store home / `"go_home"` return to the stored home position |
 
-**返回值**: `CalibrateResult`
+**Returns**: `CalibrateResult`
 
-| 字段              | 类型     | 说明                      |
-|-----------------|--------|-------------------------|
-| `success`       | bool   | 是否成功                    |
-| `protocol`      | string | 使用的协议                   |
-| `action`        | string | 执行的操作                   |
-| `home_position` | string | Home 位坐标（如 `"x=0,y=0"`） |
-| `error_message` | string | 失败原因                    |
+| Field            | Type   | Description                        |
+|-----------------|--------|------------------------------------|
+| `success`       | bool   | Whether the operation succeeded    |
+| `protocol`      | string | Protocol used                      |
+| `action`        | string | Action executed                    |
+| `home_position` | string | Home position coordinates (e.g. `"x=0,y=0"`) |
+| `error_message` | string | Failure reason                     |
 
 ---
 
 ### `stop_ptz`
 
-立即紧急停止云台所有正在进行的移动。
+Immediately emergency-stop all ongoing PTZ movement.
 
-**参数**:
+**Parameters**:
 
-| 参数            | 类型     | 必填 | 说明    |
-|---------------|--------|:--:|-------|
-| `camera_name` | string | ✅  | 摄像头名称 |
+| Parameter     | Type   | Required | Description |
+|--------------|--------|:--:|-------------|
+| `camera_name` | string | ✅  | Camera name |
 
-**返回值**: `PTZMoveResult`
+**Returns**: `PTZMoveResult`
 
-| 字段              | 类型     | 说明              |
-|-----------------|--------|-----------------|
-| `success`       | bool   | 是否成功停止          |
-| `protocol`      | string | `"sky_private"` |
-| `error_message` | string | 失败原因            |
+| Field            | Type   | Description              |
+|-----------------|--------|--------------------------|
+| `success`       | bool   | Whether the stop succeeded |
+| `protocol`      | string | `"sky_private"`          |
+| `error_message` | string | Failure reason           |
 
 ---
 
-## 4. 事件监听
+## 4. Event Listening
 
 ### `manage_camera_events`
 
-摄像头告警事件统一管理入口，通过 `action` 切换四种工作模式。
+Unified management entry for camera alarm events; switches between four operating modes via `action`.
 
-> **J 类不支持**：事件监听为创维私有协议能力，JCP 类摄像头（`protocol_type="J"`）所有 action 立即返回明确不支持提示（非超时）。
+> **Not supported by J-class**: Event listening is a Skyworth private protocol capability; for JCP-class cameras (`protocol_type="J"`), all actions immediately return an explicit unsupported notice (not a timeout).
 
-**参数**:
+**Parameters**:
 
-| 参数                 | 类型     | 必填 | 默认值   | 说明                                               |
-|--------------------|--------|:--:|-------|--------------------------------------------------|
-| `action`           | string | ✅  | —     | `"start"` / `"stop"` / `"poll"` / `"wait"`       |
-| `camera_name`      | string |    | —     | 摄像头名称（`start`/`stop` 必填；`poll`/`wait` 省略则面向全部相机） |
-| `debounce_seconds` | number |    | `5.0` | 去重窗口（秒，仅 `start`）                                |
-| `limit`            | int    |    | `100` | 单次最多返回事件数（仅 `poll`）                              |
-| `timeout_seconds`  | number |    | `60`  | 阻塞超时（秒，上限 60，仅 `wait`）                           |
+| Parameter           | Type   | Required | Default | Description                                                  |
+|--------------------|--------|:--:|---------|---------------------------------------------------------------|
+| `action`           | string | ✅  | —       | `"start"` / `"stop"` / `"poll"` / `"wait"`                  |
+| `camera_name`      | string |    | —       | Camera name (required for `start`/`stop`; omitted means all cameras for `poll`/`wait`) |
+| `debounce_seconds` | number |    | `5.0`   | Deduplication window (seconds, `start` only)                  |
+| `limit`            | int    |    | `100`   | Max events returned per call (`poll` only)                    |
+| `timeout_seconds`  | number |    | `60`    | Blocking timeout (seconds, capped at 60, `wait` only)         |
 
-**返回值**:
+**Returns**:
 
 - **`start` / `stop`** → `EventMonitorResult`:
 
-| 字段                | 类型       | 说明                        |
-|-------------------|----------|---------------------------|
-| `success`         | bool     | 操作是否成功                    |
-| `camera_name`     | string   | 摄像头名称                     |
-| `running`         | bool     | 监听是否在运行                   |
-| `active_channels` | string[] | 已激活的协议通道（如 `["private"]`） |
-| `error_message`   | string   | 失败原因                      |
+| Field              | Type     | Description                             |
+|-------------------|----------|-----------------------------------------|
+| `success`         | bool     | Whether the operation succeeded         |
+| `camera_name`     | string   | Camera name                             |
+| `running`         | bool     | Whether monitoring is running           |
+| `active_channels` | string[] | Activated protocol channels (e.g. `["private"]`) |
+| `error_message`   | string   | Failure reason                          |
 
 - **`poll` / `wait`** → `PendingEventsResult`:
 
-| 字段              | 类型            | 说明          |
-|-----------------|---------------|-------------|
-| `success`       | bool          | 操作是否成功      |
-| `events`        | CameraEvent[] | 本次消费的事件列表   |
-| `remaining`     | int           | 存储中尚未消费的事件数 |
-| `monitors`      | object        | 各监听器运行状态    |
-| `error_message` | string        | 失败原因        |
+| Field            | Type            | Description                           |
+|-----------------|-----------------|---------------------------------------|
+| `success`       | bool            | Whether the operation succeeded       |
+| `events`        | CameraEvent[]   | Events consumed this time             |
+| `remaining`     | int             | Number of unconsumed events in storage |
+| `monitors`      | object          | Running state of each monitor         |
+| `error_message` | string          | Failure reason                        |
 
-**CameraEvent 字段**:
+**CameraEvent fields**:
 
-| 字段               | 类型       | 说明                                                                                                     |
-|------------------|----------|--------------------------------------------------------------------------------------------------------|
-| `schema_version` | string   | `"1.0"`                                                                                                |
-| `event_id`       | string   | 事件唯一 ID                                                                                                |
-| `event_type`     | string   | 归一化事件类型: `motion`/`human`/`vehicle`/`tamper`/`region_intrusion`/`line_crossing`/`high_temp`/`low_temp` |
-| `camera_id`      | string   | 摄像头注册名                                                                                                 |
-| `camera_name`    | string   | 展示名                                                                                                    |
-| `timestamp`      | string   | ISO 8601 时间戳                                                                                           |
-| `severity`       | string   | `"info"` / `"warning"` / `"critical"`                                                                  |
-| `title`          | string   | 人可读标题                                                                                                  |
-| `message`        | string   | 人可读正文                                                                                                  |
-| `label`          | string?  | 目标类别（如 `"person"`, `"car"`），无法提取时为 `null`                                                              |
-| `confidence`     | float?   | 置信度，协议未提供时为 `null`                                                                                     |
-| `snapshot_path`  | string   | 联动快照路径（限流窗口内可能为空）                                                                                      |
-| `tags`           | string[] | 标签（如 `["guardian"]`）                                                                                   |
+| Field             | Type     | Description                                                                                              |
+|------------------|----------|----------------------------------------------------------------------------------------------------------|
+| `schema_version` | string   | `"1.0"`                                                                                                  |
+| `event_id`       | string   | Unique event ID                                                                                          |
+| `event_type`     | string   | Normalized event type: `motion`/`human`/`vehicle`/`tamper`/`region_intrusion`/`line_crossing`/`high_temp`/`low_temp` |
+| `camera_id`      | string   | Camera registration name                                                                                 |
+| `camera_name`    | string   | Display name                                                                                             |
+| `timestamp`      | string   | ISO 8601 timestamp                                                                                       |
+| `severity`       | string   | `"info"` / `"warning"` / `"critical"`                                                                    |
+| `title`          | string   | Human-readable title                                                                                     |
+| `message`        | string   | Human-readable body                                                                                      |
+| `label`          | string?  | Target class (e.g. `"person"`, `"car"`); `null` when extraction is unavailable                           |
+| `confidence`     | float?   | Confidence; `null` when the protocol does not provide it                                                 |
+| `snapshot_path`  | string   | Linked snapshot path (may be empty within the rate-limit window)                                         |
+| `tags`           | string[] | Tags (e.g. `["guardian"]`)                                                                               |
 
 ---
 
-## 5. WebRTC 实时预览
+## 5. WebRTC Live Preview
 
 ### `start_webrtc_stream`
 
-启动 WebRTC 实时预览，将 RTSP 流转为浏览器可直接播放的 WebRTC 流，返回 HTTP 访问地址。
+Start a WebRTC live preview: converts the RTSP stream into a WebRTC stream playable directly in a browser and returns an HTTP access URL.
 
-**参数**:
+**Parameters**:
 
-| 参数            | 类型     | 必填 | 默认值     | 说明         |
-|---------------|--------|:--:|---------|------------|
-| `camera_name` | string | ✅  | —       | 摄像头名称      |
-| `sub_stream`  | bool   |    | `false` | 使用子码流（低画质） |
-| `port`        | int    |    | `1984`  | Web UI 端口  |
+| Parameter     | Type   | Required | Default  | Description                    |
+|--------------|--------|:--:|----------|---------------------------------|
+| `camera_name` | string | ✅  | —        | Camera name                     |
+| `sub_stream`  | bool   |    | `false`  | Use the sub stream (lower quality) |
+| `port`        | int    |    | `1984`   | Web UI port                     |
 
-**返回值**: `WebRTCResult`
+**Returns**: `WebRTCResult`
 
-| 字段              | 类型     | 说明                                   |
-|-----------------|--------|--------------------------------------|
-| `success`       | bool   | 是否成功                                 |
-| `web_url`       | string | 浏览器访问地址（如 `"http://localhost:1984"`） |
-| `rtsp_url`      | string | 源 RTSP 地址                            |
-| `error_message` | string | 失败原因                                 |
+| Field            | Type   | Description                                        |
+|-----------------|--------|----------------------------------------------------|
+| `success`       | bool   | Whether the operation succeeded                    |
+| `web_url`       | string | Browser access URL (e.g. `"http://localhost:1984"`) |
+| `rtsp_url`      | string | Source RTSP URL                                    |
+| `error_message` | string | Failure reason                                     |
 
 ---
 
 ### `stop_webrtc_stream`
 
-停止 WebRTC 实时预览，关闭转流进程。
+Stop the WebRTC live preview and shut down the stream conversion process.
 
-**参数**: 无
+**Parameters**: none
 
-**返回值**: `bool`（`true` 表示已停止）
+**Returns**: `bool` (`true` means stopped)
 
 ---
 
-## 6. 补光控制
+## 6. Illumination Control
 
 ### `manage_illumination`
 
-查询或设置摄像头补光与夜视模式。仅支持 `daynightmode`（日夜模式）与 `filllightmode`（补光方式）两项调节。控制物理补光硬件，与 `manage_image_settings` 不同。
+Query or set the camera's illumination and night-vision modes. Only two adjustments are supported: `daynightmode` (day/night mode) and `filllightmode` (fill-light mode). Controls physical illumination hardware; different from `manage_image_settings`.
 
-> **J 类不支持**：补光/夜视为创维私有协议能力，JCP 类摄像头（`protocol_type="J"`）调用立即返回 `error_code="UNSUPPORTED_PROTOCOL"`（非超时）。
+> **Not supported by J-class**: Illumination/night vision is a Skyworth private protocol capability; JCP-class cameras (`protocol_type="J"`) immediately return `error_code="UNSUPPORTED_PROTOCOL"` (not a timeout).
 
-**参数**:
+**Parameters**:
 
-| 参数              | 类型         | 必填 | 默认值 | 说明                |
-|-----------------|------------|:--:|-----|-------------------|
-| `action`        | string     | ✅  | —   | `"get"` / `"set"` |
-| `camera_name`   | string     | ✅  | —   | 摄像头名称             |
-| `daynightmode`  | int/string |    | —   | 日夜模式（仅 `set`）     |
-| `filllightmode` | int/string |    | —   | 补光方式（仅 `set`）     |
+| Parameter         | Type         | Required | Default | Description                |
+|------------------|-------------|:--:|---------|-----------------------------|
+| `action`          | string      | ✅  | —       | `"get"` / `"set"`          |
+| `camera_name`     | string      | ✅  | —       | Camera name                 |
+| `daynightmode`    | int/string  |    | —       | Day/night mode (`set` only) |
+| `filllightmode`   | int/string  |    | —       | Fill-light mode (`set` only) |
 
-**daynightmode 取值**:
+**daynightmode values**:
 
-| 值 | 别名             | 说明   |
-|:-:|----------------|------|
-| 0 | `day` / `白天`   | 白天模式 |
-| 1 | `night` / `夜晚` | 夜晚模式 |
-| 2 | `auto` / `自动`  | 自动模式 |
-| 3 | `timer` / `定时` | 定时模式 |
-| 4 | `smart` / `智能` | 智能模式 |
+| Value | Aliases            | Description |
+|:-:|----------------------|-------------|
+| 0 | `day`                | Day mode    |
+| 1 | `night`              | Night mode  |
+| 2 | `auto`               | Auto mode   |
+| 3 | `timer`              | Timer mode  |
+| 4 | `smart`              | Smart mode  |
 
-**filllightmode 取值**:
+**filllightmode values**:
 
-| 值 | 别名               | 说明   |
-|:-:|------------------|------|
-| 0 | `color` / `全彩`   | 全彩模式 |
-| 1 | `ir` / `红外`      | 红外模式 |
-| 2 | `smart` / `智能夜视` | 智能夜视 |
+| Value | Aliases               | Description       |
+|:-:|-----------------------|-------------------|
+| 0 | `color`               | Full-color mode   |
+| 1 | `ir`                  | Infrared mode     |
+| 2 | `smart`               | Smart night vision |
 
-**返回值**:
+**Returns**:
 
 - **`get`** → `FilllightQueryResult`:
 
-| 字段             | 类型     | 说明                                                                    |
-|----------------|--------|-----------------------------------------------------------------------|
-| `ok`           | bool   | 是否成功                                                                  |
-| `camera`       | string | 摄像头名称                                                                 |
-| `channel`      | string | 实际生效协议通道（`"sk"`）                                                      |
-| `capabilities` | array  | 能力列表（含 `name`/`label`/`min`/`max`/`current`/`current_text`/`options`） |
-| `current`      | object | 当前值（如 `{"daynightmode": 2, "filllightmode": 0}`）                      |
-| `error_code`   | string | 错误码                                                                   |
-| `message`      | string | 说明信息                                                                  |
+| Field            | Type   | Description                                                                      |
+|-----------------|--------|----------------------------------------------------------------------------------|
+| `ok`            | bool   | Whether the operation succeeded                                                  |
+| `camera`        | string | Camera name                                                                      |
+| `channel`       | string | Protocol channel actually in effect (`"sk"`)                                       |
+| `capabilities`  | array  | Capability list (with `name`/`label`/`min`/`max`/`current`/`current_text`/`options`) |
+| `current`       | object | Current values (e.g. `{"daynightmode": 2, "filllightmode": 0}`)                    |
+| `error_code`    | string | Error code                                                                       |
+| `message`       | string | Description message                                                              |
 
 - **`set`** → `FilllightSetResult`:
 
-| 字段           | 类型     | 说明            |
-|--------------|--------|---------------|
-| `ok`         | bool   | 是否成功          |
-| `camera`     | string | 摄像头名称         |
-| `channel`    | string | `"sk"`        |
-| `updated`    | object | 本次生效的字段（回读确认） |
-| `current`    | object | 设置后回读的当前值     |
-| `verified`   | bool   | 是否回读验证        |
-| `error_code` | string | 错误码           |
-| `message`    | string | 说明信息          |
+| Field          | Type   | Description                              |
+|---------------|--------|------------------------------------------|
+| `ok`          | bool   | Whether the operation succeeded          |
+| `camera`      | string | Camera name                              |
+| `channel`     | string | `"sk"`                                   |
+| `updated`     | object | Fields applied this time (read-back confirmed) |
+| `current`     | object | Current values read back after setting   |
+| `verified`    | bool   | Whether read-back verification passed    |
+| `error_code`  | string | Error code                               |
+| `message`     | string | Description message                      |
 
 ---
 
-## 7. 图像参数设置
+## 7. Image Settings
 
 ### `manage_image_settings`
 
-查询或设置摄像头画面参数。纯 SK 私有协议单通道，无 ONVIF 回退。调节画面成像参数，与 `manage_illumination`（控制物理补光灯）不同。
+Query or set the camera's image parameters. Pure SK private protocol single channel, no ONVIF fallback. Adjusts image rendering parameters; different from `manage_illumination` (which controls the physical fill light).
 
-> **J 类不支持**：画面参数调节为创维私有协议能力，JCP 类摄像头（`protocol_type="J"`）调用立即返回 `error_code="UNSUPPORTED_PROTOCOL"`（非超时）。
+> **Not supported by J-class**: Image parameter adjustment is a Skyworth private protocol capability; JCP-class cameras (`protocol_type="J"`) immediately return `error_code="UNSUPPORTED_PROTOCOL"` (not a timeout).
 
-**参数**:
+**Parameters**:
 
-| 参数            | 类型     | 必填 | 默认值 | 说明                |
-|---------------|--------|:--:|-----|-------------------|
-| `action`      | string | ✅  | —   | `"get"` / `"set"` |
-| `camera_name` | string | ✅  | —   | 摄像头名称             |
-| `brightness`  | int    |    | —   | 亮度（仅 `set`）       |
-| `contrast`    | int    |    | —   | 对比度（仅 `set`）      |
-| `saturation`  | int    |    | —   | 饱和度（仅 `set`）      |
-| `sharpness`   | int    |    | —   | 锐度（仅 `set`）       |
-| `flip`        | int    |    | —   | 图像翻转（仅 `set`），见下表 |
+| Parameter     | Type   | Required | Default | Description                |
+|--------------|--------|:--:|---------|-----------------------------|
+| `action`      | string | ✅  | —       | `"get"` / `"set"`          |
+| `camera_name` | string | ✅  | —       | Camera name                 |
+| `brightness`  | int    |    | —       | Brightness (`set` only)     |
+| `contrast`    | int    |    | —       | Contrast (`set` only)       |
+| `saturation`  | int    |    | —       | Saturation (`set` only)     |
+| `sharpness`   | int    |    | —       | Sharpness (`set` only)      |
+| `flip`        | int    |    | —       | Image flip (`set` only), see the table below |
 
-**flip 取值**:
+**flip values**:
 
-| 值 | 说明   |
-|:-:|------|
-| 0 | 正常   |
-| 1 | 对角翻转 |
-| 2 | 水平翻转 |
-| 3 | 垂直翻转 |
+| Value | Description        |
+|:-:|--------------------|
+| 0 | Normal             |
+| 1 | Diagonal flip      |
+| 2 | Horizontal flip    |
+| 3 | Vertical flip      |
 
-**返回值**:
+**Returns**:
 
 - **`get`** → `ImageQueryResult`:
 
-| 字段             | 类型     | 说明                                                                    |
-|----------------|--------|-----------------------------------------------------------------------|
-| `ok`           | bool   | 是否成功                                                                  |
-| `camera`       | string | 摄像头名称                                                                 |
-| `channel`      | string | `"sk"`                                                                |
-| `capabilities` | array  | 能力列表（含 `name`/`label`/`min`/`max`/`current`/`current_text`/`options`） |
-| `current`      | object | 当前值（如 `{"brightness": 128, "contrast": 50, ...}`）                     |
-| `error_code`   | string | 错误码                                                                   |
-| `message`      | string | 说明信息                                                                  |
+| Field            | Type   | Description                                                                      |
+|-----------------|--------|----------------------------------------------------------------------------------|
+| `ok`            | bool   | Whether the operation succeeded                                                  |
+| `camera`        | string | Camera name                                                                      |
+| `channel`       | string | `"sk"`                                                                           |
+| `capabilities`  | array  | Capability list (with `name`/`label`/`min`/`max`/`current`/`current_text`/`options`) |
+| `current`       | object | Current values (e.g. `{"brightness": 128, "contrast": 50, ...}`)                  |
+| `error_code`    | string | Error code                                                                       |
+| `message`       | string | Description message                                                              |
 
 - **`set`** → `ImageSetResult`:
 
-| 字段           | 类型     | 说明            |
-|--------------|--------|---------------|
-| `ok`         | bool   | 是否成功          |
-| `camera`     | string | 摄像头名称         |
-| `channel`    | string | `"sk"`        |
-| `updated`    | object | 本次生效的字段（回读确认） |
-| `current`    | object | 设置后回读的全量当前值   |
-| `error_code` | string | 错误码           |
-| `message`    | string | 说明信息          |
+| Field          | Type   | Description                              |
+|---------------|--------|------------------------------------------|
+| `ok`          | bool   | Whether the operation succeeded          |
+| `camera`      | string | Camera name                              |
+| `channel`     | string | `"sk"`                                   |
+| `updated`     | object | Fields applied this time (read-back confirmed) |
+| `current`     | object | Full current values read back after setting |
+| `error_code`  | string | Error code                               |
+| `message`     | string | Description message                      |
 
 ---
 
-## 8. 侦测追踪
+## 8. Detection & Tracking
 
-> **J 类不支持**：智能侦测/追踪为创维私有协议能力，JCP 类摄像头（`protocol_type="J"`）调用 `query_tracking_capabilities` / `set_tracking` 立即返回 `error_code="UNSUPPORTED_PROTOCOL"`（非超时）。
+> **Not supported by J-class**: Smart detection/tracking is a Skyworth private protocol capability; JCP-class cameras (`protocol_type="J"`) immediately return `error_code="UNSUPPORTED_PROTOCOL"` when calling `query_tracking_capabilities` / `set_tracking` (not a timeout).
 
 ### `query_tracking_capabilities`
 
-查询摄像头的智能侦测与追踪能力，返回各侦测类型的可用参数和当前设置值。只读查询。
+Query the camera's smart detection and tracking capabilities, returning available parameters and current settings for each detection type. Read-only query.
 
-**参数**:
+**Parameters**:
 
-| 参数            | 类型     | 必填 | 默认值     | 说明       |
-|---------------|--------|:--:|---------|----------|
-| `camera_name` | string | ✅  | —       | 摄像头名称    |
-| `detect_type` | string |    | `"all"` | 侦测类型，见下表 |
+| Parameter     | Type   | Required | Default  | Description                     |
+|--------------|--------|:--:|----------|----------------------------------|
+| `camera_name` | string | ✅  | —        | Camera name                      |
+| `detect_type` | string |    | `"all"`  | Detection type, see the list below |
 
-**detect_type 可选值**: `human`(人形) / `vehicle`(车辆) / `area`(区域) / `motion`(移动) / `line`(越界) / `all`(全部)
+**detect_type values**: `human` / `vehicle` / `area` / `motion` / `line` / `all`
 
-**返回值**: `TrackingQueryResult`
+**Returns**: `TrackingQueryResult`
 
-| 字段                     | 类型     | 说明                                                |
-|------------------------|--------|---------------------------------------------------|
-| `ok`                   | bool   | 是否成功                                              |
-| `camera`               | string | 摄像头名称                                             |
-| `channel`              | string | `"sk"`                                            |
-| `human_capabilities`   | array  | 人形侦测能力（含 `name`/`label`/`current`/`current_text`） |
-| `human_current`        | object | 人形侦测当前值                                           |
-| `vehicle_capabilities` | array  | 车辆侦测能力                                            |
-| `vehicle_current`      | object | 车辆侦测当前值                                           |
-| `area_capabilities`    | array  | 区域侦测能力                                            |
-| `area_current`         | object | 区域侦测当前值                                           |
-| `motion_capabilities`  | array  | 移动侦测能力                                            |
-| `motion_current`       | object | 移动侦测当前值                                           |
-| `line_capabilities`    | array  | 越界侦测能力                                            |
-| `line_current`         | object | 越界侦测当前值                                           |
-| `error_code`           | string | 错误码                                               |
-| `message`              | string | 查询结果摘要                                            |
+| Field                    | Type   | Description                                              |
+|-------------------------|--------|----------------------------------------------------------|
+| `ok`                    | bool   | Whether the operation succeeded                          |
+| `camera`                | string | Camera name                                              |
+| `channel`               | string | `"sk"`                                                   |
+| `human_capabilities`    | array  | Human detection capabilities (with `name`/`label`/`current`/`current_text`) |
+| `human_current`         | object | Current human detection values                           |
+| `vehicle_capabilities`  | array  | Vehicle detection capabilities                           |
+| `vehicle_current`       | object | Current vehicle detection values                         |
+| `area_capabilities`     | array  | Area detection capabilities                              |
+| `area_current`          | object | Current area detection values                            |
+| `motion_capabilities`   | array  | Motion detection capabilities                            |
+| `motion_current`        | object | Current motion detection values                          |
+| `line_capabilities`     | array  | Line-crossing detection capabilities                     |
+| `line_current`          | object | Current line-crossing detection values                   |
+| `error_code`            | string | Error code                                               |
+| `message`               | string | Query result summary                                    |
 
-**可设置字段**（各侦测类型通用）: `enable`(使能开关) / `tracking`(追踪) / `level`(灵敏度等级 0-3)
+**Settable fields** (common to all detection types): `enable` (on/off switch) / `tracking` (tracking) / `level` (sensitivity level 0-3)
 
 ---
 
 ### `set_tracking`
 
-开启或关闭摄像头的智能侦测与追踪功能。修改硬件设置，需用户确认。仅传需修改的参数，未传的参数保持不变。
+Turn the camera's smart detection and tracking features on or off. Modifies hardware settings; requires user confirmation. Pass only the parameters to change; omitted parameters remain unchanged.
 
-**参数**:
+**Parameters**:
 
-| 参数                  | 类型     | 必填 | 默认值 | 说明                                                         |
-|---------------------|--------|:--:|-----|------------------------------------------------------------|
-| `camera_name`       | string | ✅  | —   | 摄像头名称                                                      |
-| `detect_type`       | string | ✅  | —   | `"human"` / `"vehicle"` / `"area"` / `"motion"` / `"line"` |
-| `enable`            | bool   |    | —   | 是否开启该侦测功能                                                  |
-| `tracking`          | bool   |    | —   | 是否开启追踪（仅 `human`/`vehicle`/`motion` 有效）                    |
-| `sensitivity_level` | int    |    | —   | 灵敏度等级 `0`关闭 / `1`低 / `2`中 / `3`高                           |
+| Parameter          | Type   | Required | Default | Description                                                        |
+|-------------------|--------|:--:|---------|---------------------------------------------------------------------|
+| `camera_name`      | string | ✅  | —       | Camera name                                                         |
+| `detect_type`      | string | ✅  | —       | `"human"` / `"vehicle"` / `"area"` / `"motion"` / `"line"`       |
+| `enable`           | bool   |    | —       | Whether to enable this detection feature                           |
+| `tracking`         | bool   |    | —       | Whether to enable tracking (valid for `human`/`vehicle`/`motion` only) |
+| `sensitivity_level` | int    |    | —       | Sensitivity level: `0` off / `1` low / `2` medium / `3` high        |
 
-**返回值**: `TrackingSetResult`
+**Returns**: `TrackingSetResult`
 
-| 字段            | 类型     | 说明            |
-|---------------|--------|---------------|
-| `ok`          | bool   | 是否成功          |
-| `camera`      | string | 摄像头名称         |
-| `channel`     | string | `"sk"`        |
-| `detect_type` | string | 操作的侦测类型       |
-| `updated`     | object | 本次生效的字段（回读确认） |
-| `current`     | object | 设置后回读的当前值     |
-| `message`     | string | 说明信息          |
-| `error_code`  | string | 错误码           |
+| Field          | Type   | Description                              |
+|---------------|--------|------------------------------------------|
+| `ok`          | bool   | Whether the operation succeeded          |
+| `camera`      | string | Camera name                              |
+| `channel`     | string | `"sk"`                                   |
+| `detect_type` | string | Detection type operated on               |
+| `updated`     | object | Fields applied this time (read-back confirmed) |
+| `current`     | object | Current values read back after setting   |
+| `message`     | string | Description message                      |
+| `error_code`  | string | Error code                               |

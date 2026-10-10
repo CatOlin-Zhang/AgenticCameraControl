@@ -12,9 +12,9 @@ The backend is selected by the camera's `protocol_type`: **SK-class** (`S`) uses
 
 ---
 
-### `control_ptz(camera_name, direction: PTZDirection, speed: float = 0.5, duration_seconds: float = 1.0) -> PTZMoveResult`
+### `control_ptz(camera_name, direction: PTZDirection, speed: float = 0.5, duration_seconds: Optional[float] = None, degrees: Optional[float] = None) -> PTZMoveResult`
 
-Directional movement of the PTZ head. Auto-stops after `duration_seconds`.
+Directional movement of the PTZ head. Auto-stops after `duration_seconds` (defaults to 1.0 s when neither `duration_seconds` nor `degrees` is given). `duration_seconds` and `degrees` are mutually exclusive.
 
 **Physical Limit Guard (built-in):** the tool intercepts commands that exceed the PTZ's physical travel range — the agent does NOT need to pre-validate durations itself:
 
@@ -28,7 +28,7 @@ Directional movement of the PTZ head. Auto-stops after `duration_seconds`.
 |--------|--------|
 | **Safety** | Explicit Prompt + Physical Limit Guard |
 | **Returns** | `PTZMoveResult` (see field table below) |
-| **Parameters** | `direction`: `UP`/`DOWN`/`LEFT`/`RIGHT`/`UPLEFT`/`UPRIGHT`/`DOWNLEFT`/`DOWNRIGHT`. Chinese aliases supported (上/下/左/右/左上/右上/左下/右下). `speed`: 0.1–1.0. `duration_seconds`: 0.1–10.0. |
+| **Parameters** | `direction`: `up`/`down`/`left`/`right`/`upleft`/`upright`/`downleft`/`downright`/`zoom_in`/`zoom_out`. Chinese aliases supported (上/下/左/右/左上/右上/左下/右下). `speed`: 0.1–1.0. `duration_seconds`: 0.1–10.0. `degrees`: rotation angle (SK-class only, converted at 1 s ≈ 34°; J/O-class returns an explicit unsupported notice) |
 
 **PTZMoveResult return fields:**
 
@@ -45,6 +45,8 @@ Directional movement of the PTZ head. Auto-stops after `duration_seconds`.
 | `limit_reached` | bool | Whether a physical travel limit was detected |
 | `degraded` | bool | Whether the command was intercepted or truncated |
 | `degrade_reason` | string | Human-readable explanation of the degradation (for Agent to relay to user) |
+| `degrees` | float | Requested angle in degrees mode (0 when unused) |
+| `method` | string | Execution method: `"sk_time"` / `"sk_degrees"` / `"sk_zoom"` / `"onvif_time"` / `"onvif_zoom"` |
 
 ---
 
@@ -69,6 +71,7 @@ Get current PTZ position, range, and movement state.
 | `zoom_range` | float | Maximum zoom range |
 | `is_moving` | bool | Whether the PTZ is currently in motion |
 | `protocol` | string | Protocol used: `"onvif"` or `"sky_private"` |
+| `error_message` | string | Query failure reason (empty on success) |
 
 ---
 
@@ -90,6 +93,8 @@ Execute PTZ physical calibration or return to stored home position.
 |-------|------|-------------|
 | `success` | bool | Whether calibration completed |
 | `protocol` | string | Protocol used: `"sky_private"` (SK-class) or `"onvif"` (J/O-class; calibration always unsupported there) |
+| `action` | string | Action executed: `"set_home"` / `"go_home"` |
+| `home_position` | string | Home position coordinates (e.g. `"x=0,y=0"`) |
 | `error_message` | string | Failure reason (empty on success) |
 
 ---

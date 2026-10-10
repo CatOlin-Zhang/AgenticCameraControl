@@ -28,6 +28,11 @@ try:
 except ImportError:
     import camera_proto
 
+try:
+    from ._argnorm import coerce_str
+except ImportError:
+    from _argnorm import coerce_str
+
 from .discovery import (
     SkDiscoveredDevice,
     SkChannelInfo,
@@ -361,6 +366,13 @@ def register_camera(
     protocol_type: str = "",
     onvif_sn: str = "",
 ) -> RegisterResult:
+    name = coerce_str(name)
+    username = coerce_str(username)
+    password = coerce_str(password)
+    sn_code = coerce_str(sn_code)
+    pkdk = coerce_str(pkdk)
+    onvif_sn = coerce_str(onvif_sn)
+
     import os
     import yaml
 
@@ -1129,6 +1141,10 @@ def connect_device(
     device_class: str = "",
     protocol_type: str = "",
 ) -> ConnectResult:
+    camera_name = coerce_str(camera_name)
+    username = coerce_str(username)
+    password = coerce_str(password)
+    sn_code = coerce_str(sn_code)
 
     cached = _find_cached_camera(camera_name)
 
@@ -1875,6 +1891,7 @@ def request_cloud_auth(sn: str) -> CloudAuthRequestResult:
 def poll_auth_status(
     camera_name: str,
 ) -> AuthStatusResult:
+    camera_name = coerce_str(camera_name)
 
     if _yaml_lib is None:
         return AuthStatusResult(status=AuthStatus.ERROR, camera_name=camera_name, message="pyyaml 未安装")
@@ -1966,6 +1983,8 @@ def poll_auth_status(
 def disconnect_device(
     camera_name: str,
 ) -> DisconnectResult:
+    camera_name = coerce_str(camera_name)
+
     if camera_name in _connected_devices:
         conn_info = _connected_devices.pop(camera_name)
 

@@ -14,6 +14,11 @@ try:
 except ImportError:
     import camera_proto
 
+try:
+    from ._argnorm import coerce_str
+except ImportError:
+    from _argnorm import coerce_str
+
 _SKILL_ROOT = Path(__file__).resolve().parents[2]
 EVENTS_DIR = _SKILL_ROOT / "events"
 EVENT_STORE_PATH = EVENTS_DIR / "camera_events.txt"
@@ -760,6 +765,8 @@ def start_event_monitor(
     debounce_seconds: float = DEFAULT_DEBOUNCE_SECONDS,
     _resuming: bool = False,
 ) -> EventMonitorResult:
+    camera_name = coerce_str(camera_name)
+
     with _monitors_lock:
         existing = _monitors.get(camera_name)
         if existing and existing.running:
@@ -827,6 +834,8 @@ def start_event_monitor(
 def stop_event_monitor(
     camera_name: str,
 ) -> EventMonitorResult:
+    camera_name = coerce_str(camera_name)
+
     _clear_monitor_intent(camera_name)
 
     with _monitors_lock:
@@ -845,6 +854,7 @@ def get_pending_events(
     camera_name: Optional[str] = None,
     limit: int = 100,
 ) -> PendingEventsResult:
+    camera_name = coerce_str(camera_name)
 
     try:
         resume_persisted_monitors()
@@ -867,6 +877,7 @@ def wait_for_events(
     camera_name: Optional[str] = None,
     timeout_seconds: float = 60.0,
 ) -> PendingEventsResult:
+    camera_name = coerce_str(camera_name)
 
     try:
         resume_persisted_monitors()
@@ -907,6 +918,8 @@ def manage_camera_events(
     limit: int = 100,
     timeout_seconds: float = 60.0,
 ):
+    camera_name = coerce_str(camera_name)
+
     if camera_name:
         try:
             from .device_mgmt import _is_non_sk_camera, _unsupported_protocol_message

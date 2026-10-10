@@ -29,6 +29,11 @@ except ImportError:
         _merge_capabilities,
     )
 
+try:
+    from ._argnorm import coerce_str
+except ImportError:
+    from _argnorm import coerce_str
+
 class ImageAction(str, Enum):
     QUERY = "get"
     SET = "set"
@@ -224,6 +229,9 @@ def manage_image_settings(
     flip: Optional[int] = None,
     answers: Optional[Dict[str, Any]] = None,
 ):
+    camera_name = coerce_str(camera_name)
+    name = coerce_str(name)
+
     resolved_name = camera_name or name
 
     if _is_non_sk_camera(resolved_name):

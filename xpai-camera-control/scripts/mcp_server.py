@@ -40,13 +40,13 @@ TOOLS = [
                 "name": {"type": "string", "description": "摄像头唯一名称"},
                 "ip": {"type": "string", "description": "IP 地址"},
                 "port": {"type": "integer", "description": "ONVIF 端口（只传验证过的真实端口；未知请省略，由 connect_device 探测后自动回写）"},
-                "username": {"type": ["string", "integer", "number"], "description": "登录用户名（数字会自动转为字符串）", "default": "admin"},
-                "password": {"type": ["string", "integer", "number"], "description": "登录密码（纯数字密码请务必以字符串传入；数字也会自动转为字符串）"},
+                "username": {"type": "string", "description": "登录用户名", "default": "admin"},
+                "password": {"type": "string", "description": "登录密码"},
                 "rtsp_port": {"type": "integer", "description": "RTSP 端口", "default": 554},
                 "rtsp_path": {"type": "string", "description": "主流路径", "default": "/stream1"},
                 "device_class": {"type": "string", "description": "设备类型: password_required / direct_connect"},
                 "connection_type": {"type": "string", "description": "连接类型: onvif / usb", "default": "onvif"},
-                "sn_code": {"type": ["string", "integer", "number"], "description": "序列号（数字会自动转为字符串）"},
+                "sn_code": {"type": "string", "description": "序列号"},
                 "pkdk": {"type": "string", "description": "设备公钥标识"},
                 "rtsp_sub_path": {"type": "string", "description": "子流路径", "default": "/stream2"},
             },
@@ -55,13 +55,13 @@ TOOLS = [
     ),
     Tool(
         name="search_devices",
-        description="扫描局域网发现可用摄像头（WS-Discovery / XPAI私有协议）。返回新发现的设备列表，与 get_registered_cameras（读取本地已保存配置）不同。搜索后会把发现的设备（名称/IP/SN/设备类型等基础信息，不含密码）写入 config.yaml，并移除已注册但本轮未发现且探测不通的失联设备；长时间未使用（IP 可能因 DHCP 变化）或连接失败时，先用本工具刷新注册表再连接。发现多个设备时必须将全部设备逐一展示给用户，不得省略或仅展示部分结果。",
+        description="扫描局域网发现可用摄像头。发现多个设备时必须全部展示给用户，不得省略。",
         inputSchema={
             "type": "object",
             "properties": {
                 "timeout": {
                     "type": "number",
-                    "description": "超时秒数（总时长上限；发现安静后自动提前结束）",
+                    "description": "超时秒数",
                     "default": 15.0,
                 },
             },
@@ -69,18 +69,18 @@ TOOLS = [
     ),
     Tool(
         name="connect_device",
-        description="连接摄像头。自动加载缓存凭据（TCP/ONVIF/RTSP 三通道验证，密码设备须 RTSP 验证通过）；缓存失效时先尝试云端重新授权，仍失败再请用户输入。直连设备自动获取 SN 并验证 SK HTTP 通信。返回 status 指示下一步：success=已连接；needs_password=请用户提供密码后重新调用；auth_rejected=云端拒绝；cloud_pwd_failed=云端密码验证不通过，请用户输入正确密码。若长时间未使用或此前连接/取流失败，建议先调用 search_devices 刷新注册表（设备 IP 可能已变化）再连接。",
+        description="连接摄像头。自动处理凭据缓存、云端授权和密码请求。返回 status 指示结果：success / needs_password / auth_rejected / cloud_pwd_failed。",
         inputSchema={
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "摄像头名称"},
-                "password": {"type": ["string", "integer", "number"], "description": "用户密码（可选；纯数字密码请务必以字符串传入；数字也会自动转为字符串）"},
+                "password": {"type": "string", "description": "用户密码（可选）"},
                 "ip": {"type": "string", "description": "设备 IP"},
                 "port": {"type": "integer", "description": "ONVIF 端口"},
                 "rtsp_port": {"type": "integer", "description": "RTSP 端口"},
                 "rtsp_path": {"type": "string", "description": "RTSP 路径"},
-                "username": {"type": ["string", "integer", "number"], "description": "登录用户名（数字会自动转为字符串）"},
-                "sn_code": {"type": ["string", "integer", "number"], "description": "设备 SN（发现阶段获取，云端授权必需；数字会自动转为字符串）"},
+                "username": {"type": "string", "description": "登录用户名"},
+                "sn_code": {"type": "string", "description": "设备 SN（发现阶段获取，云端授权必需）"},
                 "device_class": {"type": "string", "description": "设备类型: password_required / direct_connect（发现阶段确定）"},
                 "protocol_type": {"type": "string", "description": "设备协议类型: S=创维私有 / J=JCP / O=第三方 ONVIF 降级接入（通常留空，由连接阶段权威探测确定；省略时工具自动探测）"},
             },
@@ -478,22 +478,7 @@ def _resolve_tool_budget(name: str, args: Dict[str, Any]) -> float:
         return base + 30.0
     return _TOOL_TIMEOUTS.get(name, _DEFAULT_TOOL_TIMEOUT)
 
-_STR_NORMALIZE_KEYS = frozenset({"username", "password", "sn_code", "pkdk"})
-
-def _normalize_str_args(args: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(args)
-    for key in _STR_NORMALIZE_KEYS:
-        value = out.get(key)
-        if value is None or isinstance(value, bool):
-            continue
-        if isinstance(value, int):
-            out[key] = str(value)
-        elif isinstance(value, float) and value.is_integer():
-            out[key] = str(int(value))
-    return out
-
 def _call_tool(name: str, args: Dict[str, Any]) -> Any:
-    args = _normalize_str_args(args)
     import scripts.toolkit as tk
     from scripts.toolkit.stream import RecordingAction, StorageAction
     from scripts.toolkit.ptz import PTZDirection
@@ -735,8 +720,20 @@ def _get_process_cmdline(pid: int) -> str:
     except Exception:
         return ""
 
-def _is_our_server(cmdline: str) -> bool:
-    return "mcp_server.py" in cmdline and _skill_root in cmdline
+def _is_our_server(cmdline: str, pid: Optional[int] = None) -> bool:
+    norm = os.path.normcase(cmdline).replace("\\", "/")
+    if "mcp_server.py" not in norm:
+        return False
+    if os.path.normcase(_skill_root).replace("\\", "/") in norm:
+        return True
+    # No absolute path in cmdline (e.g. relative-path registration): fall back to the lease pid.
+    if pid is None:
+        return False
+    try:
+        with open(_lease_file, "r", encoding="utf-8") as f:
+            return json.load(f).get("pid") == pid
+    except Exception:
+        return False
 
 def _is_lease_expired() -> bool:
     import time
@@ -773,6 +770,7 @@ def _acquire_instance_lock() -> Optional[int]:
     except OSError:
         s.close()
         return _try_recover_lock(port)
+    s.listen(1)  # visible in netstat/ss/lsof, required by _find_pid_on_port
     _instance_lock_socket = s
     return port
 
@@ -785,7 +783,7 @@ def _try_recover_lock(port: int) -> Optional[int]:
         return None
 
     cmdline = _get_process_cmdline(pid)
-    if not _is_our_server(cmdline):
+    if not _is_our_server(cmdline, pid):
         return None
 
     if not _is_lease_expired():
@@ -802,6 +800,7 @@ def _try_recover_lock(port: int) -> Optional[int]:
     except OSError:
         s.close()
         return None
+    s.listen(1)  # visible in netstat/ss/lsof, required by _find_pid_on_port
 
     global _instance_lock_socket
     _instance_lock_socket = s
