@@ -89,11 +89,13 @@ After a successful connection:
 - `get_audio_video_stream()` — returns the RTSP `stream_url` and validates availability (codec/resolution/fps metadata)
 - `toggle_recording()` — starts/stops local MP4 recording from the RTSP stream via ffmpeg remux (`-c:v copy`)
 - `manage_storage_status()` — disk usage and storage path/format/policy configuration
-- `start_webrtc_stream()` / `stop_webrtc_stream()` — RTSP→WebRTC browser live preview (returns HTTP access URL)
+- `start_webrtc_stream()` / `stop_webrtc_stream()` — RTSP→WebRTC browser live preview (returns HTTP access URL). If the browser preview stutters or goes black (e.g. Edge has no H265 WebRTC), retry with `start_webrtc_stream(video_codec="h264")` — switches the device encoder (device-wide, briefly interrupts its RTSP sessions) then restarts the preview
 
 Screenshots are saved to `snapshots/` by default; recordings go to `video/`.
 
 **Result delivery (when the user wants to "see" a camera):** after the capture + stream probe, the Agent **MUST** deliver both: (1) show the screenshot image (markdown `![screenshot](file_path)`), (2) provide the `stream_url` so the user can open it in a media player (VLC, ffplay, PotPlayer, etc.) — or (3) call `start_webrtc_stream()` for a browser-based live preview if the user prefers a visual player over a raw RTSP URL.
+
+**Obtaining go2rtc (only when `start_webrtc_stream()` reports go2rtc is not detected):** go2rtc is a third-party single-binary RTSP→WebRTC streaming tool (~15MB) and is not bundled with this skill. When missing, obtain it as follows: search for the "go2rtc" project's GitHub Releases page (project name `go2rtc`, author AlexxIT) and download the release binary matching the current platform (on Windows it is a zip archive — extract `go2rtc.exe` from it); place the binary in the skill root directory or add it to `PATH`; then retry `start_webrtc_stream()`.
 
 ### Phase 4 — PTZ Control
 
@@ -150,7 +152,7 @@ This table is the **single runtime source of truth** for error handling. On any 
 | `error_message` pattern / `status` | Agent Action |
 |------------------------------------|--------------|
 | `not_connected` / `device not found` | Call `connect_device()` first, then retry the failed operation. If it still fails — or this is the first operation after a long idle period — call `search_devices()` to refresh stale IPs in the registry, then retry |
-| `needs_password` (status) | Cached credentials expired (cloud re-auth also failed), cloud service unreachable, or the device has no SN so cloud auth cannot start (incl. O-class third-party ONVIF) — ask user for password → `connect_device(camera_name, password=user_input)` |
+| `needs_password` (status) | Cached credentials expired (cloud re-auth also failed), cloud service unreachable, the device has no SN so cloud auth cannot start (incl. O-class third-party ONVIF), or the device has no cloud station record (submitted to the default station — the APP may not receive it) — ask user for password → `connect_device(camera_name, password=user_input)` |
 | `no_sn` (status) | Connection refused: an S/J-asserted XPAI device lost its SN (retry after `search_devices()`), or a WS-Discovery device failed ONVIF admission (RTSP-only, no ONVIF control plane) — report to user; check ONVIF support/port or supply ONVIF credentials. **Forbidden workaround:** manual `register_camera` / hand-editing config.yaml to bypass the gate |
 | `error_code="UNSUPPORTED_PROTOCOL"` (incl. `not support illumination`) | J/O-class camera asked for an SK-private-protocol-only capability (illumination / image settings / tracking / events) — inform user of the device-class limitation; not a malfunction or timeout |
 | `auth_rejected` / `cloud_pwd_failed` / `cached credentials cleared` | Auth-failure group: user denied cloud authorization → inform user, cannot connect; cloud password mismatch → device may have changed password, ask user for the correct one; cached credentials cleared (tool already attempted cloud re-auth) → prompt user for password → `connect_device(camera_name, password=user_input)` |
@@ -179,5 +181,5 @@ Load a reference **only when its trigger fires** — do not pre-read.
 
 ## Configuration
 
-Camera configurations are saved in `config.yaml` (skill root). Credentials auto-persist after first successful connection. When config.yaml full schema or example configs are needed → [references/CONFIG.md](references/CONFIG.md).
+Camera configurations are saved in `config.yaml` (skill root). Credentials auto-persist after first successful connection; sensitive fields (`password` / `sn_code` / `sn` / `pkdk`) are stored obfuscated (never plaintext on disk) and restored in memory only at the point of use. When config.yaml full schema or example configs are needed → [references/CONFIG.md](references/CONFIG.md).
 

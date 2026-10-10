@@ -45,7 +45,7 @@ TOOLS = [
                 "rtsp_port": {"type": "integer", "description": "RTSP 端口", "default": 554},
                 "rtsp_path": {"type": "string", "description": "主流路径", "default": "/stream1"},
                 "device_class": {"type": "string", "description": "设备类型: password_required / direct_connect"},
-                "connection_type": {"type": "string", "description": "连接类型: onvif / usb", "default": "onvif"},
+                "connection_type": {"type": "string", "description": "连接类型: onvif", "default": "onvif"},
                 "sn_code": {"type": "string", "description": "序列号"},
                 "pkdk": {"type": "string", "description": "设备公钥标识"},
                 "rtsp_sub_path": {"type": "string", "description": "子流路径", "default": "/stream2"},
@@ -292,7 +292,7 @@ TOOLS = [
 
     Tool(
         name="start_webrtc_stream",
-        description="启动 WebRTC 实时预览，返回浏览器访问地址。",
+        description="启动 WebRTC 实时预览，返回浏览器访问地址。可选 video_codec 把设备编码切为 H264（Edge 等浏览器预览卡顿时使用）。",
         inputSchema={
             "type": "object",
             "properties": {
@@ -301,6 +301,11 @@ TOOLS = [
                     "type": "boolean",
                     "description": "使用子码流（低画质）",
                     "default": False,
+                },
+                "video_codec": {
+                    "type": "string",
+                    "enum": ["h264", "h265"],
+                    "description": "可选：先切换设备视频编码再启动预览。Edge 不支持 H265 WebRTC，预览卡顿/黑屏时可切 h264。属设备级全局设置（主/子码流同改），会短暂中断该设备全部 RTSP 会话；省略则不改设备编码。",
                 },
                 "port": {
                     "type": "integer",

@@ -31,7 +31,7 @@ Read all camera entries from `config.yaml` and return their configurations.
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | string | Camera unique identifier |
-| `connection_type` | string | `"onvif"` or `"usb"` |
+| `connection_type` | string | `"onvif"` (only supported value) |
 | `ip` | string | Camera IP address |
 | `port` | int | ONVIF service port (0 = not yet verified) |
 | `username` | string | Login username (default: `"admin"`) |
@@ -42,12 +42,9 @@ Read all camera entries from `config.yaml` and return their configurations.
 | `device_class` | string | `"password_required"` or `"direct_connect"` |
 | `sn_code` | string | Device serial number |
 | `pkdk` | string | Device identity token |
-| `device_index` | int | OpenCV device index (USB only) |
-| `device_model` | string | USB device model name |
-| `product_version` | string | USB product version |
 | `illumination_modes` | list[string] | Supported illumination modes cached from the SK private-protocol fill-light capability probe (S-class devices only); empty = unsupported or not yet probed. Written by `connect_device()` after a successful connection. |
 | `protocol_type` | string | Protocol class for registered cameras: `"S"` (Skyworth private), `"J"` (JCP — media + PTZ over ONVIF), or `"O"` (third-party ONVIF-only, degraded). Written by `connect_device()` via the authoritative SK-first unicast probe; `"O"` is asserted only when SK/JCP probes are empty and the ONVIF admission probe passes (`"W"` and empty both mean no class asserted yet, legacy entries are treated as SK). |
-| `onvif_sn` | string | ONVIF `GetDeviceInformation` SerialNumber (O-class identity/matching only). **Never** used as `sn_code` and never fed to cloud auth or SK HTTP. Empty for S/J/USB entries. |
+| `onvif_sn` | string | ONVIF `GetDeviceInformation` SerialNumber (O-class identity/matching only). **Never** used as `sn_code` and never fed to cloud auth or SK HTTP. Empty for S/J entries. |
 
 ---
 
@@ -80,7 +77,7 @@ Search for available cameras on the local network. The tool automatically select
 |--------|--------|
 | **Safety** | None (writes `config.yaml`: registers discovered devices, removes unreachable stale entries) |
 | **Returns** | `SearchResult` (see field tables below) |
-| **Parameters** | `timeout`: discovery timeout in seconds (default 15.0). The tool internally tries all available protocols (XPAI private, JCP, ONVIF WS-Discovery; USB scanning is disabled) and merges results. |
+| **Parameters** | `timeout`: discovery timeout in seconds (default 15.0). The tool internally tries all available protocols (XPAI private, JCP, ONVIF WS-Discovery) and merges results. |
 | **Implementation** | Internally dispatches to the corresponding discovery protocol; results are normalized into `DiscoveredDevice` objects |
 
 **SearchResult return fields:**
@@ -103,7 +100,7 @@ Search for available cameras on the local network. The tool automatically select
 | `model` | string | Device model |
 | `manufacturer` | string | Manufacturer name |
 | `supported_media` | list[string] | Supported media settings |
-| `discovery_method` | string | How the device was found: `"sky_discovery"` / `"jcp_discovery"` / `"ws_discovery"` (USB scanning is disabled; USB webcams are configured manually in config.yaml) |
+| `discovery_method` | string | How the device was found: `"sky_discovery"` / `"jcp_discovery"` / `"ws_discovery"` |
 | `rtsp_access` | string | Reachability probe result for the main stream: `"open"` (no auth) / `"auth_required"` / `"unreachable"`. Devices reported `"unreachable"` are not written to `config.yaml`. |
 | `protocol_type` | string | Protocol class: `"S"` (device answered SK private discovery — conclusive) or empty (found via JCP/WS-Discovery; no class asserted, since both protocols are shared with S-class firmware). `connect_device` resolves and persists the final class (`"S"`/`"J"`/`"O"`) via the authoritative SK-first unicast probe; `"O"` (third-party ONVIF-only) is asserted at connect time when SK/JCP probes are empty and ONVIF admission passes. |
 | `sky_subtype` | string | XPAI device subtype (1=bullet/2=dome/3=halfdome/5=PTZ/6=bullet+dome); empty for non-XPAI |
@@ -164,7 +161,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
    - `200 OK` (direct-connect) → probe SN via XPAI private protocol → verify SK HTTP communication → register to config.yaml with SN → `auth_method="direct"`
    - `200 OK` but SN probes empty → ONVIF admission probe: pass → register as `protocol_type="O"` with `onvif_sn` → `auth_method="direct"`; fail → `status="no_sn"` rejection (RTSP-only device)
    - `401 Unauthorized` → SN probes empty and no S/J assertion → `status="needs_password"` (O-class has no cloud channel); otherwise internally initiate cloud authorization (same as step 3)
-5. Cloud authorization outcomes: authorized → auto-connect with cloud password; rejected → `status="auth_rejected"`; timeout/error → `status="needs_password"`
+5. Cloud authorization outcomes: authorized → auto-connect with cloud password; rejected → `status="auth_rejected"`; timeout/error → `status="needs_password"`. A device with no cloud station record is submitted to the default station (same host as the station-lookup interface); transport, TLS, HTTP and signature failures are reported directly — no fallback
 
 **Password verification standard:** A password is considered valid only when **both** TCP/ONVIF authentication **and** RTSP stream access succeed. If TCP/ONVIF passes but RTSP returns 401, the password is rejected (possible credential isolation or password mismatch on the device).
 

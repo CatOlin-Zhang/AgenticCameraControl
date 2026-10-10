@@ -44,7 +44,7 @@ search_devices()
                     sky_mac, sky_hw_version, sky_sw_version, ...
 ```
 
-- `discovery_method` tells you which protocol found each device (`"sky_discovery"` / `"jcp_discovery"` / `"ws_discovery"`; USB scanning is disabled — USB webcams are configured manually in config.yaml)
+- `discovery_method` tells you which protocol found each device (`"sky_discovery"` / `"jcp_discovery"` / `"ws_discovery"`)
 - `sky_*` fields are populated for Skyworth devices, empty for others
 - `device_class` is auto-classified via RTSP probe: `"password_required"` or `"direct_connect"`
 - **Search writes config.yaml**: discovered reachable devices are registered (basic info only — no password), and registered entries that are neither discovered nor reachable are removed. Re-running `search_devices()` is the supported way to refresh IP changes, newly added cameras, and departed cameras.
@@ -85,7 +85,7 @@ Step 1 — Connect without password:
   → tool internally triggers cloud authorization
   → waiting for user to confirm on APP (blocks until timeout)
   → success=true: cloud authorized, auto-connected, credentials persisted
-  → status="needs_password": cloud service unreachable, inform user
+  → status="needs_password": cloud service unreachable, or the device has no station record (submitted to the default station, APP may not receive it) → ask user for password
   → status="auth_rejected": user denied authorization, cannot connect
   → status="cloud_pwd_failed": cloud password mismatch, ask user for correct password
 

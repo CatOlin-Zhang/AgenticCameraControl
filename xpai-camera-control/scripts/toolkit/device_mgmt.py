@@ -45,7 +45,6 @@ class DiscoveryMethod(str, Enum):
     WS_DISCOVERY = "ws_discovery"
     SKY_DISCOVERY = "sky_discovery"
     JCP_DISCOVERY = "jcp_discovery"
-    USB = "usb"
 
 class DeviceClass(str, Enum):
     PASSWORD_REQUIRED = "password_required"
@@ -127,10 +126,6 @@ class CameraConfig:
     protocol_type: str = ""
     onvif_sn: str = ""
 
-    device_index: int = 0
-    device_model: str = ""
-    product_version: str = ""
-
     illumination_modes: List[str] = field(default_factory=list)
 
 @dataclass
@@ -162,9 +157,31 @@ class AuthStatusResult:
 class CloudAuthRequestResult:
     success: bool
     claw_id: str = ""
+    station_default: bool = False
     error_message: str = ""
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
+
+# config.yaml 敏感字段（password/sn_code/sn/pkdk）不以明文落盘：
+# 写盘前 _enc 混淆（XOR + base64），读取使用处 _dec 还原。
+_XOR_KEY = 0x5A
+
+def _enc(value: str) -> str:
+    """混淆后落盘；空串原样返回。"""
+    if not value:
+        return ""
+    raw = str(value).encode("utf-8")
+    return base64.b64encode(bytes(b ^ _XOR_KEY for b in raw)).decode("ascii")
+
+def _dec(value: Any) -> str:
+    """还原混淆字段；空值或还原失败返回空串（按无凭据处理，走重新输入流程）。"""
+    if not value:
+        return ""
+    try:
+        raw = base64.b64decode(str(value), validate=True)
+        return bytes(b ^ _XOR_KEY for b in raw).decode("utf-8")
+    except Exception:
+        return ""
 
 _SK_TCP_PORT = 9010
 
@@ -359,9 +376,6 @@ def register_camera(
     sn_code: str = "",
     pkdk: str = "",
     rtsp_sub_path: str = "/md0_1",
-    device_index: int = 0,
-    device_model: str = "",
-    product_version: str = "",
     illumination_modes: Optional[List[str]] = None,
     protocol_type: str = "",
     onvif_sn: str = "",
@@ -407,14 +421,14 @@ def register_camera(
                     break
         if existing is None and sn_code:
             for cam in cameras:
-                if cam.get("sn_code") == sn_code or cam.get("sn") == sn_code:
+                if _dec(cam.get("sn_code")) == sn_code or _dec(cam.get("sn")) == sn_code:
                     existing = cam
                     break
         if existing:
             if not password and existing.get("password"):
-                password = existing["password"]
+                password = _dec(existing["password"])
             if not sn_code:
-                sn_code = existing.get("sn_code") or existing.get("sn") or ""
+                sn_code = _dec(existing.get("sn_code")) or _dec(existing.get("sn"))
             if not protocol_type:
                 protocol_type = existing.get("protocol_type") or ""
             if not onvif_sn:
@@ -427,22 +441,18 @@ def register_camera(
         "port": port,
         "onvif_port": port,
         "username": username,
-        "password": password,
+        "password": _enc(password),
         "rtsp_port": rtsp_port,
         "rtsp_path": rtsp_path,
         "rtsp_path_main": rtsp_path,
         "rtsp_sub_path": rtsp_sub_path,
         "rtsp_path_sub": rtsp_sub_path,
         "device_class": device_class,
-        "sn_code": sn_code,
-        "sn": sn_code,
-        "pkdk": pkdk,
+        "sn_code": _enc(sn_code),
+        "sn": _enc(sn_code),
+        "pkdk": _enc(pkdk),
         "registered_at": datetime.now(timezone.utc).isoformat(),
     }
-    if connection_type == "usb":
-        new_entry["device_index"] = device_index
-        new_entry["device_model"] = device_model
-        new_entry["product_version"] = product_version
     if protocol_type:
         new_entry["protocol_type"] = protocol_type
     if onvif_sn:
@@ -467,7 +477,7 @@ def register_camera(
 
     if not found and sn_code:
         for i, cam in enumerate(cameras):
-            if cam.get("sn_code") == sn_code or cam.get("sn") == sn_code:
+            if _dec(cam.get("sn_code")) == sn_code or _dec(cam.get("sn")) == sn_code:
                 cameras[i] = new_entry
                 found = True
                 break
@@ -500,9 +510,6 @@ def search_devices(
             result = _search_sky_devices(timeout)
         elif method == DiscoveryMethod.JCP_DISCOVERY:
             result = _search_jcp_devices(timeout)
-        elif method == DiscoveryMethod.USB:
-
-            return SearchResult(success=True, devices=[], error_message="USB 扫描已禁用")
         else:
             result = _search_ws_discovery_devices(timeout)
         if result.success:
@@ -586,7 +593,7 @@ def _sync_registry_with_discovery(
     discovered_ips = {d.ip for d in devices if d.ip}
     discovered_sns = {d.sn_code for d in devices if d.sn_code}
     for prev in existing:
-        if prev.connection_type == "usb" or not _is_ipv4_literal(prev.ip):
+        if not _is_ipv4_literal(prev.ip):
             continue
         if prev.ip in discovered_ips or (prev.sn_code and prev.sn_code in discovered_sns):
             continue
@@ -743,25 +750,6 @@ def _search_jcp_devices(timeout: float) -> SearchResult:
         return SearchResult(success=True, devices=devices, error_message="; ".join(notes))
     except Exception as e:
         return SearchResult(success=False, error_message=f"JCP 发现失败: {e}")
-
-def _search_usb_devices(timeout: float) -> SearchResult:
-    try:
-        import cv2
-        found = []
-        for idx in range(10):
-            cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-            if cap.isOpened():
-                cap.release()
-                dev = DiscoveredDevice(
-                    ip=f"usb://{idx}",
-                    device_class=DeviceClass.DIRECT_CONNECT,
-                    model=f"USB Camera {idx}",
-                    discovery_method="usb",
-                )
-                found.append(dev)
-        return SearchResult(success=True, devices=found)
-    except Exception as e:
-        return SearchResult(success=False, error_message=str(e))
 
 def _search_ws_discovery_devices(timeout: float) -> SearchResult:
     import select
@@ -1124,7 +1112,8 @@ def _cloud_auth_and_connect(
         success=False, status="needs_password",
         needs_password=True,
         error_message=(
-            f"云端授权等待超时（5 分钟），用户未确认。"
+            f"云端授权等待超时（5 分钟），用户未确认"
+            f"{'（设备无站点记录，APP 端可能未收到请求）' if cr.station_default else ''}。"
             f"请直接输入设备 {camera_name}({ip}) 的密码。"
         ),
     )
@@ -1840,18 +1829,15 @@ def _load_config_cameras() -> List[CameraConfig]:
                 ip=entry.get("ip", ""),
                 port=int(entry.get("onvif_port", entry.get("port", 0)) or 0),
                 username=entry.get("username", "admin"),
-                password=entry.get("password", ""),
+                password=_dec(entry.get("password", "")),
                 rtsp_port=int(entry.get("rtsp_port", 554)),
                 rtsp_path=entry.get("rtsp_path_main", entry.get("rtsp_path", "/md0_0")),
                 rtsp_sub_path=entry.get("rtsp_path_sub", entry.get("rtsp_sub_path", "/md0_1")),
                 device_class=entry.get("device_class", ""),
-                sn_code=entry.get("sn", entry.get("sn_code", "")),
-                pkdk=entry.get("pkdk", ""),
+                sn_code=_dec(entry.get("sn", entry.get("sn_code", ""))),
+                pkdk=_dec(entry.get("pkdk", "")),
                 protocol_type=entry.get("protocol_type", ""),
                 onvif_sn=entry.get("onvif_sn", ""),
-                device_index=int(entry.get("device_index", 0)),
-                device_model=entry.get("device_model", ""),
-                product_version=entry.get("product_version", ""),
                 illumination_modes=entry.get("illumination_modes", []),
             )
             configs.append(cfg)
@@ -1880,7 +1866,10 @@ def request_cloud_auth(sn: str) -> CloudAuthRequestResult:
 
     payload = env.get("body") or {}
     if payload.get("code") == 200:
-        return CloudAuthRequestResult(success=True, claw_id=claw_id)
+        return CloudAuthRequestResult(
+            success=True, claw_id=claw_id,
+            station_default=env.get("station_source") == "default",
+        )
 
     return CloudAuthRequestResult(
         success=False,
@@ -1940,6 +1929,7 @@ def poll_auth_status(
     data = payload.get("data") or {}
     auth_code = int(data.get("authStatus", 0))
     device_pwd = str(data.get("devicePwd") or "")
+    from_default = env.get("station_source") == "default"
 
     if auth_code == 1:
 
@@ -1976,7 +1966,7 @@ def poll_auth_status(
         return AuthStatusResult(
             status=AuthStatus.PENDING,
             camera_name=camera.name,
-            message="等待用户确认",
+            message="等待用户确认（设备无站点记录，已提交默认站点）" if from_default else "等待用户确认",
             auth_status_code=auth_code,
         )
 
@@ -2068,7 +2058,7 @@ def _resolve_connect_target(name: str) -> Tuple[Optional[CameraConfig], Optional
         return None, AuthOrchestrateResult(
             success=False, status="needs_selection",
             available_cameras=[
-                {"name": c.name, "ip": c.ip, "sn": c.sn_code, "model": c.device_model}
+                {"name": c.name, "ip": c.ip, "sn": c.sn_code, "model": ""}
                 for c in cameras
             ],
             error_message="config.yaml 中有多台设备，请指定 name 重新调用",
@@ -2078,7 +2068,7 @@ def _resolve_connect_target(name: str) -> Tuple[Optional[CameraConfig], Optional
         return None, AuthOrchestrateResult(
             success=False, status="needs_selection",
             available_cameras=[
-                {"name": c.name, "ip": c.ip, "sn": c.sn_code, "model": c.device_model}
+                {"name": c.name, "ip": c.ip, "sn": c.sn_code, "model": ""}
                 for c in cameras
             ],
             error_message=f"未找到摄像头 '{name}'",
@@ -2137,7 +2127,10 @@ def big_connect(name: str = "") -> AuthOrchestrateResult:
         success=False, status="timeout",
         camera_name=target.name, sn=target.sn_code,
         claw_id=cr.claw_id,
-        error_message="授权等待超时（10 分钟），用户未确认",
+        error_message=(
+            f"授权等待超时（10 分钟），用户未确认"
+            f"{'（设备无站点记录，APP 端可能未收到请求）' if cr.station_default else ''}"
+        ),
     )
 
 def resolve_target(

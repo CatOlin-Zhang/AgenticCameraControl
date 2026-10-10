@@ -142,48 +142,12 @@ def get_audio_video_stream(
                 "username": cached.username,
                 "password": cached.password,
                 "connection_type": cached.connection_type,
-                "device_index": cached.device_index,
             }
         else:
             return StreamResult(
                 success=False,
                 error_message=f"设备 {camera_name} 未连接，请先调用 connect_device()",
             )
-
-    conn_type = conn_info.get("connection_type", "onvif")
-
-    if conn_type == "usb":
-        try:
-            import cv2
-            dev_idx = conn_info.get("device_index", 0)
-            cap = cv2.VideoCapture(dev_idx, cv2.CAP_DSHOW)
-            if not cap.isOpened():
-                cap.release()
-                return StreamResult(
-                    success=False,
-                    error_message=f"USB 摄像头 {dev_idx} 无法打开",
-                )
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
-            codec_name = "MJPEG" if fourcc == 1196444237 else "YUYV"
-            cap.release()
-            return StreamResult(
-                success=True,
-                stream_url=f"usb://{dev_idx}",
-                codec=codec_name,
-                resolution=f"{width}x{height}",
-                fps=round(fps, 1),
-                bitrate=0,
-            )
-        except ImportError:
-            return StreamResult(
-                success=False,
-                error_message="缺少 opencv-python，无法访问 USB 摄像头",
-            )
-        except Exception as e:
-            return StreamResult(success=False, error_message=str(e))
 
     ip = conn_info.get("ip", "")
     rtsp_port = conn_info.get("rtsp_port", 554)
@@ -298,7 +262,6 @@ def capture_video_screenshot(
                 "username": cached.username,
                 "password": cached.password,
                 "connection_type": cached.connection_type,
-                "device_index": cached.device_index,
             }
         else:
             return ScreenshotResult(
@@ -306,8 +269,6 @@ def capture_video_screenshot(
                 file_path=file_path,
                 error_message=f"设备 {camera_name} 未连接，请先调用 connect_device()",
             )
-
-    conn_type = conn_info.get("connection_type", "onvif")
 
     try:
         import cv2
@@ -320,72 +281,53 @@ def capture_video_screenshot(
 
     def _attempt_capture():
         frame = None
-        if conn_type == "usb":
-            dev_idx = conn_info.get("device_index", 0)
-            cap = cv2.VideoCapture(dev_idx, cv2.CAP_DSHOW)
-            if not cap.isOpened():
+        ip = conn_info.get("ip", "")
+        rtsp_port = conn_info.get("rtsp_port", 554)
+        username = conn_info.get("username", "")
+        password = conn_info.get("password", "")
+
+        from .device_mgmt import _build_rtsp_url
+
+        paths = []
+        for p in (conn_info.get("rtsp_path") or "/md0_0",
+                  conn_info.get("rtsp_sub_path") or "/md0_1"):
+            if p and p not in paths:
+                paths.append(p)
+
+        # TCP 优先、UDP 兜底（与录像路径 transport 策略对齐）；
+        # "open 成功但读不到帧"（UDP 丢包的典型形态，如云台转动期码率突发）
+        # 同样换 transport / path 重试，而不是原地报错。
+        opened_any = False
+        transport_plan = _rtsp_transport_plan()
+        for transport in transport_plan:
+            for rtsp_path in paths:
+                rtsp_url = _build_rtsp_url(ip, rtsp_port, rtsp_path, username, password)
+                cap = _open_rtsp_capture(rtsp_url, transport)
+                if not cap.isOpened():
+                    cap.release()
+                    continue
+                opened_any = True
+                frame = _read_last_frame(cap)
                 cap.release()
-                return ScreenshotResult(
-                    success=False,
-                    file_path=file_path,
-                    error_message=f"USB 摄像头 {dev_idx} 无法打开",
-                )
-            frame = _read_last_frame(cap)
-            cap.release()
-            if frame is None:
+                if frame is not None:
+                    break
+            if frame is not None:
+                break
+
+        if frame is None:
+            if opened_any:
                 return ScreenshotResult(
                     success=False,
                     file_path=file_path,
                     error_message="无法从流中读取帧数据",
                 )
-        else:
-            ip = conn_info.get("ip", "")
-            rtsp_port = conn_info.get("rtsp_port", 554)
-            username = conn_info.get("username", "")
-            password = conn_info.get("password", "")
-
-            from .device_mgmt import _build_rtsp_url
-
-            paths = []
-            for p in (conn_info.get("rtsp_path") or "/md0_0",
-                      conn_info.get("rtsp_sub_path") or "/md0_1"):
-                if p and p not in paths:
-                    paths.append(p)
-
-            # TCP 优先、UDP 兜底（与录像路径 transport 策略对齐）；
-            # "open 成功但读不到帧"（UDP 丢包的典型形态，如云台转动期码率突发）
-            # 同样换 transport / path 重试，而不是原地报错。
-            opened_any = False
-            transport_plan = _rtsp_transport_plan()
-            for transport in transport_plan:
-                for rtsp_path in paths:
-                    rtsp_url = _build_rtsp_url(ip, rtsp_port, rtsp_path, username, password)
-                    cap = _open_rtsp_capture(rtsp_url, transport)
-                    if not cap.isOpened():
-                        cap.release()
-                        continue
-                    opened_any = True
-                    frame = _read_last_frame(cap)
-                    cap.release()
-                    if frame is not None:
-                        break
-                if frame is not None:
-                    break
-
-            if frame is None:
-                if opened_any:
-                    return ScreenshotResult(
-                        success=False,
-                        file_path=file_path,
-                        error_message="无法从流中读取帧数据",
-                    )
-                return ScreenshotResult(
-                    success=False,
-                    file_path=file_path,
-                    error_message=f"无法从 {ip}:{rtsp_port} 打开视频流"
-                                  f"（已尝试 {'、'.join(paths)} × {'/'.join(transport_plan)}），"
-                                  f"请检查 RTSP 路径和认证信息",
-                )
+            return ScreenshotResult(
+                success=False,
+                file_path=file_path,
+                error_message=f"无法从 {ip}:{rtsp_port} 打开视频流"
+                              f"（已尝试 {'、'.join(paths)} × {'/'.join(transport_plan)}），"
+                              f"请检查 RTSP 路径和认证信息",
+            )
 
         height, width = frame.shape[:2]
         try:
@@ -1071,24 +1013,8 @@ def manage_storage_status(
         policy=cfg["policy"],
     )
 
-_GO2RTC_RELEASE_BASE = "https://github.com/AlexxIT/go2rtc/releases/latest/download"
-
 import os as _os
 import sys as _sys
-
-_GO2RTC_BIN_NAME = {
-    "linux": "go2rtc_linux_amd64",
-    "win32": "go2rtc_win64.zip",
-    "darwin": "go2rtc_mac_amd64",
-}.get(_sys.platform, "go2rtc_linux_amd64")
-
-_GO2RTC_RELEASE = f"{_GO2RTC_RELEASE_BASE}/{_GO2RTC_BIN_NAME}"
-
-_GO2RTC_DOWNLOAD_URLS = [
-    f"https://mirror.ghproxy.com/{_GO2RTC_RELEASE}",
-    f"https://ghfast.top/{_GO2RTC_RELEASE}",
-    _GO2RTC_RELEASE,
-]
 
 _GO2RTC_IS_WIN = _sys.platform == "win32"
 _GO2RTC_SKILL_DIR = _os.path.dirname(
@@ -1102,6 +1028,7 @@ class WebRTCResult:
     success: bool = False
     web_url: str = ""
     rtsp_url: str = ""
+    video_codec: str = ""
     error_message: str = ""
 
 def _ensure_go2rtc() -> str:
@@ -1115,51 +1042,68 @@ def _ensure_go2rtc() -> str:
         return local_path
     return ""
 
-def _download_go2rtc() -> str:
-    import shutil
-    import urllib.request
-    import zipfile
+_SK_VIDEO_PORT = 9010
+_SK_VIDEO_TIMEOUT = 8.0
 
-    dest_name = "go2rtc.exe" if _GO2RTC_IS_WIN else "go2rtc"
-    dest = _os.path.join(_GO2RTC_SKILL_DIR, dest_name)
-    tmp = _os.path.join(_GO2RTC_SKILL_DIR, f"_go2rtc_dl_{_GO2RTC_BIN_NAME}")
+def _switch_video_codec(cam, codec: str) -> str:
+    from . import camera_proto
+    from .illumination import _envelope
 
-    for url in _GO2RTC_DOWNLOAD_URLS:
-        try:
-            urllib.request.urlretrieve(url, tmp)
-            if not _os.path.isfile(tmp) or _os.path.getsize(tmp) < 1024:
-                if _os.path.exists(tmp):
-                    _os.remove(tmp)
-                continue
-            if _GO2RTC_IS_WIN and tmp.endswith(".zip"):
-                with zipfile.ZipFile(tmp, "r") as zf:
-                    exe_name = next(
-                        (n for n in zf.namelist() if "go2rtc" in n and n.endswith(".exe")),
-                        None,
-                    )
-                    if exe_name:
-                        zf.extract(exe_name, _GO2RTC_SKILL_DIR)
-                        extracted = _os.path.join(_GO2RTC_SKILL_DIR, exe_name)
-                        if extracted != dest:
-                            shutil.move(extracted, dest)
-                        _os.remove(tmp)
-                        return dest
-                    else:
-                        _os.remove(tmp)
-                        continue
-            else:
-                shutil.move(tmp, dest)
-                _os.chmod(dest, 0o755)
-                return dest
-        except Exception as e:
-            if _os.path.exists(tmp):
-                _os.remove(tmp)
+    if not cam.sn_code:
+        return f"摄像头 {cam.name} 缺少 SN，无法切换视频编码；请先重新扫描/注册该设备"
+    unreachable = f"无法连接 {cam.ip}:{_SK_VIDEO_PORT}（SK HTTP 无响应）"
 
+    ok, resp, _status = _envelope(camera_proto.video_get_option(
+        cam.ip, cam.sn_code, cam.username, cam.password, _SK_VIDEO_TIMEOUT))
+    if not ok or not resp:
+        return f"查询视频编码能力失败：{unreachable}"
+    supported = set()
+    for stream in resp.get("video") or []:
+        if not isinstance(stream, dict):
+            continue
+        for spec in stream.get("specs") or []:
+            if (isinstance(spec, dict) and spec.get("name") == "encode"
+                    and isinstance(spec.get("specs"), list)):
+                supported.update(str(item) for item in spec["specs"])
+    if codec not in supported:
+        return (f"设备不支持视频编码 {codec}"
+                + (f"（支持：{', '.join(sorted(supported))}）" if supported else "")
+                + "，未切换编码")
+
+    ok, resp, _status = _envelope(camera_proto.video_get(
+        cam.ip, cam.sn_code, cam.username, cam.password, _SK_VIDEO_TIMEOUT))
+    if not ok or not resp:
+        return f"查询当前视频配置失败：{unreachable}"
+    streams = resp.get("video")
+    if not isinstance(streams, list) or not streams:
+        return "查询当前视频配置失败：响应缺少 video 字段"
+    if all(str(s.get("encode", "")).upper() == codec
+           for s in streams if isinstance(s, dict)):
+        return ""
+
+    payload = {"video": [dict(s, encode=codec) for s in streams if isinstance(s, dict)]}
+    ok, resp, _status = _envelope(camera_proto.video_set(
+        cam.ip, cam.sn_code, cam.username, cam.password, payload, _SK_VIDEO_TIMEOUT))
+    if not ok or not resp:
+        return f"设置视频编码失败：{unreachable}"
+    if not camera_proto.code_ok(resp.get("code", "")):
+        return f"设备拒绝设置视频编码（code={resp.get('code')} msg={resp.get('msg')}）"
+
+    ok, resp, _status = _envelope(camera_proto.video_get(
+        cam.ip, cam.sn_code, cam.username, cam.password, _SK_VIDEO_TIMEOUT))
+    if not ok or not resp:
+        return "设置已下发但读回校验失败（SK HTTP 无响应）"
+    streams = resp.get("video")
+    if not isinstance(streams, list) or any(
+            str(s.get("encode", "")).upper() != codec
+            for s in streams if isinstance(s, dict)):
+        return f"设置后读回校验不一致，编码未生效为 {codec}"
     return ""
 
 def start_webrtc_stream(
     camera_name: str,
     sub_stream: bool = False,
+    video_codec: Optional[str] = None,
     go2rtc_path: Optional[str] = None,
     port: int = 1984,
 ) -> WebRTCResult:
@@ -1169,17 +1113,23 @@ def start_webrtc_stream(
 
     global _go2rtc_process
 
-    if _go2rtc_process is not None:
-        stop_webrtc_stream()
+    codec = ""
+    if video_codec is not None and str(video_codec).strip():
+        codec = str(video_codec).strip().upper()
+        if codec not in ("H264", "H265"):
+            return WebRTCResult(
+                success=False,
+                error_message=f"不支持的编码：{video_codec}；video_codec 仅支持 h264/h265，省略表示不改设备编码",
+            )
 
     binary = go2rtc_path or _ensure_go2rtc()
     if not binary:
         return WebRTCResult(
             success=False,
             error_message=(
-                f"未检测到 go2rtc（WebRTC 转流工具，约 15MB）。"
-                f"请手动下载安装: {_GO2RTC_RELEASE}，"
-                f"安装到 {_GO2RTC_SKILL_DIR} 或加入 PATH 后重试。"
+                f"未检测到 go2rtc（WebRTC 转流工具，约 15MB 单文件）。"
+                f"请按 SKILL.md 的 Obtaining go2rtc 说明获取对应平台二进制，"
+                f"放到 {_GO2RTC_SKILL_DIR} 或加入 PATH 后重试。"
             ),
         )
 
@@ -1188,6 +1138,19 @@ def start_webrtc_stream(
     target = next((c for c in cameras if c.name == camera_name), None)
     if target is None:
         return WebRTCResult(success=False, error_message=f"未找到摄像头: {camera_name}")
+
+    if codec:
+        if dm._is_non_sk_camera(camera_name):
+            return WebRTCResult(
+                success=False,
+                error_message=dm._unsupported_protocol_message(camera_name, "视频编码切换"),
+            )
+        switch_error = _switch_video_codec(target, codec)
+        if switch_error:
+            return WebRTCResult(success=False, error_message=switch_error)
+
+    if _go2rtc_process is not None:
+        stop_webrtc_stream()
 
     rtsp_path = target.rtsp_sub_path if sub_stream else target.rtsp_path
     rtsp_url = dm._build_rtsp_url(
@@ -1225,7 +1188,8 @@ def start_webrtc_stream(
         )
 
     web_url = f"http://localhost:{port}"
-    return WebRTCResult(success=True, web_url=web_url, rtsp_url=rtsp_url)
+    return WebRTCResult(success=True, web_url=web_url, rtsp_url=rtsp_url,
+                        video_codec=codec)
 
 def stop_webrtc_stream() -> bool:
     global _go2rtc_process
