@@ -138,7 +138,7 @@ def _install(manifest, artifact):
         try:
             subprocess.run(
                 [sys.executable, "-m", "pip", "--isolated", "--disable-pip-version-check",
-                 "install", "--index-url", "https://pypi.org/simple",
+                 "install",
                  "--only-binary=:all:", "--no-deps", "--require-hashes", "--no-input",
                  "--timeout", "30", "--retries", "2", "-r", str(requirements)],
                 check=True, timeout=300, stdout=sys.stderr, stderr=sys.stderr)

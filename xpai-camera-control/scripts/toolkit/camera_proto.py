@@ -25,7 +25,7 @@ JCP_RTSP_PORT = 554
 JCP_RTSP_PATH_MAIN = "/stream1"
 JCP_RTSP_PATH_SUB = "/stream2"
 
-_ABI_VERSION = b"2.0.0"
+_ABI_VERSION = b"2.1.0"
 _lib = None
 _lib_lock = threading.Lock()
 
@@ -62,9 +62,10 @@ def _bind(lib):
                                   ctypes.c_double, ctypes.c_ushort], ctypes.c_void_p),
     }
     for name in ("sk_filllight_get_option", "sk_filllight_get",
-                 "sk_image_get_option", "sk_image_get", "sk_ptz_get"):
+                 "sk_image_get_option", "sk_image_get", "sk_ptz_get",
+                 "sk_video_get_option", "sk_video_get"):
         signatures[name] = (query, ctypes.c_void_p)
-    for name in ("sk_filllight_set", "sk_image_set", "sk_ptz_set"):
+    for name in ("sk_filllight_set", "sk_image_set", "sk_ptz_set", "sk_video_set"):
         signatures[name] = (setting, ctypes.c_void_p)
     for name in ("sk_detect_get_option", "sk_detect_get"):
         signatures[name] = ([ctypes.c_int] + query, ctypes.c_void_p)
@@ -206,6 +207,21 @@ def image_get(ip, sn, username, password, timeout=5.0) -> Dict[str, Any]:
 
 def image_set(ip, sn, username, password, payload=None, timeout=5.0) -> Dict[str, Any]:
     return _call("sk_image_set", _b(ip), _b(sn), _b(username),
+                 _b(password), _payload_json(payload), float(timeout))
+
+
+def video_get_option(ip, sn, username, password, timeout=5.0) -> Dict[str, Any]:
+    return _call("sk_video_get_option", _b(ip), _b(sn), _b(username),
+                 _b(password), float(timeout))
+
+
+def video_get(ip, sn, username, password, timeout=5.0) -> Dict[str, Any]:
+    return _call("sk_video_get", _b(ip), _b(sn), _b(username),
+                 _b(password), float(timeout))
+
+
+def video_set(ip, sn, username, password, payload=None, timeout=5.0) -> Dict[str, Any]:
+    return _call("sk_video_set", _b(ip), _b(sn), _b(username),
                  _b(password), _payload_json(payload), float(timeout))
 
 

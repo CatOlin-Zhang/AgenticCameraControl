@@ -13,7 +13,7 @@ The skill ships without native libraries. After acquiring the single-instance lo
 
 ## Native library loading
 
-The wheel is used only as a native-resource carrier, not as a Python API dependency. This skill retains its own `ctypes` bindings in `scripts/toolkit/camera_proto.py`, including the `2.0.0` ABI check and native string release. Preparation/loading code selects the library per 64-bit interpreter architecture:
+The wheel is used only as a native-resource carrier, not as a Python API dependency. This skill retains its own `ctypes` bindings in `scripts/toolkit/camera_proto.py`, including the `2.1.0` ABI check and native string release. Preparation/loading code selects the library per 64-bit interpreter architecture:
 
 | Platform | Library |
 |----------|---------|

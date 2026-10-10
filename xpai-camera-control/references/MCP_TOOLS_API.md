@@ -32,7 +32,7 @@ Load the configuration of all registered cameras (including credentials) from `c
 | Field                  | Type     | Description                                       |
 |------------------------|----------|--------------------------------------------------|
 | `name`                 | string   | Camera name                                      |
-| `connection_type`      | string   | `"onvif"` / `"usb"`                        |
+| `connection_type`      | string   | `"onvif"`                                  |
 | `ip`                   | string   | IP address                                       |
 | `port`                 | int      | ONVIF port (0 = unknown)                         |
 | `username`             | string   | Login username                                   |
@@ -63,13 +63,10 @@ Persist camera credentials to `config.yaml`. Renaming is supported: when a new n
 | `rtsp_port`       | int    |    | `554`                | RTSP port                                        |
 | `rtsp_path`       | string |    | `"/md0_0"`           | Main stream path                                 |
 | `device_class`    | string |    | `"direct_connect"`   | `"password_required"` / `"direct_connect"` |
-| `connection_type` | string |    | `"onvif"`            | `"onvif"` / `"usb"`                        |
+| `connection_type` | string |    | `"onvif"`            | `"onvif"`（唯一支持值）                        |
 | `sn_code`         | string |    | `""`                 | Serial number                                    |
 | `pkdk`            | string |    | `""`                 | Device public key identifier                     |
 | `rtsp_sub_path`   | string |    | `"/md0_1"`           | Sub stream path                                  |
-| `device_index`    | int    |    | `0`                  | OpenCV device index (USB only)                   |
-| `device_model`    | string |    | `""`                 | USB device model name (informational, USB only)  |
-| `product_version` | string |    | `""`                 | USB product version (informational, USB only)    |
 
 **Returns**: `RegisterResult`
 
@@ -478,6 +475,7 @@ Start a WebRTC live preview: converts the RTSP stream into a WebRTC stream playa
 |--------------|--------|:--:|----------|---------------------------------|
 | `camera_name` | string | ✅  | —        | Camera name                     |
 | `sub_stream`  | bool   |    | `false`  | Use the sub stream (lower quality) |
+| `video_codec` | string |    | —        | Optional: switch the device video encoder to `"h264"`/`"h265"` before starting the preview. Device-wide (main + sub stream); omit to leave the device codec unchanged |
 | `port`        | int    |    | `1984`   | Web UI port                     |
 
 **Returns**: `WebRTCResult`
@@ -487,7 +485,10 @@ Start a WebRTC live preview: converts the RTSP stream into a WebRTC stream playa
 | `success`       | bool   | Whether the operation succeeded                    |
 | `web_url`       | string | Browser access URL (e.g. `"http://localhost:1984"`) |
 | `rtsp_url`      | string | Source RTSP URL                                    |
+| `video_codec`   | string | Codec requested in this call (`"H264"`/`"H265"`); empty when `video_codec` was not passed |
 | `error_message` | string | Failure reason                                     |
+
+**Codec switching (`video_codec`)**: the tool switches the device encoder first (SK private protocol, read-modify-write — only `encode` changes, all other stream parameters are preserved), verifies by read-back, then restarts the preview. A failed switch returns `success=false` and leaves any running preview untouched. Primary use: Edge has no H265 WebRTC support, so its preview falls back to the fragile MSE path and may stutter/black out — switching to `"h264"` gives Edge a stable RTC path. The change is device-wide: NVR/recording/event-monitoring sessions on the same device are briefly interrupted (monitoring auto-reconnects).
 
 ---
 

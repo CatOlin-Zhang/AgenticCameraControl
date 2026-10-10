@@ -1,14 +1,41 @@
 {
   "package": "camera-proto",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "environment": "production",
   "platforms": {
+    "macos_arm64": {
+      "wheel_filename": "camera_proto-0.2.0-py3-none-macosx_14_0_arm64.whl",
+      "wheel_sha256": "339a4a3c92579963de825bcd97dd6e3bacbb98142b9fff62b1a257aa43210428",
+      "library": "camera_proto.dylib",
+      "resources": {
+        "camera_proto.dylib": "11e9c79e286b2fea7718d0c2c6087de4580844852c0a7e92f72cc9136e82d4aa",
+        "cacert.pem": "f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9"
+      }
+    },
     "win_amd64": {
-      "wheel_filename": "camera_proto-0.1.0-py3-none-win_amd64.whl",
-      "wheel_sha256": "4b59ccf2b4028e552b6748b3ec4656f6aa72ac36fa7af6cff73eca8c3f73b9e9",
+      "wheel_filename": "camera_proto-0.2.0-py3-none-win_amd64.whl",
+      "wheel_sha256": "8002d240d1ff4af79978891e34483723e66e4bc3d21922a0db267ac22a2b9171",
       "library": "camera_proto.dll",
       "resources": {
-        "camera_proto.dll": "09adf7d6166de736e40bbb0e045ada96b45d0a3337853d9468caee7e0a302386",
+        "camera_proto.dll": "04f8ec306b650df44c16f1eb4c992f893859ea07dc0dbf744f05a5b86b1ef8e2",
+        "cacert.pem": "f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9"
+      }
+    },
+    "linux_x86_64": {
+      "wheel_filename": "camera_proto-0.2.0-py3-none-manylinux_2_28_x86_64.whl",
+      "wheel_sha256": "d9f6cb2e05ab900a3221e0048f1915e450d55802b5c410e084bc557312fda1b2",
+      "library": "camera_proto.so",
+      "resources": {
+        "camera_proto.so": "a66a5ee2a8b8606495c7e20e9b290fbb34bc1b5bac5cef4e7acc445f360abe9f",
+        "cacert.pem": "f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9"
+      }
+    },
+    "macos_x86_64": {
+      "wheel_filename": "camera_proto-0.2.0-py3-none-macosx_13_0_x86_64.whl",
+      "wheel_sha256": "6a69604f8272a6ad7a509e210d6815994d16a040e5d590cad1749b9db1df9644",
+      "library": "camera_proto.dylib",
+      "resources": {
+        "camera_proto.dylib": "dcf69f3b2ca868bb45215b750984ba0fa012e1cf0c72e132bcc5bd0122b7ecf0",
         "cacert.pem": "f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9"
       }
     }
