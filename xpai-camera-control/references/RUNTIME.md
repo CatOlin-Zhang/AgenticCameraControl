@@ -25,7 +25,7 @@ Linux ARM, musl/Alpine, Windows ARM interpreters, 32-bit interpreters, and unkno
 
 ## Current artifact boundary
 
-The default manifest still pins the existing production `camera-proto==0.1.0` Windows x64 wheel and its original verified hashes. No four-platform `0.2.0` artifact set has been built or released for this integration. Linux and macOS therefore fail before pip with an explicit missing-verified-artifact message; cross-platform code support is not a claim that those artifacts are ready.
+The shipped manifest pins the four-platform production `camera-proto==0.2.0` release published on PyPI from tag `v0.2.0` through Trusted Publishing (ABI `2.1.0`, including the SK video setting exports); every `wheel_sha256` and resource hash was recomputed from that released batch, and preparation from a clean interpreter over the network is verified. Platforms with no manifest record fail before pip with an explicit missing-verified-artifact message.
 
 ## Maintainer release checklist
 
