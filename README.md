@@ -38,6 +38,20 @@
 | **侦测追踪**   | 人形追踪/车辆追踪/区域检测能力查询与开关控制（仅Sky Worth）                  |
 | **摄像头命名**  | 支持用户自定义命名，或由多模态模型根据截图画面自动生成描述性名称                     |
 
+### 完全支持的设备
+
+以下为完全支持设备的**节选示例**；完整与最新列表见 [SUPPORTED_DEVICES.md](xpai-camera-control/references/SUPPORTED_DEVICES.md)。这些型号（印于机身标签，即设备上报的 `model`）属于 **S 类**，可体验**全部**技能能力；未列出的设备仍可使用，但仅支持部分功能（O 类第三方 ONVIF、J 类 JCP）。
+
+|        |        |        |        |        |
+|--------|--------|--------|--------|--------|
+| CSD01  | CSD03  | CSD41  | CSD62  | CSD91  |
+| CSDA2  | CSDA5  | CSDA7  | CSDA9  | CSDC3  |
+| CSDE2  | CSDG1  | CSDJ1  | CSDK2  | CSDM1  |
+| CSDR1  | CSDU2  | ZCR403 | ZCR443 | ZCR462 |
+| ZCSD52 | ZCSD54 | ZCSD81 | ZCSDA1 | ZCSDC4 |
+| ZCSDK2 | ZCSDR2 | ZCSDZ2 | ZCSJ12 | ZCSJ31 |
+| ZCSJ33 | ZCSJ42 | ZCSJ61 | ZCSL21 | ZCSL31 |
+
 ### 快速开始
 
 #### 环境要求
@@ -111,6 +125,7 @@ AgenticCameraControl/
     │   ├── MCP_TOOLS_API.md      # 20 个 MCP 工具完整 API 文档
     │   ├── EVENT_INTEGRATION.md  # 事件存储外部消费契约
     │   ├── FAQ.md / FAQ.zh-CN.md # FAQ · 最佳实践 · 排障索引（EN / 中文）
+    │   ├── SUPPORTED_DEVICES.md  # 完全支持设备列表（EXSKYWORTH / S 类）
     │   └── RUNTIME.md            # 原生组件维护与发布参考
     ├── snapshots/                # 截图保存目录（运行时自动创建）
     ├── video/                    # 录像保存目录（运行时自动创建）
@@ -236,6 +251,20 @@ The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Se
 | **Detection & Tracking** | Human tracking, vehicle tracking, area detection capability query and toggle (Sky Worth only)              |
 | **Camera Naming**        | User-defined naming or multimodal model auto-naming based on screenshot content                            |
 
+### Fully-Supported Devices
+
+The models below are a **sample excerpt** ; see [SUPPORTED_DEVICES.md](xpai-camera-control/references/SUPPORTED_DEVICES.md) for the complete and up-to-date list. These models (printed on the camera body label, as reported in the device `model` field) are **S-class** cameras with the **full** skill capability set. Devices not listed still work, but only with partial functionality (O-class third-party ONVIF, J-class JCP).
+
+|        |        |        |        |        |
+|--------|--------|--------|--------|--------|
+| CSD01  | CSD03  | CSD41  | CSD62  | CSD91  |
+| CSDA2  | CSDA5  | CSDA7  | CSDA9  | CSDC3  |
+| CSDE2  | CSDG1  | CSDJ1  | CSDK2  | CSDM1  |
+| CSDR1  | CSDU2  | ZCR403 | ZCR443 | ZCR462 |
+| ZCSD52 | ZCSD54 | ZCSD81 | ZCSDA1 | ZCSDC4 |
+| ZCSDK2 | ZCSDR2 | ZCSDZ2 | ZCSJ12 | ZCSJ31 |
+| ZCSJ33 | ZCSJ42 | ZCSJ61 | ZCSL21 | ZCSL31 |
+
 ### Quick Start
 
 #### Requirements
@@ -309,6 +338,7 @@ AgenticCameraControl/
     │   ├── MCP_TOOLS_API.md      # Complete API doc for all 20 MCP tools
     │   ├── EVENT_INTEGRATION.md  # Event storage external consumer contract
     │   ├── FAQ.md / FAQ.zh-CN.md # FAQ · best practices · troubleshooting index (EN / 中文)
+    │   ├── SUPPORTED_DEVICES.md  # Fully-supported device list (EXSKYWORTH / S-class)
     │   └── RUNTIME.md            # Native component maintenance & release reference
     ├── snapshots/                # Screenshot directory (auto-created at runtime)
     ├── video/                    # Recording directory (auto-created at runtime)
