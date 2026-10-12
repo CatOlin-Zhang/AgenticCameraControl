@@ -11,7 +11,15 @@ metadata:
 
 ## When to Use
 
-Trigger when the user wants to discover, view, capture, record, move (PTZ), monitor (events/alarm), adjust (illumination/image), or track with IP cameras on the local network.
+Trigger when the user wants to discover, view, capture, record, move (PTZ), monitor (events/alarm), adjust (illumination/image), or track with IP cameras on the same LAN. Everyday single-step asks this covers: "what cameras are on my network?"; "show me the front-door feed" (screenshot / RTSP link / WebRTC preview); "record 30 seconds"; "pan up to check the roof"; "alert me and snapshot when someone passes"; "too dark: raise the brightness / turn on the fill light"; "set line-crossing detection at the garage entrance".
+
+The frames, event records, and stream URLs this skill produces also power higher-level, multistep tasks:
+
+- **Visual Q&A** — read a captured frame to answer questions like "has my package arrived?" or "did I leave the warehouse light on?", then act on the answer (e.g. switch to night mode)
+- **Event-driven automation** — on a motion/human/vehicle alarm, auto-snapshot, pan toward the subject, or chain follow-up steps
+- **Periodic comparison** — capture at intervals and compare frames (construction progress, water level)
+- **Downstream hand-off** — pass the `stream_url` or event store to external consumers (CV pipeline, NVR, alert platform)
+- **Multi-camera patrol** — sweep all connected cameras and summarize which areas show activity
 
 ## Running Mode: MCP Server (stdio transport)
 
@@ -147,7 +155,7 @@ These tools are available when the user explicitly requests them (all require a 
 
 ## Decision Table — error / status → action
 
-This table is the **single runtime source of truth** for error handling. On any tool failure: analyze the error → apply the mapped action. Do NOT write workaround scripts or re-implement tool functionality. Report to the user what failed / why / how to fix, then wait for the user's decision — **except** the bounded auto-retry row below.
+This table is the **single runtime source of truth** for error handling. On any tool failure: analyze the error → apply the mapped action **yourself — self-healing first: this system is Agent-readable by design, so diagnose and recover on your own before involving the user**. Do NOT write workaround scripts or re-implement tool functionality. Report to the user what failed / why / how to fix, then wait for the user's decision — **except** the bounded auto-retry row below.
 
 | `error_message` pattern / `status` | Agent Action |
 |------------------------------------|--------------|
@@ -174,6 +182,7 @@ Load a reference **only when its trigger fires** — do not pre-read.
 
 | Trigger | Read |
 |---------|------|
+| Tool failure beyond the Decision Table, user asks "why does X fail", or wants to self-troubleshoot | [references/FAQ.md](references/FAQ.md) — Agent self-healing + English-speaking users (中文自助版 `references/FAQ.zh-CN.md`: give its path only, do not load it) |
 | Auth flow details beyond the Decision Table (cloud auth internals, direct_connect) | [references/WORKFLOW.md — Phase 2](references/WORKFLOW.md#phase-2--connect--authorize-detailed-tool-calls) |
 | Building an external consumer on the event store | [references/EVENT_INTEGRATION.md](references/EVENT_INTEGRATION.md) |
 | config.yaml full schema or example configs | [references/CONFIG.md](references/CONFIG.md) |

@@ -25,18 +25,18 @@
 
 ### 功能概览
 
-| 类别         | 能力                                             |
-|------------|------------------------------------------------|
+| 类别         | 能力                                                   |
+|------------|------------------------------------------------------|
 | **设备发现**   | 局域网自动搜索摄像头，支持 WS-Discovery、Sky Worth 协议双通道发现，按 IP 去重 |
-| **设备连接**   | 自动探测认证方式，凭据缓存、云端授权与自动重连                          |
-| **视频流**    | RTSP 流地址获取、截图、录像（支持定长自动停止）、存储管理                |
-| **WebRTC** | RTSP 流转 WebRTC 浏览器实时预览，返回 HTTP 访问地址            |
-| **云台控制**   | 8 方向移动+变焦、物理极限保护、云台校准                           |
-| **事件监听**   | 报警事件订阅（移动/人形/车辆/遮挡等）、事件联动抓拍、本地事件存储                |
-| **补光控制**   | 日夜模式切换、补光灯模式/亮度/定时器/灵敏度调节（仅Sky Worth）          |
-| **图像设置**   | 亮度/对比度/饱和度/锐度/翻转/白平衡/宽动态等参数调节（仅Sky Worth）      |
-| **侦测追踪**   | 人形追踪/车辆追踪/区域检测能力查询与开关控制（仅Sky Worth）            |
-| **摄像头命名**  | 支持用户自定义命名，或由多模态模型根据截图画面自动生成描述性名称             |
+| **设备连接**   | 自动探测认证方式，凭据缓存、云端授权与自动重连                              |
+| **视频流**    | RTSP 流地址获取、截图、录像（支持定长自动停止）、存储管理                      |
+| **WebRTC** | RTSP 流转 WebRTC 浏览器实时预览，返回 HTTP 访问地址                  |
+| **云台控制**   | 8 方向移动+变焦、物理极限保护、云台校准                                |
+| **事件监听**   | 报警事件订阅（移动/人形/车辆/遮挡等）、事件联动抓拍、本地事件存储                   |
+| **补光控制**   | 日夜模式切换、补光灯模式/亮度/定时器/灵敏度调节（仅Sky Worth）                |
+| **图像设置**   | 亮度/对比度/饱和度/锐度/翻转/白平衡/宽动态等参数调节（仅Sky Worth）            |
+| **侦测追踪**   | 人形追踪/车辆追踪/区域检测能力查询与开关控制（仅Sky Worth）                  |
+| **摄像头命名**  | 支持用户自定义命名，或由多模态模型根据截图画面自动生成描述性名称                     |
 
 ### 快速开始
 
@@ -110,6 +110,7 @@ AgenticCameraControl/
     │   ├── WORKFLOW.md           # 工作流详解（含故障排查）
     │   ├── MCP_TOOLS_API.md      # 20 个 MCP 工具完整 API 文档
     │   ├── EVENT_INTEGRATION.md  # 事件存储外部消费契约
+    │   ├── FAQ.md / FAQ.zh-CN.md # FAQ · 最佳实践 · 排障索引（EN / 中文）
     │   └── RUNTIME.md            # 原生组件维护与发布参考
     ├── snapshots/                # 截图保存目录（运行时自动创建）
     ├── video/                    # 录像保存目录（运行时自动创建）
@@ -123,17 +124,17 @@ AgenticCameraControl/
 
 8 个功能扇区，共 20 个 MCP 工具：
 
-| 扇区                      | 说明                           | 参考文档                                                                                    |
-|-------------------------|------------------------------|-----------------------------------------------------------------------------------------|
-| `device_mgmt.py`        | 设备注册、搜索、连接、断开                | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md)       |
-| `discovery.py`          | 局域网设备发现（内部模块）                | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md)           |
-| `camera_proto.py`       | Skyworth 私有协议原生绑定（内部模块）        | —                                                                                       |
-| `stream.py`             | 视频流、截图、录像、存储、WebRTC          | [commands/stream.md](xpai-camera-control/references/commands/stream.md)                 |
-| `ptz.py`                | 云台方向控制/校准/停止                 | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md)                       |
-| `events.py`             | 报警事件订阅、联动抓拍、事件存储与消费          | [commands/events.md](xpai-camera-control/references/commands/events.md)                 |
-| `illumination.py`       | 补光/夜视模式查询与控制（双协议）            | [commands/illumination.md](xpai-camera-control/references/commands/illumination.md)     |
-| `image_settings.py`     | 图像参数查询与设置（双通道）               | [commands/image_settings.md](xpai-camera-control/references/commands/image_settings.md) |
-| `tracking.py`           | 侦测追踪能力查询与开关控制                | [commands/tracking.md](xpai-camera-control/references/commands/tracking.md)             |
+| 扇区                  | 说明                      | 参考文档                                                                                    |
+|---------------------|-------------------------|-----------------------------------------------------------------------------------------|
+| `device_mgmt.py`    | 设备注册、搜索、连接、断开           | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md)       |
+| `discovery.py`      | 局域网设备发现（内部模块）           | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md)           |
+| `camera_proto.py`   | Skyworth 私有协议原生绑定（内部模块） | —                                                                                       |
+| `stream.py`         | 视频流、截图、录像、存储、WebRTC     | [commands/stream.md](xpai-camera-control/references/commands/stream.md)                 |
+| `ptz.py`            | 云台方向控制/校准/停止            | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md)                       |
+| `events.py`         | 报警事件订阅、联动抓拍、事件存储与消费     | [commands/events.md](xpai-camera-control/references/commands/events.md)                 |
+| `illumination.py`   | 补光/夜视模式查询与控制（双协议）       | [commands/illumination.md](xpai-camera-control/references/commands/illumination.md)     |
+| `image_settings.py` | 图像参数查询与设置（双通道）          | [commands/image_settings.md](xpai-camera-control/references/commands/image_settings.md) |
+| `tracking.py`       | 侦测追踪能力查询与开关控制           | [commands/tracking.md](xpai-camera-control/references/commands/tracking.md)             |
 
 全部 20 个工具的参数签名、返回字段与错误码详见 [MCP_TOOLS_API.md](xpai-camera-control/references/MCP_TOOLS_API.md)。
 
@@ -150,13 +151,13 @@ AgenticCameraControl/
 
 本 skill 包遵循以下安全约束，确保不会对用户计算机产生预期之外的影响：
 
-| 承诺            | 说明                                                             |
-|---------------|----------------------------------------------------------------|
-| 请求-响应模式       | 工具默认为同步请求-响应；唯一例外是事件监听后台线程，仅在用户显式开启后运行，且行为限于报警订阅与白名单路径写入，可随时关闭 |
-| 使用阶段仅局域网通信    | 使用阶段所有网络流量限于局域网内，无外网通信；为保障用户安全，连接阶段会与远程服务器确认连接状态        |
-| 文件写入受限        | 仅写入 `config.yaml`、`snapshots/`、`video/`、`events/`              |
-| 无系统修改         | 不修改注册表、环境变量、系统服务                                               |
-| 受限进程派生       | 仅在录像（ffmpeg）与 WebRTC 预览（go2rtc）功能中启动对应外部程序；其余场景不派生子进程（Agent 框架下的定时任务与守护进程不在此限制内）   |
+| 承诺         | 说明                                                                               |
+|------------|----------------------------------------------------------------------------------|
+| 请求-响应模式    | 工具默认为同步请求-响应；唯一例外是事件监听后台线程，仅在用户显式开启后运行，且行为限于报警订阅与白名单路径写入，可随时关闭                   |
+| 使用阶段仅局域网通信 | 使用阶段所有网络流量限于局域网内，无外网通信；为保障用户安全，连接阶段会与远程服务器确认连接状态                                 |
+| 文件写入受限     | 仅写入 `config.yaml`、`snapshots/`、`video/`、`events/`                                |
+| 无系统修改      | 不修改注册表、环境变量、系统服务                                                                 |
+| 受限进程派生     | 仅在录像（ffmpeg）与 WebRTC 预览（go2rtc）功能中启动对应外部程序；其余场景不派生子进程（Agent 框架下的定时任务与守护进程不在此限制内） |
 
 ### 配置
 
@@ -183,20 +184,22 @@ AgenticCameraControl/
 
 ### 会话规则
 
-| 规则 | 值 |
-|------|------|
+| 规则   | 值                                   |
+|------|-------------------------------------|
 | 空闲超时 | **30 秒** — 用户停止交互后 Agent 应断开连接释放控制权 |
-| 并发控制 | FIFO：同一时间仅一个 Agent 拥有完全控制权，其余为只读 |
-| 单实例锁 | 同一时间仅允许一个 MCP Server 进程运行（端口绑定 + 租约心跳 + 看门狗三层防护） |
+| 并发控制 | FIFO：同一时间仅一个 Agent 拥有完全控制权，其余为只读    |
+| 单实例锁 | 同一时间仅允许一个 MCP Server 进程运行           |
 
 ### 故障排查
 
-| 现象 | 原因与处理 |
-|------|-----------|
+| 现象                                     | 原因与处理                                                                                                                                                                                                                                                          |
+|----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | MCP 工具全部不可用，Server 启动即退出（exit code 71） | 实例锁冲突：已有 MCP Server 实例在运行。部分 Agent 架构在会话结束后不会终止 Server 进程，旧进程的租约心跳持续刷新，自动回收不会触发，新会话的 Server 因此无法启动。处理：读取技能包根目录 `.instance_lease.json` 中的 `pid` 字段定位旧进程，确认其命令行属于本技能包的 `mcp_server.py` 后执行 `taskkill /PID <PID> /F /T`（Linux/macOS 用 `kill -9`），再重启 MCP 客户端拉起新实例 |
-| 定长录像未按预期停止 | 录像时长应通过 `toggle_recording(action="start", duration=<秒>)` 传入，由 Server 端到时自动停止。不要依赖“启动后延时再调用 stop”的方式——对话过程中的其他任务会淹没该停止操作，导致录像无限持续并占用设备的 RTSP 会话 |
+| 定长录像未按预期停止                             | 录像时长应通过 `toggle_recording(action="start", duration=<秒>)` 传入，由 Server 端到时自动停止。不要依赖“启动后延时再调用 stop”的方式——对话过程中的其他任务会淹没该停止操作，导致录像无限持续并占用设备的 RTSP 会话                                                                                                                 |
 
 Server 进程退出码：`70` = 看门狗自清理（宿主已放弃该实例）；`71` = 实例锁冲突（另一存活实例持锁，或需手动干预）。
+
+本系统为 Agent 可读设计，故障优先由 Agent 自动恢复（self-healing）；上表及以下文档供人工了解与自助排障：完整常见问题、最佳实践与排障索引见 [FAQ 中文版](xpai-camera-control/references/FAQ.zh-CN.md)（英文版 [FAQ.md](xpai-camera-control/references/FAQ.md)）。
 
 ### Agent 集成与使用建议
 
@@ -220,18 +223,18 @@ The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Se
 
 ### Features
 
-| Category                 | Capabilities                                                                                                      |
-|--------------------------|-------------------------------------------------------------------------------------------------------------------|
-| **Discovery**            | Auto-search cameras on LAN via WS-Discovery and Sky Worth protocol (dual-channel, deduplicated by IP)             |
-| **Connection**           | Auto-detect auth method, credential caching, cloud authorization, and auto-reconnect                              |
-| **Streaming**            | RTSP stream URL retrieval, screenshots, recording (fixed-duration auto-stop supported), storage management        |
-| **WebRTC**               | RTSP-to-WebRTC browser live preview, returns HTTP access URL                                                      |
-| **PTZ Control**          | 8-directional movement + zoom, physical limit guard, calibration                                                  |
-| **Event Monitoring**     | Alarm event subscription (motion/human/vehicle/tamper, etc.), snapshot linkage on event, local event store         |
-| **Illumination Control** | Day/night mode switching, fill-light mode/brightness/timer/sensitivity adjustment (Sky Worth only)                |
-| **Image Settings**       | Brightness/contrast/saturation/sharpness/flip/whitebalance/WDR adjustment (Sky Worth only)                        |
-| **Detection & Tracking** | Human tracking, vehicle tracking, area detection capability query and toggle (Sky Worth only)                     |
-| **Camera Naming**        | User-defined naming or multimodal model auto-naming based on screenshot content                                   |
+| Category                 | Capabilities                                                                                               |
+|--------------------------|------------------------------------------------------------------------------------------------------------|
+| **Discovery**            | Auto-search cameras on LAN via WS-Discovery and Sky Worth protocol (dual-channel, deduplicated by IP)      |
+| **Connection**           | Auto-detect auth method, credential caching, cloud authorization, and auto-reconnect                       |
+| **Streaming**            | RTSP stream URL retrieval, screenshots, recording (fixed-duration auto-stop supported), storage management |
+| **WebRTC**               | RTSP-to-WebRTC browser live preview, returns HTTP access URL                                               |
+| **PTZ Control**          | 8-directional movement + zoom, physical limit guard, calibration                                           |
+| **Event Monitoring**     | Alarm event subscription (motion/human/vehicle/tamper, etc.), snapshot linkage on event, local event store |
+| **Illumination Control** | Day/night mode switching, fill-light mode/brightness/timer/sensitivity adjustment (Sky Worth only)         |
+| **Image Settings**       | Brightness/contrast/saturation/sharpness/flip/whitebalance/WDR adjustment (Sky Worth only)                 |
+| **Detection & Tracking** | Human tracking, vehicle tracking, area detection capability query and toggle (Sky Worth only)              |
+| **Camera Naming**        | User-defined naming or multimodal model auto-naming based on screenshot content                            |
 
 ### Quick Start
 
@@ -305,6 +308,7 @@ AgenticCameraControl/
     │   ├── WORKFLOW.md           # Workflow details (incl. troubleshooting)
     │   ├── MCP_TOOLS_API.md      # Complete API doc for all 20 MCP tools
     │   ├── EVENT_INTEGRATION.md  # Event storage external consumer contract
+    │   ├── FAQ.md / FAQ.zh-CN.md # FAQ · best practices · troubleshooting index (EN / 中文)
     │   └── RUNTIME.md            # Native component maintenance & release reference
     ├── snapshots/                # Screenshot directory (auto-created at runtime)
     ├── video/                    # Recording directory (auto-created at runtime)
@@ -318,17 +322,17 @@ AgenticCameraControl/
 
 8 functional sectors, 20 MCP tools in total:
 
-| Sector                    | Description                                                           | Reference                                                                               |
-|---------------------------|-----------------------------------------------------------------------|-----------------------------------------------------------------------------------------|
-| `device_mgmt.py`          | Device registration, search, connection, disconnection                | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md)       |
-| `discovery.py`            | LAN device discovery (internal module)                                | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md)           |
-| `camera_proto.py`         | Skyworth private protocol native bindings (internal module)            | —                                                                                       |
-| `stream.py`               | Video streaming, screenshots, recording, storage, WebRTC              | [commands/stream.md](xpai-camera-control/references/commands/stream.md)                 |
-| `ptz.py`                  | PTZ directional control / calibration / stop                          | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md)                       |
-| `events.py`               | Alarm event subscription, snapshot linkage, event store & consumption | [commands/events.md](xpai-camera-control/references/commands/events.md)                 |
-| `illumination.py`         | Illumination / night-vision mode query & control (dual-protocol)      | [commands/illumination.md](xpai-camera-control/references/commands/illumination.md)     |
-| `image_settings.py`       | Image parameter query & adjustment (dual-channel)                     | [commands/image_settings.md](xpai-camera-control/references/commands/image_settings.md) |
-| `tracking.py`             | Detection & tracking capability query and toggle                      | [commands/tracking.md](xpai-camera-control/references/commands/tracking.md)             |
+| Sector              | Description                                                           | Reference                                                                               |
+|---------------------|-----------------------------------------------------------------------|-----------------------------------------------------------------------------------------|
+| `device_mgmt.py`    | Device registration, search, connection, disconnection                | [commands/device_mgmt.md](xpai-camera-control/references/commands/device_mgmt.md)       |
+| `discovery.py`      | LAN device discovery (internal module)                                | [commands/discovery.md](xpai-camera-control/references/commands/discovery.md)           |
+| `camera_proto.py`   | Skyworth private protocol native bindings (internal module)           | —                                                                                       |
+| `stream.py`         | Video streaming, screenshots, recording, storage, WebRTC              | [commands/stream.md](xpai-camera-control/references/commands/stream.md)                 |
+| `ptz.py`            | PTZ directional control / calibration / stop                          | [commands/ptz.md](xpai-camera-control/references/commands/ptz.md)                       |
+| `events.py`         | Alarm event subscription, snapshot linkage, event store & consumption | [commands/events.md](xpai-camera-control/references/commands/events.md)                 |
+| `illumination.py`   | Illumination / night-vision mode query & control (dual-protocol)      | [commands/illumination.md](xpai-camera-control/references/commands/illumination.md)     |
+| `image_settings.py` | Image parameter query & adjustment (dual-channel)                     | [commands/image_settings.md](xpai-camera-control/references/commands/image_settings.md) |
+| `tracking.py`       | Detection & tracking capability query and toggle                      | [commands/tracking.md](xpai-camera-control/references/commands/tracking.md)             |
 
 See [MCP_TOOLS_API.md](xpai-camera-control/references/MCP_TOOLS_API.md) for the complete parameter signatures, return fields, and error codes of all 20 tools.
 
@@ -345,13 +349,13 @@ Strategy 1 takes priority when the user already provides names; otherwise strate
 
 This skill package operates within strict security constraints to ensure no unexpected impact on the user's system:
 
-| Guarantee                          | Description                                                                                                                                                                                                                                      |
-|------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Request-response by default        | Tools are synchronous request-response. The only exception is the event listener background thread, which runs only after explicit user enablement, is limited to alarm subscription plus whitelist-path writes, and can be stopped at any time. |
-| LAN-only during usage              | All network traffic stays within the local network during usage; during the connection phase, the system communicates with a remote server to verify connection status for user security.                                                         |
-| Restricted file writes             | Only writes to `config.yaml`, `snapshots/`, `video/`, and `events/`                                                                                                                                                                              |
-| No system modifications            | No registry changes, environment variable modifications, or system service installations.                                                                                                                                                        |
-| Restricted process spawning        | External programs are launched only for recording (ffmpeg) and WebRTC preview (go2rtc); no subprocesses in any other scenario (scheduled tasks and daemons under Agent frameworks are not subject to this restriction).  |
+| Guarantee                   | Description                                                                                                                                                                                                                                      |
+|-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Request-response by default | Tools are synchronous request-response. The only exception is the event listener background thread, which runs only after explicit user enablement, is limited to alarm subscription plus whitelist-path writes, and can be stopped at any time. |
+| LAN-only during usage       | All network traffic stays within the local network during usage; during the connection phase, the system communicates with a remote server to verify connection status for user security.                                                        |
+| Restricted file writes      | Only writes to `config.yaml`, `snapshots/`, `video/`, and `events/`                                                                                                                                                                              |
+| No system modifications     | No registry changes, environment variable modifications, or system service installations.                                                                                                                                                        |
+| Restricted process spawning | External programs are launched only for recording (ffmpeg) and WebRTC preview (go2rtc); no subprocesses in any other scenario (scheduled tasks and daemons under Agent frameworks are not subject to this restriction).                          |
 
 ### Configuration
 
@@ -378,20 +382,22 @@ See `xpai-camera-control/requirements.txt` for the full dependency list.
 
 ### Session Rules
 
-| Rule | Value |
-|------|-------|
-| Idle timeout | **30 seconds** — Agent must disconnect and release control when user stops interacting |
-| Concurrent control | FIFO: only one agent has full control; others are view-only |
-| Single-instance lock | Only one MCP server process may run at a time (three-layer defense: port bind + lease heartbeat + watchdog) |
+| Rule                 | Value                                                                                  |
+|----------------------|----------------------------------------------------------------------------------------|
+| Idle timeout         | **30 seconds** — Agent must disconnect and release control when user stops interacting |
+| Concurrent control   | FIFO: only one agent has full control; others are view-only                            |
+| Single-instance lock | Only one MCP server process may run at a time                                          |
 
 ### Troubleshooting
 
-| Symptom | Cause & Resolution |
-|---------|--------------------|
+| Symptom                                                                       | Cause & Resolution                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+|-------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | All MCP tools unavailable; server exits immediately on startup (exit code 71) | Instance-lock conflict: another MCP server instance is already running. Some Agent architectures do not terminate the server process when a session ends; the orphaned process keeps its lease heartbeat fresh, automatic recovery never fires, and the new session's server cannot start. Resolution: read the `pid` field from `.instance_lease.json` in the skill package root to locate the stale process, verify its command line belongs to this skill's `mcp_server.py`, then run `taskkill /PID <PID> /F /T` (Linux/macOS: `kill -9`), and restart the MCP client to spawn a fresh instance |
-| Fixed-duration recording did not stop as expected | Pass the duration via `toggle_recording(action="start", duration=<seconds>)` — the server auto-stops when time is up. Do not rely on "start, wait, then call stop": intermediate tasks during the conversation will bury the stop step, leaving the recording running indefinitely and holding the device's RTSP session |
+| Fixed-duration recording did not stop as expected                             | Pass the duration via `toggle_recording(action="start", duration=<seconds>)` — the server auto-stops when time is up. Do not rely on "start, wait, then call stop": intermediate tasks during the conversation will bury the stop step, leaving the recording running indefinitely and holding the device's RTSP session                                                                                                                                                                                                                                                                            |
 
 Server exit codes: `70` = watchdog self-cleanup (host abandoned the instance); `71` = instance-lock conflict (another live instance holds the lock, or manual intervention needed).
+
+This system is Agent-readable by design — failures are expected to be self-healed by the Agent first; the table above and the FAQ documents serve human reference and self-service: see [FAQ.md](xpai-camera-control/references/FAQ.md) (Chinese version: [FAQ.zh-CN.md](xpai-camera-control/references/FAQ.zh-CN.md)) for the full FAQ, best practices, and troubleshooting index.
 
 ### Agent Integration & Usage Tips
 
