@@ -2,7 +2,7 @@
 name: xpai-camera-control
 description: "Discover, connect, and control XPAI LAN cameras via MCP. Capabilities: device detection, streaming, WebRTC preview, snapshots, PTZ control, alarm events, illumination, image settings, detection & tracking, device management."
 license: MIT
-compatibility: Requires 64-bit Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. Native preparation/loading code supports Windows x64, Linux glibc x64, and macOS Intel/ARM64; the default verified artifact manifest currently enables only Windows x64 camera-proto 0.1.0. Other platforms require reviewed artifact records. Initial wheel installation requires network access. Cameras must be on the same LAN for discovery.
+compatibility: Requires 64-bit Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. Native preparation/loading code supports Windows x64, Linux glibc x64, and macOS Intel/ARM64; the default verified artifact manifest pins the four-platform production camera-proto 0.2.0 release published on PyPI (ABI 2.1.0). Initial wheel installation requires network access. Cameras must be on the same LAN for discovery.
 metadata:
   version: "0.7.0"
 ---

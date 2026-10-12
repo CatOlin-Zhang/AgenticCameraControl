@@ -5,37 +5,37 @@
   "platforms": {
     "macos_arm64": {
       "wheel_filename": "camera_proto-0.2.0-py3-none-macosx_14_0_arm64.whl",
-      "wheel_sha256": "339a4a3c92579963de825bcd97dd6e3bacbb98142b9fff62b1a257aa43210428",
+      "wheel_sha256": "aa5ebcae05ac157e95b78ee3116b12a99dd0376886a3b2df2ea0d71b5ced50bf",
       "library": "camera_proto.dylib",
       "resources": {
-        "camera_proto.dylib": "11e9c79e286b2fea7718d0c2c6087de4580844852c0a7e92f72cc9136e82d4aa",
+        "camera_proto.dylib": "354ca8b73223cdadf9782e8d86dc15afc63ee0962d385c742fa432204992d2a3",
         "cacert.pem": "f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9"
       }
     },
     "win_amd64": {
       "wheel_filename": "camera_proto-0.2.0-py3-none-win_amd64.whl",
-      "wheel_sha256": "8002d240d1ff4af79978891e34483723e66e4bc3d21922a0db267ac22a2b9171",
+      "wheel_sha256": "01a695e800cfa10b30cc2a5f847b14dd734bb961d52a7a8edc542e0e15fc9c03",
       "library": "camera_proto.dll",
       "resources": {
-        "camera_proto.dll": "04f8ec306b650df44c16f1eb4c992f893859ea07dc0dbf744f05a5b86b1ef8e2",
+        "camera_proto.dll": "12ef3dd680f5b02bb4d7c1774750af33613c070a4d8238e31bc81aa4579097ce",
         "cacert.pem": "f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9"
       }
     },
     "linux_x86_64": {
       "wheel_filename": "camera_proto-0.2.0-py3-none-manylinux_2_28_x86_64.whl",
-      "wheel_sha256": "d9f6cb2e05ab900a3221e0048f1915e450d55802b5c410e084bc557312fda1b2",
+      "wheel_sha256": "224c377d07050a37648535265035cbaf5d2134aa363e68738fb038fd7ddcd4ba",
       "library": "camera_proto.so",
       "resources": {
-        "camera_proto.so": "a66a5ee2a8b8606495c7e20e9b290fbb34bc1b5bac5cef4e7acc445f360abe9f",
+        "camera_proto.so": "dfdc5dc5995ec843ad2d51144e93aef62c7077d47902958c09e02846c32b1a5d",
         "cacert.pem": "f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9"
       }
     },
     "macos_x86_64": {
       "wheel_filename": "camera_proto-0.2.0-py3-none-macosx_13_0_x86_64.whl",
-      "wheel_sha256": "6a69604f8272a6ad7a509e210d6815994d16a040e5d590cad1749b9db1df9644",
+      "wheel_sha256": "3049635df101c515f1ace90867ca82a5540615ee95b6a9d790bc4ef808c9ce8f",
       "library": "camera_proto.dylib",
       "resources": {
-        "camera_proto.dylib": "dcf69f3b2ca868bb45215b750984ba0fa012e1cf0c72e132bcc5bd0122b7ecf0",
+        "camera_proto.dylib": "3319e687bacd851d86df3f926ae9d8f511bfd523f45ccfebae698a7fda32a0bd",
         "cacert.pem": "f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9"
       }
     }
