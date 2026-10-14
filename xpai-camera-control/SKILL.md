@@ -139,6 +139,8 @@ These tools are available when the user explicitly requests them (all require a 
 
 > **O-class admission:** a WS-Discovery device that never answers SK/JCP discovery is admitted only when the ONVIF admission probe passes (ONVIF port probe + authenticated `GetDeviceInformation`); its ONVIF SerialNumber is persisted as `onvif_sn` (identity/matching only — **never** fed to cloud auth or SK HTTP as `sn_code`). RTSP-reachable devices that fail ONVIF admission are rejected with `status="no_sn"` — final, do not retry with workarounds.
 
+> **Fully-supported models:** [references/SUPPORTED_DEVICES.md](references/SUPPORTED_DEVICES.md) lists the device models carrying the full S-class capability set. Unlisted devices still work, but only with partial functionality. `search_devices()` already returns each camera's model, so consulting the list is an optional advance confirmation — not a required step.
+
 ## Security Constraints
 
 - **Explicit prompt:** inform the user and wait for confirmation before PTZ, streaming, screenshots, event monitor start, and illumination/image/tracking changes.
@@ -188,6 +190,7 @@ Load a reference **only when its trigger fires** — do not pre-read.
 | Auth flow details beyond the Decision Table (cloud auth internals, direct_connect) | [references/WORKFLOW.md — Phase 2](references/WORKFLOW.md#phase-2--connect--authorize-detailed-tool-calls) |
 | Building an external consumer on the event store | [references/EVENT_INTEGRATION.md](references/EVENT_INTEGRATION.md) |
 | config.yaml full schema or example configs | [references/CONFIG.md](references/CONFIG.md) |
+| User asks "is model X supported" / "which cameras does this skill fully support", or a model-code lookup is needed | [references/SUPPORTED_DEVICES.md](references/SUPPORTED_DEVICES.md) — fully-supported (EXSKYWORTH / S-class) device list; J/O-class compatibility-only devices are not listed |
 | Per-tool parameter signatures, return fields, safety constraints | [references/commands/](references/commands/) — device_mgmt · discovery · stream · ptz · events · illumination · image_settings · tracking |
 
 ## Configuration
