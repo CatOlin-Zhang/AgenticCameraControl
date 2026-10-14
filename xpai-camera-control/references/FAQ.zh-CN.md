@@ -6,23 +6,23 @@
 
 ### 安装与启动
 
-**问：`pip install -r requirements.txt` 很慢或失败。**
-答：请使用 64 位 Python 3.10+ 解释器。国内网络可改用镜像源安装 Python 依赖（`pip install -r requirements.txt -i <镜像地址>`）。原生库不同：其下载源与 SHA256 哈希固定在 `scripts/runtime_artifacts.json`（防供应链攻击设计），不支持更换镜像；若原生库下载超时，见下一条。
+**问：`"<MCP_PYTHON>" -m pip install -r requirements.txt` 很慢或失败。**
+答：请使用 64 位 Python 3.10+ 解释器——`<MCP_PYTHON>` 为启动 MCP 的解释器绝对路径；始终用 `-m pip` 绑定该解释器安装（裸 `pip` 可能属于其他 Python 环境）。国内网络可改用镜像源安装（`"<MCP_PYTHON>" -m pip install -r requirements.txt -i <镜像地址>`）——全部依赖（含原生库 camera-proto）都是普通 PyPI 包，镜像同样适用。
 
-**问：首次启动很久 / MCP 工具迟迟不出现（下载超时）。**
-答：首次启动会通过 `prepare_runtime.py` 下载固定的原生资源。若超出 MCP 客户端的启动超时，请用同一解释器手动运行 `python scripts/prepare_runtime.py`，然后重启 MCP Server。本地文件与清单一致后，启动即可离线完成。
+**问：调用摄像头工具报「未安装 camera-proto 依赖」。**
+答：依赖未安装到启动 MCP 的解释器里。用同一解释器运行 `"<MCP_PYTHON>" -m pip install -r requirements.txt`（工具报错中会打印带实际路径的该命令），然后重试刚才的工具即可——无需重启 MCP Server（加载器会在下次调用时自动重试，安装即生效）。依赖安装在配置阶段完成，MCP 启动本身不下载任何资源。
 
-**问：启动报「协议库准备失败」（exit code 1）。**
-答：按 stderr 提示的原因（网络 / 版本 / 文件访问）解决环境问题后重启；启动成功前不要调用摄像头工具。
+**问：调用摄像头工具报「协议库加载失败」/「ABI 版本不匹配」/「未找到摄像头协议库」。**
+答：加载失败通常是系统/解释器架构或原生依赖问题；ABI 不匹配是 camera-proto 版本与门面不配对；未找到协议库则是包文件不完整。先用启动 MCP 的解释器运行 `"<MCP_PYTHON>" -m pip install -r requirements.txt` 校验固定版本依赖，再重试工具；加载失败仍复现时检查是否为 64 位解释器与对应系统架构。
 
 **问：工具列表里完全没有摄像头工具。**
 答：MCP Server 尚未注册。按 [SKILL.md](../SKILL.md#installation) 的三步 Installation 配置；禁止退回直接 `import scripts.toolkit` 或自写脚本的方式。
 
-**问：Server 启动即退出，所有工具不可用，exit code 70 / 71。**
-答：71 为实例锁冲突：上一个会话的 Server 可能仍在运行。读取技能根目录 `.instance_lease.json` 的 `pid` 字段，确认该进程属于本技能的 `mcp_server.py`，并与用户确认旧会话确已结束后执行 `taskkill /PID <PID> /F /T`（Windows）或 `kill -9`（macOS/Linux），再重启。70 为看门狗自清理，重启即可。详见 [SKILL.md Gotchas](../SKILL.md#gotchas)。
+**问：Server 启动即退出，所有工具不可用（exit code 70）。**
+答：70 表示 stdio 会话结束后的正常退出（宿主关闭了会话），重启即可。锁冲突不再导致 Server 退出——实例锁改为首次调用摄像头工具时懒获取，端口占用冲突会以 `instance_lock_conflict` 工具错误返回（见下条）。若退出原因不明，先读启动 stderr 定位。详见 [SKILL.md Gotchas](../SKILL.md#gotchas)。
 
-**问：工具报错提示「另一个会话正在使用摄像头」。**
-答：为防止不受控的Agent连接，本技能是单实例设计：同一时间只允许一个会话接管摄像头。请先结束另一会话中的摄像头任务再重试——不是故障。
+**问：工具突然不可用 / 提示「另一个会话正在使用摄像头」。**
+答：单实例设计：同一时间只有一个会话持有摄像头，新会话会自动接管——旧会话的连接会被断开。在你想使用的会话里直接重试摄像头操作，即可同样把它夺回——不是故障。若收到 `instance_lock_conflict`，说明锁端口被非本技能程序占用或接管失败：`error_message` 会给出占用进程 PID，关闭后重试。
 
 ### 发现与连接
 
@@ -90,7 +90,7 @@
 5. 绝不手工拼接 RTSP 地址——只用 `get_audio_video_stream()` 返回的 `stream_url`。
 6. 绝不硬编码 ONVIF 端口 80——使用 `search_devices()` / config.yaml 中的 `onvif_port`。
 7. 云台、推流、截图、事件监听启动、补光/图像/追踪变更前，先获得用户明确确认。
-8. 新会话开始前，先结束其他会话的摄像头任务（单实例设计）。
+8. 摄像头为单实例：新会话会自动接管（旧连接被断开）——在你想使用的会话里直接重试摄像头操作即可。
 9. O 类设备身份仅用 `onvif_sn` 做匹配——绝不能作为 `sn_code` 喂给云授权或 SK HTTP。
 10. 基于事件存储构建外部消费者 → [EVENT_INTEGRATION.md](EVENT_INTEGRATION.md)。
 
@@ -100,8 +100,8 @@
 
 | 症状 | 快速处理 | 权威出处 |
 |------|---------|---------|
-| Server 启动即退（exit 70/71） | 锁冲突 / 自清理，见上文 | [SKILL.md Gotchas](../SKILL.md#gotchas) · README 故障排查 |
-| 原生库准备失败（exit 1） | 按 stderr 修环境后重启 | [SKILL.md Installation](../SKILL.md#installation) · [RUNTIME.md](RUNTIME.md) |
+| Server 启动即退（exit 70） | stdio 会话结束的正常退出，重启即可；锁冲突已是工具级错误，见上文 | [SKILL.md Gotchas](../SKILL.md#gotchas) · README 故障排查 |
+| 工具报「未安装 camera-proto」/「协议库加载失败」/「ABI 版本不匹配」 | 用启动 MCP 的解释器跑 `"<MCP_PYTHON>" -m pip install -r requirements.txt` 后重试同一工具（无需重启） | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [Installation](../SKILL.md#installation) |
 | `not_connected` / `needs_password` / `no_sn` / 授权失败组 | 重连 / 询问密码 / 终态处理 | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [WORKFLOW.md Phase 2](WORKFLOW.md) |
 | 事件/补光/图像/追踪返回 `UNSUPPORTED_PROTOCOL` | 设备类别限制，告知用户 | [SKILL.md 能力矩阵](../SKILL.md#extended-capabilities--protocol-matrix) · `commands/*.md` |
 | 流 / 截图 / 录像错误（`timeout`、`busy`、`recording in progress`） | 按决策表重试规则 | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [commands/stream.md](commands/stream.md) |

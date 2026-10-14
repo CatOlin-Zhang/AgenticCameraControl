@@ -1262,9 +1262,10 @@ def connect_device(
                 success=False, status="needs_password",
                 needs_password=True,
                 error_message=(
-                    f"缓存凭据已失效（{last_result.error_message}），"
-                    f"云端重新授权也未能获取可用密码。"
-                    f"请直接输入设备 {camera_name}({dev_ip}) 的当前密码。"
+                    f"缓存凭据已失效（{last_result.error_message}）。"
+                    f"云端重新授权下发的仍是同一份失效凭据，"
+                    f"再次授权（重新点击同意）也无法通过设备验证。"
+                    f"请手动输入设备 {camera_name}({dev_ip}) 的当前正确密码。"
                 ),
             )
         return ConnectResult(
@@ -1437,12 +1438,19 @@ def _probe_and_save_illumination(
         return cached.illumination_modes
     try:
         from .illumination import probe_illumination_capability
-        info = probe_illumination_capability(
-            ip, port, username, password,
-            sn_code=cached.sn_code if cached else "",
-        )
-        if info.supported and info.supported_modes:
 
+        if cached is None:
+            # 回读刚写入的注册表条目补齐字段，避免默认值覆盖 device_class / rtsp_*
+            cached = next(
+                (c for c in _load_config_cameras() if c.name == camera_name), None
+            )
+        result = probe_illumination_capability(name=camera_name)
+        modes = (
+            [c.get("name", "") for c in result.capabilities
+             if isinstance(c, dict) and c.get("name")]
+            if result.ok else []
+        )
+        if modes:
             register_camera(
                 name=camera_name, ip=ip, port=port,
                 username=username, password=password,
@@ -1451,14 +1459,9 @@ def _probe_and_save_illumination(
                 device_class=cached.device_class if cached else "",
                 sn_code=cached.sn_code if cached else "",
                 connection_type=cached.connection_type if cached else "onvif",
-                illumination_modes=info.supported_modes,
+                illumination_modes=modes,
             )
-
-            if info.protocol == "sky_private":
-                conn = _connected_devices.get(camera_name)
-                if conn and not conn.get("tcp_port"):
-                    conn["tcp_port"] = _SK_TCP_PORT
-            return info.supported_modes
+            return modes
     except Exception:
         pass
     return []

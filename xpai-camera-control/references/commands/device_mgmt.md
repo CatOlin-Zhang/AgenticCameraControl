@@ -42,7 +42,7 @@ Read all camera entries from `config.yaml` and return their configurations.
 | `device_class` | string | `"password_required"` or `"direct_connect"` |
 | `sn_code` | string | Device serial number |
 | `pkdk` | string | Device identity token |
-| `illumination_modes` | list[string] | Supported illumination modes cached from the SK private-protocol fill-light capability probe (S-class devices only); empty = unsupported or not yet probed. Written by `connect_device()` after a successful connection. |
+| `illumination_modes` | list[string] | Supported illumination parameter names (`daynightmode` / `filllightmode`) cached from the SK private-protocol fill-light capability probe (S-class devices only); empty = unsupported or not yet probed. Written by `connect_device()` after a successful connection. |
 | `protocol_type` | string | Protocol class for registered cameras: `"S"` (Skyworth private), `"J"` (JCP — media + PTZ over ONVIF), or `"O"` (third-party ONVIF-only, degraded). Written by `connect_device()` via the authoritative SK-first unicast probe; `"O"` is asserted only when SK/JCP probes are empty and the ONVIF admission probe passes (`"W"` and empty both mean no class asserted yet, legacy entries are treated as SK). |
 | `onvif_sn` | string | ONVIF `GetDeviceInformation` SerialNumber (O-class identity/matching only). **Never** used as `sn_code` and never fed to cloud auth or SK HTTP. Empty for S/J entries. |
 

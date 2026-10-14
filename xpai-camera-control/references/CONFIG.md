@@ -123,7 +123,7 @@ cameras:
     sn_code: "<obfuscated>"
     sn: "<obfuscated>"
     device_class: password_required
-    illumination_modes: ["OFF", "AUTO", "ON"]
+    illumination_modes: ["daynightmode", "filllightmode"]
 ```
 
 ### Direct-connect camera (no password)

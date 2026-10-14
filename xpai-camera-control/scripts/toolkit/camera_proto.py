@@ -93,6 +93,11 @@ def _library_name():
         "仅支持 Windows x64、Linux glibc x64、macOS Intel/ARM64 的 64 位解释器。")
 
 
+def _pip_hint() -> str:
+    req = Path(__file__).resolve().parents[2] / "requirements.txt"
+    return f'"{sys.executable}" -m pip install -r "{req}"'
+
+
 def _ensure():
     global _lib
     if _lib is not None:
@@ -100,19 +105,26 @@ def _ensure():
     with _lib_lock:
         if _lib is not None:
             return _lib
-        path = Path(__file__).resolve().with_name(_library_name())
+        try:
+            import camera_proto as _pkg
+        except ImportError as exc:
+            raise RuntimeError(
+                f"未安装 camera-proto 依赖；请运行 {_pip_hint()}") from exc
+        path = Path(_pkg.__file__).resolve().parent / "lib" / _library_name()
         if not path.is_file():
             raise RuntimeError(
-                f"未找到摄像头协议库 {path}；请先用启动 MCP 的 Python 运行 scripts/prepare_runtime.py")
+                f"未找到摄像头协议库 {path}；请重新运行 {_pip_hint()}")
         try:
             lib = ctypes.CDLL(str(path))
             _bind(lib)
         except (OSError, AttributeError) as exc:
             raise RuntimeError(
                 f"摄像头协议库加载失败（{path.name}），请检查系统/解释器架构及原生依赖，"
-                f"并运行 scripts/prepare_runtime.py 校验依赖：{exc}") from exc
+                f"并重新运行 {_pip_hint()} 校验依赖：{exc}") from exc
         if lib.sk_version() != _ABI_VERSION:
-            raise RuntimeError("摄像头协议库 ABI 版本不匹配，请运行 scripts/prepare_runtime.py 校验固定版本依赖")
+            raise RuntimeError(
+                f"摄像头协议库 ABI 版本不匹配；请重新运行 {_pip_hint()} "
+                "安装固定版本 camera-proto")
         _lib = lib
         return lib
 
@@ -420,3 +432,21 @@ class AlarmParser:
 
     def __exit__(self, *exc):
         self.close()
+
+
+def _import_self_check() -> None:
+    try:
+        try:
+            abi = _ensure().sk_version().decode("utf-8")
+            message = (f"[xpai-camera-control] 自检通过：python={sys.executable}；"
+                       f"camera-proto ABI {abi} 已加载")
+        except Exception as exc:
+            message = (f"[xpai-camera-control] 自检失败：{exc}\n"
+                       f"[xpai-camera-control] 修复：{_pip_hint()}"
+                       "（安装后直接重试摄像头工具，无需重启）")
+        print(message, file=sys.stderr)
+    except Exception:
+        pass
+
+
+_import_self_check()
