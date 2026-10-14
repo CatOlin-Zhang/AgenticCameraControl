@@ -24,7 +24,7 @@ A: The MCP server is not registered. Follow the three-step [Installation](../SKI
 A: Exit 71 = instance-lock conflict: a previous session's server may still be alive. Read `pid` from `.instance_lease.json` in the skill root, verify the process belongs to this skill's `mcp_server.py`, confirm with the user that the old session is really finished, then `taskkill /PID <PID> /F /T` (Windows) or `kill -9` (macOS/Linux) and restart. Exit 70 = watchdog self-cleanup; restarting is enough. Details: [SKILL.md Gotchas](../SKILL.md#gotchas).
 
 **Q: Tools fail because "another session is using the camera".**
-A: By design only one session can hold the camera (single-instance server). Ask the user to finish the camera task in the other session first, then retry — not a malfunction.
+A: To prevent uncontrolled Agent connections, the skill is single-instance by design: only one session can take over the camera at a time. Ask the user to finish the camera task in the other session first, then retry — not a malfunction.
 
 ### Discovery & Connection
 
