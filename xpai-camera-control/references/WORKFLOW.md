@@ -55,6 +55,8 @@ For protocol-level details (multicast addresses, message formats), see [Discover
 
 ## Phase 2 — Connect & Authorize: Detailed Tool Calls
 
+> **Pre-notice before a cloud-auth wait (required):** a cloud-authorization call blocks `connect_device` for up to 5 minutes until the user approves, and the request is pushed only to the phone App the camera is bound to. Before calling `connect_device` on a camera that may need cloud authorization (e.g. no cached password), tell the user to open the bound App and tap **Approve** when the request appears.
+
 ### Direct-connect camera (no password needed)
 
 ```text
@@ -71,10 +73,13 @@ connect_device(camera_name="living_room_camera")
 → tool reads username/password from config.yaml
 → retries ONVIF WS-UsernameToken auth up to 3 times (1s interval)
 → success: auth_method="password"
-→ all retries fail: auto-removes registration from config.yaml
-   → status="failed", needs_password=true
-   → error: "Cached credential connection failed (retried 3 times)..."
-   → Agent should re-discover via search_devices() and re-connect
+→ all retries fail: tool attempts one cloud re-authorization round (blocking up to 5 minutes; pre-notice not applicable — do not steer the user into approving)
+   → if the cloud still yields a usable password: auto-connected, credentials re-persisted
+   → otherwise: registration auto-removed; status="needs_password"
+   → error explains: the cloud re-issued password is the same stale credential — another authorization round cannot recover
+   → Agent: ask the user for the current password directly (do not send them to re-approve), then reconnect —
+     the registry entry was removed, so pass the IP from the error message:
+     connect_device(camera_name="living_room_camera", password=<user_input>, ip="192.168.1.100")
 ```
 
 ### Password-required camera (no cached credentials)
@@ -83,7 +88,7 @@ connect_device(camera_name="living_room_camera")
 Step 1 — Connect without password:
   connect_device(camera_name="discovered_192_168_1_100", sn_code="SN123456")
   → tool internally triggers cloud authorization
-  → waiting for user to confirm on APP (blocks until timeout)
+  → waiting for user to confirm in the bound App (blocks up to 5 minutes; pre-notice required — see above)
   → success=true: cloud authorized, auto-connected, credentials persisted
   → status="needs_password": cloud service unreachable, or the device has no station record (submitted to the default station, APP may not receive it) → ask user for password
   → status="auth_rejected": user denied authorization, cannot connect

@@ -8,23 +8,23 @@
 
 ### Install & Startup
 
-**Q: `pip install -r requirements.txt` is slow or fails.**
-A: Use a 64-bit Python 3.10+ interpreter. If PyPI is slow in your region, install the Python dependencies through a local mirror (`pip install -r requirements.txt -i <mirror-url>`). Native libraries are different: their download source and SHA256 hashes are pinned in `scripts/runtime_artifacts.json` (supply-chain protection) and cannot be switched to a mirror — if that download times out, see the next entry.
+**Q: `"<MCP_PYTHON>" -m pip install -r requirements.txt` is slow or fails.**
+A: Use a 64-bit Python 3.10+ interpreter — `<MCP_PYTHON>` is the absolute path of the interpreter that launches the MCP server; always install via `-m pip` on that exact interpreter (a bare `pip` may belong to a different Python environment). If PyPI is slow in your region, install through a local mirror (`"<MCP_PYTHON>" -m pip install -r requirements.txt -i <mirror-url>`) — all dependencies, including the native library camera-proto, are regular PyPI packages, and mirrors apply to them equally.
 
-**Q: First startup takes forever / MCP tools never appear (download timeout).**
-A: The first start downloads pinned native resources via `prepare_runtime.py`. If it exceeds the host's startup timeout, run `python scripts/prepare_runtime.py` manually with the same interpreter, then restart the MCP server. Once local files match the manifest, startup works offline.
+**Q: A camera tool call reports "未安装 camera-proto 依赖" (package not installed).**
+A: The dependency is not installed in the interpreter that launches the MCP server. Run `"<MCP_PYTHON>" -m pip install -r requirements.txt` on that same interpreter (the tool error prints this command with the actual paths), then retry the tool — no server restart is needed (the loader retries on the next call, so the install takes effect in the same process). Installation happens at setup time; MCP startup itself downloads nothing.
 
-**Q: Startup fails with "协议库准备失败" (native preparation error), exit code 1.**
-A: Read the stderr reason (network / version / file access), fix the environment, then restart. Do not call camera tools until startup succeeds.
+**Q: A camera tool call reports "协议库加载失败" (library load failure), "ABI 版本不匹配" (ABI mismatch), or "未找到摄像头协议库" (library file missing).**
+A: Load failures are usually a system/interpreter architecture or native-dependency problem; an ABI mismatch means the camera-proto version does not pair with the facade; a missing library file means an incomplete package. First run `"<MCP_PYTHON>" -m pip install -r requirements.txt` on the interpreter that launches the MCP server to verify the pinned dependency, then retry the tool; if load failure persists, check for a 64-bit interpreter matching the system architecture.
 
 **Q: The camera tools are not in my tool list at all.**
 A: The MCP server is not registered. Follow the three-step [Installation](../SKILL.md#installation) in SKILL.md — never fall back to importing `scripts.toolkit` directly or writing wrapper scripts.
 
-**Q: Server exits immediately; all tools unavailable; exit code 70 or 71.**
-A: Exit 71 = instance-lock conflict: a previous session's server may still be alive. Read `pid` from `.instance_lease.json` in the skill root, verify the process belongs to this skill's `mcp_server.py`, confirm with the user that the old session is really finished, then `taskkill /PID <PID> /F /T` (Windows) or `kill -9` (macOS/Linux) and restart. Exit 70 = watchdog self-cleanup; restarting is enough. Details: [SKILL.md Gotchas](../SKILL.md#gotchas).
+**Q: Server exits immediately; all tools unavailable (exit code 70).**
+A: Exit 70 = clean shutdown after the stdio session ended (the host closed it); restarting is enough. A lock conflict no longer exits the server — the instance lock is taken lazily on first camera use, so a busy lock port surfaces as an `instance_lock_conflict` tool error on the call itself (next entry). If the exit is unexpected, read the startup stderr for the actual reason. Details: [SKILL.md Gotchas](../SKILL.md#gotchas).
 
-**Q: Tools fail because "another session is using the camera".**
-A: By design only one session can hold the camera (single-instance server). Ask the user to finish the camera task in the other session first, then retry — not a malfunction.
+**Q: Camera tools stopped working after another session started using the camera.**
+A: By design: only one session holds the camera (single-instance server), and a newer session automatically takes over — the older session's connection is dropped. Retry the camera action in the session you want to use and it takes the camera back the same way — not a malfunction. If a call instead returns `instance_lock_conflict`, a non-skill program occupies the lock port: `error_message` names the PID; close it, then retry.
 
 ### Discovery & Connection
 
@@ -92,7 +92,7 @@ A: Usage-phase traffic is LAN-only; the connection phase talks to the vendor clo
 5. Never hand-build RTSP URLs — use the `stream_url` returned by `get_audio_video_stream()`.
 6. Never hardcode ONVIF port 80 — use `onvif_port` from `search_devices()` / config.yaml.
 7. Get explicit user confirmation before PTZ, streaming, screenshots, event-monitor start, and illumination/image/tracking changes.
-8. Finish camera work in other sessions before starting a new one (single-instance design).
+8. Camera is single-instance: a newer session auto-takes-over the camera (the older connection is dropped) — retry your camera action in the session you want to use.
 9. O-class identity uses `onvif_sn` for matching only — never feed it to cloud auth or SK HTTP as `sn_code`.
 10. Building an external consumer on the event store → [EVENT_INTEGRATION.md](EVENT_INTEGRATION.md).
 
@@ -102,8 +102,8 @@ Symptom-first map to the authoritative source (this FAQ paraphrases; the sources
 
 | Symptom | Quick fix | Authoritative source |
 |---------|-----------|----------------------|
-| Server exits at startup (exit 70/71) | Lock conflict / self-cleanup — see FAQ above | [SKILL.md Gotchas](../SKILL.md#gotchas) · README Troubleshooting |
-| Native preparation failure (exit 1) | Fix environment per stderr, restart | [SKILL.md Installation](../SKILL.md#installation) · [RUNTIME.md](RUNTIME.md) |
+| Server exits immediately; tools unavailable (exit 70) | Clean shutdown (stdio session ended) — restart; lock conflicts are tool errors now, see FAQ above | [SKILL.md Gotchas](../SKILL.md#gotchas) · README Troubleshooting |
+| Tool reports "未安装 camera-proto" / "协议库加载失败" / "ABI 版本不匹配" | Run `"<MCP_PYTHON>" -m pip install -r requirements.txt` with the MCP-launching interpreter, then retry the same tool (no restart needed) | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [Installation](../SKILL.md#installation) |
 | `not_connected` / `needs_password` / `no_sn` / auth-failure group | Reconnect / ask for password / final-refusal handling | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [WORKFLOW.md Phase 2](WORKFLOW.md) |
 | `UNSUPPORTED_PROTOCOL` on events/illumination/image/tracking | Device-class limitation, inform user | [SKILL.md Capability Matrix](../SKILL.md#extended-capabilities--protocol-matrix) · `commands/*.md` |
 | Stream / screenshot / recording errors (`timeout`, `busy`, `recording in progress`) | Retry rules per Decision Table | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [commands/stream.md](commands/stream.md) |

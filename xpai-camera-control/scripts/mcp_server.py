@@ -3,9 +3,10 @@ import os
 import json
 import asyncio
 import argparse
+import threading
 
 import anyio
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
@@ -579,6 +580,13 @@ async def handle_list_tools() -> list[Tool]:
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: Dict[str, Any] | None) -> list[TextContent]:
     args = arguments or {}
+    if name not in _LOCK_EXEMPT_TOOLS:
+        lock_error = await anyio.to_thread.run_sync(_ensure_camera_lock)
+        if lock_error is not None:
+            return [TextContent(
+                type="text",
+                text=json.dumps(lock_error, ensure_ascii=False, indent=2),
+            )]
     budget = _resolve_tool_budget(name, args)
     try:
 
@@ -609,8 +617,6 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any] | None) -> list[
         )]
 
 def _resume_event_monitors_async() -> None:
-    import threading
-
     def _worker():
         try:
             from scripts.toolkit.events import resume_persisted_monitors
@@ -622,9 +628,9 @@ def _resume_event_monitors_async() -> None:
 
 _instance_lock_socket = None
 _lease_file = os.path.join(_skill_root, ".instance_lease.json")
-_lease_thread = None
-_LEASE_INTERVAL = 5.0
-_LEASE_TTL = 30.0
+_lock_mutex = threading.Lock()
+_lock_held = False
+_LOCK_EXEMPT_TOOLS = {"get_registered_cameras", "register_camera", "search_devices"}
 
 def _write_lease(pid: int, port: int) -> None:
     import time
@@ -633,24 +639,6 @@ def _write_lease(pid: int, port: int) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(content)
     os.replace(tmp, _lease_file)
-
-def _lease_heartbeat(pid: int, port: int) -> None:
-    import time
-    while True:
-        try:
-            _write_lease(pid, port)
-        except Exception:
-            pass
-        time.sleep(_LEASE_INTERVAL)
-
-def _start_lease_heartbeat(pid: int, port: int) -> None:
-    global _lease_thread
-    import threading
-    _lease_thread = threading.Thread(
-        target=_lease_heartbeat, args=(pid, port),
-        name="InstanceLease", daemon=True,
-    )
-    _lease_thread.start()
 
 def _get_lock_port() -> int:
     import zlib
@@ -740,15 +728,6 @@ def _is_our_server(cmdline: str, pid: Optional[int] = None) -> bool:
     except Exception:
         return False
 
-def _is_lease_expired() -> bool:
-    import time
-    try:
-        with open(_lease_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return time.time() - data.get("ts", 0) > _LEASE_TTL
-    except Exception:
-        return True
-
 def _kill_pid(pid: int) -> bool:
     import subprocess
     try:
@@ -764,7 +743,7 @@ def _kill_pid(pid: int) -> bool:
     except Exception:
         return False
 
-def _acquire_instance_lock() -> Optional[int]:
+def _acquire_instance_lock() -> Tuple[Optional[int], str]:
     global _instance_lock_socket
     import socket
 
@@ -777,39 +756,63 @@ def _acquire_instance_lock() -> Optional[int]:
         return _try_recover_lock(port)
     s.listen(1)  # visible in netstat/ss/lsof, required by _find_pid_on_port
     _instance_lock_socket = s
-    return port
+    return port, ""
 
-def _try_recover_lock(port: int) -> Optional[int]:
+def _try_recover_lock(port: int) -> Tuple[Optional[int], str]:
+    global _instance_lock_socket
     import socket
     import time
 
     pid = _find_pid_on_port(port)
     if pid is None:
-        return None
+        return None, f"锁端口 {port} 被占用，但未能定位到监听进程，请稍后重试"
 
     cmdline = _get_process_cmdline(pid)
     if not _is_our_server(cmdline, pid):
-        return None
+        return None, f"锁端口 {port} 被其他程序占用（PID {pid}），请关闭该程序后重试"
 
-    if not _is_lease_expired():
-        return None
-
-    if not _kill_pid(pid):
-        return None
-
-    time.sleep(0.5)
-
+    killed = _kill_pid(pid)  # a concurrent starter may have killed it already
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.bind(("127.0.0.1", port))
-    except OSError:
-        s.close()
-        return None
-    s.listen(1)  # visible in netstat/ss/lsof, required by _find_pid_on_port
+    for _ in range(10):
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError:
+            time.sleep(0.5)
+            continue
+        s.listen(1)  # visible in netstat/ss/lsof, required by _find_pid_on_port
+        _instance_lock_socket = s
+        if killed:
+            print(f"[instance-lock] took over from PID {pid}", file=sys.stderr, flush=True)
+        return port, ""
+    s.close()
+    if killed:
+        return None, f"已结束旧实例（PID {pid}），但锁端口 {port} 未在 5 秒内释放，请重试"
+    return None, f"无法结束旧实例（PID {pid}），锁端口 {port} 仍被占用"
 
-    global _instance_lock_socket
-    _instance_lock_socket = s
-    return port
+def _ensure_camera_lock() -> Optional[dict]:
+    """Take the instance lock on first use; returns None on success, else an error payload."""
+    global _lock_held
+    if _lock_held:
+        return None
+    with _lock_mutex:
+        if _lock_held:
+            return None
+        port, fail_reason = _acquire_instance_lock()
+        if port is None:
+            print(f"[instance-lock] conflict: {fail_reason}", file=sys.stderr, flush=True)
+            return {
+                "success": False,
+                "error_code": "instance_lock_conflict",
+                "error_message": fail_reason,
+                "lock_port": _get_lock_port(),
+            }
+        _lock_held = True
+        try:
+            _write_lease(os.getpid(), port)
+        except Exception:
+            pass
+        _resume_event_monitors_async()
+    return None
 
 async def main():
     parser = argparse.ArgumentParser(description="XPAI Camera Control MCP Server")
@@ -817,26 +820,12 @@ async def main():
                         help="Transport to use (default: stdio)")
     args = parser.parse_args()
 
-    lock_port = _acquire_instance_lock()
-    if lock_port is None:
-        sys.exit(71)
-
-    _start_lease_heartbeat(os.getpid(), lock_port)
-
-    from scripts.prepare_runtime import main as prepare_runtime_main
-
-    runtime_status = prepare_runtime_main()
-    if runtime_status != 0:
-        sys.exit(runtime_status)
-
     try:
         import cv2
     except Exception:
         pass
 
     anyio.to_thread.current_default_thread_limiter().total_tokens = 16
-
-    _resume_event_monitors_async()
 
     async with stdio_server() as (read_stream, write_stream):
 

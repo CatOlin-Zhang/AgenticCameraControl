@@ -49,7 +49,8 @@
 
 ```bash
 cd xpai-camera-control
-pip install -r requirements.txt
+# <MCP_PYTHON>：启动 MCP Server 的 Python 解释器完整路径（-m pip 绑定该解释器）
+"<MCP_PYTHON>" -m pip install -r requirements.txt
 ```
 
 #### 运行 MCP Server
@@ -91,8 +92,6 @@ AgenticCameraControl/
     ├── scripts/
     │   ├── mcp_server.py         # MCP Server 入口（20 个工具注册）
     │   ├── _paths.py             # 路径解析
-    │   ├── prepare_runtime.py    # 原生组件准备（启动时校验/安装原生库）
-    │   ├── runtime_artifacts.json # 原生组件清单（版本与哈希）
     │   └── toolkit/              # 工具函数集（纯 Python 源码）
     │       ├── __init__.py       # 统一导出入口
     │       ├── device_mgmt.py    # 设备管理与连接
@@ -110,8 +109,7 @@ AgenticCameraControl/
     │   ├── WORKFLOW.md           # 工作流详解（含故障排查）
     │   ├── MCP_TOOLS_API.md      # 20 个 MCP 工具完整 API 文档
     │   ├── EVENT_INTEGRATION.md  # 事件存储外部消费契约
-    │   ├── FAQ.md / FAQ.zh-CN.md # FAQ · 最佳实践 · 排障索引（EN / 中文）
-    │   └── RUNTIME.md            # 原生组件维护与发布参考
+    │   └── FAQ.md / FAQ.zh-CN.md # FAQ · 最佳实践 · 排障索引（EN / 中文）
     ├── snapshots/                # 截图保存目录（运行时自动创建）
     ├── video/                    # 录像保存目录（运行时自动创建）
     ├── events/                   # 事件持久化目录（运行时自动创建）
@@ -173,6 +171,7 @@ AgenticCameraControl/
 ### 依赖
 
 - `mcp` — MCP Server 框架
+- `camera-proto` — 私有协议原生库（动态库；版本 pin 与门面 `_ABI_VERSION` 绑定）
 - `onvif-zeep` — ONVIF 协议（SOAP / WS-Discovery）
 - `opencv-python` — 视频采集与处理
 - `ffmpeg-downloader` — ffmpeg 二进制（录像 remux / 流元数据探测）
@@ -182,22 +181,24 @@ AgenticCameraControl/
 
 完整依赖列表见 `xpai-camera-control/requirements.txt`。
 
+维护提示：升级或修改 `camera-proto` 时，必须同步更新 `requirements.txt` 中的版本 pin 与 `scripts/toolkit/camera_proto.py` 中的 `_ABI_VERSION`——两者绑定，版本不匹配时原生库会拒绝加载。
+
 ### 会话规则
 
 | 规则   | 值                                   |
 |------|-------------------------------------|
 | 空闲超时 | **30 秒** — 用户停止交互后 Agent 应断开连接释放控制权 |
 | 并发控制 | FIFO：同一时间仅一个 Agent 拥有完全控制权，其余为只读    |
-| 单实例锁 | 同一时间仅允许一个 MCP Server 进程运行           |
+| 单实例锁 | 首次使用摄像头时懒获取；新会话自动接管，同一时间仅一个会话持有摄像头 |
 
 ### 故障排查
 
 | 现象                                     | 原因与处理                                                                                                                                                                                                                                                          |
 |----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| MCP 工具全部不可用，Server 启动即退出（exit code 71） | 实例锁冲突：已有 MCP Server 实例在运行。部分 Agent 架构在会话结束后不会终止 Server 进程，旧进程的租约心跳持续刷新，自动回收不会触发，新会话的 Server 因此无法启动。处理：读取技能包根目录 `.instance_lease.json` 中的 `pid` 字段定位旧进程，确认其命令行属于本技能包的 `mcp_server.py` 后执行 `taskkill /PID <PID> /F /T`（Linux/macOS 用 `kill -9`），再重启 MCP 客户端拉起新实例 |
+| 摄像头工具返回 `instance_lock_conflict` | 锁端口被非本技能程序占用，或接管失败，`error_message` 会给出占用进程 PID。同一技能另一会话持锁的常规情况由新会话自动接管，不会报此错。处理：关闭占用程序后重试；若确认是本技能残留的 MCP Server，核实进程命令行后执行 `taskkill /PID <PID> /F /T`（Linux/macOS 用 `kill -9`），再重试 |
 | 定长录像未按预期停止                             | 录像时长应通过 `toggle_recording(action="start", duration=<秒>)` 传入，由 Server 端到时自动停止。不要依赖“启动后延时再调用 stop”的方式——对话过程中的其他任务会淹没该停止操作，导致录像无限持续并占用设备的 RTSP 会话                                                                                                                 |
 
-Server 进程退出码：`70` = 看门狗自清理（宿主已放弃该实例）；`71` = 实例锁冲突（另一存活实例持锁，或需手动干预）。
+Server 进程退出码：`70` = stdio 会话结束后的正常退出（宿主关闭了会话）。锁冲突不再导致进程退出，而是以工具级错误 `instance_lock_conflict` 返回。
 
 本系统为 Agent 可读设计，故障优先由 Agent 自动恢复（self-healing）；上表及以下文档供人工了解与自助排障：完整常见问题、最佳实践与排障索引见 [FAQ 中文版](xpai-camera-control/references/FAQ.zh-CN.md)（英文版 [FAQ.md](xpai-camera-control/references/FAQ.md)）。
 
@@ -247,7 +248,8 @@ The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Se
 
 ```bash
 cd xpai-camera-control
-pip install -r requirements.txt
+# <MCP_PYTHON>: full path of the Python interpreter that launches the MCP server (-m pip binds to it)
+"<MCP_PYTHON>" -m pip install -r requirements.txt
 ```
 
 #### Run MCP Server
@@ -289,8 +291,6 @@ AgenticCameraControl/
     ├── scripts/
     │   ├── mcp_server.py         # MCP Server entry point (20 tools registered)
     │   ├── _paths.py             # Path resolution
-    │   ├── prepare_runtime.py    # Native runtime preparation (validates/installs native libraries at startup)
-    │   ├── runtime_artifacts.json # Native component manifest (versions & hashes)
     │   └── toolkit/              # Tool functions (pure Python source)
     │       ├── __init__.py       # Unified export entry
     │       ├── device_mgmt.py    # Device management & connection
@@ -308,8 +308,7 @@ AgenticCameraControl/
     │   ├── WORKFLOW.md           # Workflow details (incl. troubleshooting)
     │   ├── MCP_TOOLS_API.md      # Complete API doc for all 20 MCP tools
     │   ├── EVENT_INTEGRATION.md  # Event storage external consumer contract
-    │   ├── FAQ.md / FAQ.zh-CN.md # FAQ · best practices · troubleshooting index (EN / 中文)
-    │   └── RUNTIME.md            # Native component maintenance & release reference
+    │   └── FAQ.md / FAQ.zh-CN.md # FAQ · best practices · troubleshooting index (EN / 中文)
     ├── snapshots/                # Screenshot directory (auto-created at runtime)
     ├── video/                    # Recording directory (auto-created at runtime)
     ├── events/                   # Event persistence directory (auto-created at runtime)
@@ -371,6 +370,7 @@ Camera configurations are stored in `xpai-camera-control/config.yaml`. Credentia
 ### Dependencies
 
 - `mcp` — MCP Server framework
+- `camera-proto` — Native private-protocol library (shared library; version pin bound to the facade `_ABI_VERSION`)
 - `onvif-zeep` — ONVIF protocol (SOAP / WS-Discovery)
 - `opencv-python` — Video capture and processing
 - `ffmpeg-downloader` — ffmpeg binaries (recording remux / stream metadata probing)
@@ -380,22 +380,24 @@ Camera configurations are stored in `xpai-camera-control/config.yaml`. Credentia
 
 See `xpai-camera-control/requirements.txt` for the full dependency list.
 
+Maintainer note: when upgrading or modifying `camera-proto`, update both the version pin in `requirements.txt` and `_ABI_VERSION` in `scripts/toolkit/camera_proto.py` — they are bound together; a mismatch makes the native library refuse to load.
+
 ### Session Rules
 
 | Rule                 | Value                                                                                  |
 |----------------------|----------------------------------------------------------------------------------------|
 | Idle timeout         | **30 seconds** — Agent must disconnect and release control when user stops interacting |
 | Concurrent control   | FIFO: only one agent has full control; others are view-only                            |
-| Single-instance lock | Only one MCP server process may run at a time                                          |
+| Single-instance lock | Acquired lazily on first camera use; a newer session takes over automatically — only one session holds the camera at a time |
 
 ### Troubleshooting
 
 | Symptom                                                                       | Cause & Resolution                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 |-------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| All MCP tools unavailable; server exits immediately on startup (exit code 71) | Instance-lock conflict: another MCP server instance is already running. Some Agent architectures do not terminate the server process when a session ends; the orphaned process keeps its lease heartbeat fresh, automatic recovery never fires, and the new session's server cannot start. Resolution: read the `pid` field from `.instance_lease.json` in the skill package root to locate the stale process, verify its command line belongs to this skill's `mcp_server.py`, then run `taskkill /PID <PID> /F /T` (Linux/macOS: `kill -9`), and restart the MCP client to spawn a fresh instance |
+| A camera tool returns `instance_lock_conflict` | The lock port is occupied by a non-skill program, or takeover failed; `error_message` names the holding PID. The normal "another session of this skill holds the lock" case is auto-taken-over and never surfaces this error. Resolution: close the occupying program and retry; if it is a leftover MCP server of this skill, verify the process command line and run `taskkill /PID <PID> /F /T` (Linux/macOS: `kill -9`), then retry |
 | Fixed-duration recording did not stop as expected                             | Pass the duration via `toggle_recording(action="start", duration=<seconds>)` — the server auto-stops when time is up. Do not rely on "start, wait, then call stop": intermediate tasks during the conversation will bury the stop step, leaving the recording running indefinitely and holding the device's RTSP session                                                                                                                                                                                                                                                                            |
 
-Server exit codes: `70` = watchdog self-cleanup (host abandoned the instance); `71` = instance-lock conflict (another live instance holds the lock, or manual intervention needed).
+Server exit code: `70` = clean shutdown after the stdio session ended (host closed the session). Lock conflicts no longer exit the process — they surface as an `instance_lock_conflict` tool error instead.
 
 This system is Agent-readable by design — failures are expected to be self-healed by the Agent first; the table above and the FAQ documents serve human reference and self-service: see [FAQ.md](xpai-camera-control/references/FAQ.md) (Chinese version: [FAQ.zh-CN.md](xpai-camera-control/references/FAQ.zh-CN.md)) for the full FAQ, best practices, and troubleshooting index.
 

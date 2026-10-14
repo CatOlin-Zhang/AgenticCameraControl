@@ -2,7 +2,7 @@
 name: xpai-camera-control
 description: "Discover, connect, and control XPAI LAN cameras via MCP. Capabilities: device detection, streaming, WebRTC preview, snapshots, PTZ control, alarm events, illumination, image settings, detection & tracking, device management."
 license: MIT
-compatibility: Requires 64-bit Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. Native preparation/loading code supports Windows x64, Linux glibc x64, and macOS Intel/ARM64; the default verified artifact manifest pins the four-platform production camera-proto 0.2.0 release published on PyPI (ABI 2.1.0). Initial wheel installation requires network access. Cameras must be on the same LAN for discovery.
+compatibility: Requires 64-bit Python 3.10+, OpenCV, onvif-zeep, requests, psutil, PyYAML, and mcp. The native library is the pinned pip dependency camera-proto==0.2.0 (ABI 2.1.0), supported on Windows x64, Linux glibc x64, and macOS Intel/ARM64. Initial dependency installation requires network access. Cameras must be on the same LAN for discovery.
 metadata:
   version: "0.7.0"
 ---
@@ -31,7 +31,7 @@ If `xpai-camera-control` tools are not present in the available tool set, follow
 
 **Step 1 — Determine SKILL_ROOT:** the absolute path of the directory containing this SKILL.md, or run `python -c "from scripts._paths import get_skill_root; print(get_skill_root())"`.
 
-**Step 2 — Install dependencies:** `pip install -r <SKILL_ROOT>/requirements.txt` — use the same 64-bit Python interpreter configured for the MCP server.
+**Step 2 — Install dependencies:** `"<MCP_PYTHON>" -m pip install -r <SKILL_ROOT>/requirements.txt` — `<MCP_PYTHON>` is the absolute path of the same 64-bit Python interpreter configured for the MCP server in Step 3. Always install through `-m pip` on that exact interpreter: a bare `pip` may belong to a different Python environment.
 
 **Step 3 — Write MCP config:** append the following JSON to the host's MCP config file (replace `<SKILL_ROOT>` with the actual path from Step 1):
 ```json
@@ -47,23 +47,23 @@ If `xpai-camera-control` tools are not present in the available tool set, follow
 
 **Config notes:** `args` must stay an absolute path — do not rely on `cwd` (host support for `cwd` varies). On Windows, write the path with forward slashes or escaped backslashes (`\\`) so the JSON stays valid. `command` must be the same 64-bit Python interpreter used in Step 2 — use its absolute path if it is not the `PATH` `python`. Common config locations: Claude Desktop `%APPDATA%\Claude\claude_desktop_config.json` (Win) / `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS); Cursor Settings → MCP → Add Server; Cline `.cline/mcp_settings.json`.
 
-**Native runtime preparation:** the skill ships without native libraries; at startup — after acquiring the single-instance lock and lease heartbeat, before restoring event monitors or starting the MCP transport — `mcp_server.py` calls `prepare_runtime.py` to validate/install the pinned native resources from the reviewed local `scripts/runtime_artifacts.json`. On failure the server writes the error to stderr and exits nonzero without serving tools. First install requires network access; startup works offline once local files match the manifest. Installation output goes to stderr, never to the JSON-RPC stdout channel. If the first download exceeds the MCP client's startup timeout, run `python scripts/prepare_runtime.py` manually with the same interpreter, then restart the MCP server (this step does not access cameras). Maintainer/release details (platform records, hashes, test conventions) → [RUNTIME.md](references/RUNTIME.md).
+**Native library (camera-proto):** the native library is delivered as the pinned pip dependency `camera-proto==0.2.0`, installed together with the other dependencies in Step 2 — installation happens at setup time, never at MCP startup. The MCP server starts normally even if the package is missing; the first camera tool call then returns an error containing the exact fix command to run — `"<MCP_PYTHON>" -m pip install -r requirements.txt`, with the actual interpreter path and requirements file filled in. After installing, simply retry the tool — no server restart needed (the loader retries on the next call). On startup, the first import runs a one-shot dependency self-check and writes a single stderr line with the actual interpreter path and the camera-proto status — read it first when diagnosing. Startup output goes to stderr, never to the JSON-RPC stdout channel.
 
 ## MCP-Only Interaction (Hard Rule)
 
-All camera operations **MUST** go through the MCP tools exposed by `scripts/mcp_server.py`. If the tools are **not present** in your available tool set, do NOT fall back to scripting — follow the [Installation](#installation) steps first, then call the tools; if server startup fails (e.g. a preparation error on stderr), report the stderr reason and resolve it before retrying.
+All camera operations **MUST** go through the MCP tools exposed by `scripts/mcp_server.py`. If the tools are **not present** in your available tool set, do NOT fall back to scripting — follow the [Installation](#installation) steps first, then call the tools; if server startup fails, report the stderr reason and resolve it before retrying.
 
 - **NEVER** import `scripts.toolkit` (or any module inside this package) directly, and **NEVER** write standalone scripts that re-implement or wrap tool functionality — direct imports bypass the skill's security constraints (explicit user confirmation, parameter validation) and the in-memory connection state held by the MCP server process, so scripted calls in a separate process silently violate both.
 
 ## Single-Instance Limitation
 
-The MCP server is **stateful and single-instance** — camera connections and RTSP sessions live in one server process's memory, and the instance lock (port bind + lease heartbeat + watchdog, see Gotchas) allows only one running instance at a time by design (concurrent instances would fight for the device's RTSP session slots and hang the camera).
+The MCP server is **stateful and single-instance** — camera connections and RTSP sessions live in one server process's memory, and an instance lock (port bind, see Gotchas) keeps only one *camera-active* instance at a time (concurrent camera users would fight for the device's RTSP session slots and hang the camera). The lock is acquired **lazily on the first camera-using tool call**, never at startup — so every session always sees the full tool list, and camera-*free* tools (`get_registered_cameras`, `register_camera`, `search_devices`) work everywhere. A newer session **takes over** the lock from an older one (the older instance is shut down): latest user wins.
 
 **Agent instruction:** before starting camera work (or the first time camera tools are invoked in a session), proactively tell the user in plain language:
 
-> The camera feature has a usage limitation: only one session can "take over" the camera at a time (the connection state is stored in a single background service). If another session is currently using the camera, the camera tools in this session may become unavailable or fail when called — this is not a malfunction. Please end or close the camera task in the other session first, then ask me to retry.
+> The camera feature has a usage limitation: only one session can "hold" the camera at a time (the connection state is stored in a single background service). When a new session starts using the camera, it automatically takes over: the other session's camera connection is dropped and its camera tools stop working. If you switch back, just retry the camera action in this window — it takes the camera back the same way.
 
-If startup fails with a lock conflict (exit code 71), do NOT silently retry — tell the user and ask them to close other sessions' camera work first. Missing tools alone do not establish a lock conflict: check registration and startup stderr; if preparation failed, report that error instead and stop until resolved.
+If a camera-using tool call returns an `instance_lock_conflict` error, the lock port is occupied by a non-skill program or takeover failed — relay `error_message` to the user (it names the holding PID), resolve, then retry. Missing tools alone do not establish a lock conflict: check registration and startup stderr first.
 
 ## Core Workflow
 
@@ -89,6 +89,8 @@ When Phase 0 cache is unavailable, call `search_devices()` to discover cameras o
 ### Phase 2 — Connect & Authorize
 
 Call `connect_device()` for each camera. The tool handles auth internally (cloud authorization, cached credentials, direct connect). **Agent only reacts to the returned `status`** — see [Decision Table](#decision-table--error--status--action) for mapping.
+
+**Cloud-authorization pre-notice (required):** cloud authorization blocks `connect_device` for up to 5 minutes until the user approves, and the request is pushed **only to the phone App this camera is bound to**. Whenever a `connect_device` call may enter cloud authorization (e.g. a password-required camera with no cached password), **tell the user before the call** (in the user's language): open the phone App this camera is bound to and tap **Approve** on the authorization request — the call will then spin for up to 5 minutes. Without this notice the user sees only a spinner and does not know to act.
 
 ### Phase 3 — Stream & Capture
 
@@ -133,7 +135,7 @@ These tools are available when the user explicitly requests them (all require a 
 | Discovery | `search_devices` | ✅ SK private | ✅ JCP | ✅ WS-Discovery | [device_mgmt.md](references/commands/device_mgmt.md) |
 | Cloud authorization on connect | `connect_device` | ✅ | ✅ | ⚠️ password only (no SK/JCP SN) | [device_mgmt.md](references/commands/device_mgmt.md) |
 
-> `manage_camera_events(action="start")` spawns a background listener thread; `manage_illumination(action="set")` and `set_tracking` modify hardware settings — all require **explicit user confirmation** before calling. Cloud authorization is handled internally by `connect_device` (blocking call, may wait for user confirmation on APP). J/O-class devices asked for an SK-private-protocol-only capability return `error_code="UNSUPPORTED_PROTOCOL"` + a clear reason — not a malfunction or timeout.
+> `manage_camera_events(action="start")` spawns a background listener thread; `manage_illumination(action="set")` and `set_tracking` modify hardware settings — all require **explicit user confirmation** before calling. Cloud authorization is handled internally by `connect_device` (blocking call, waits up to 5 minutes for user approval in the phone App the camera is bound to — **pre-notice required**, see Phase 2). J/O-class devices asked for an SK-private-protocol-only capability return `error_code="UNSUPPORTED_PROTOCOL"` + a clear reason — not a malfunction or timeout.
 
 > **O-class admission:** a WS-Discovery device that never answers SK/JCP discovery is admitted only when the ONVIF admission probe passes (ONVIF port probe + authenticated `GetDeviceInformation`); its ONVIF SerialNumber is persisted as `onvif_sn` (identity/matching only — **never** fed to cloud auth or SK HTTP as `sn_code`). RTSP-reachable devices that fail ONVIF admission are rejected with `status="no_sn"` — final, do not retry with workarounds.
 
@@ -150,7 +152,7 @@ These tools are available when the user explicitly requests them (all require a 
 - **Chinese characters in Windows paths cause `cv2.imwrite()` to silently fail** → no manual workaround needed (the toolkit handles it internally); if you pass a custom `save_path`, prefer ASCII-only paths.
 - **Connection state is in-memory only** → on `success=false` with connection error, call `connect_device()` first, then retry.
 - **Fixed-duration recording** → always use `toggle_recording(action="start", duration=<seconds>)`. Never implement agent-side sleep → stop.
-- **Instance-lock conflict (exit 71; MCP tools all unavailable, stderr shows lock conflict)** → auto-recovery (stdio watchdog + lease heartbeat + triple-verification) reclaims *expired* leases only; an orphaned server from a previous session that the host never terminated stays alive with a fresh heartbeat and legitimately holds the lock. Recover manually: get the PID from `.instance_lease.json` (`pid` field, skill root — heartbeat writes `pid`/`port`/`ts` every 5 s) or `netstat -ano | findstr 49740` (lock port derived from the skill path); verify it is this skill's `mcp_server.py` (`Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" | Select CommandLine`), then `taskkill /PID <PID> /F /T` and restart the session / MCP client. Exit codes: `70` = watchdog self-cleanup (host abandoned instance); `71` = lock conflict / manual intervention needed. **Confirm with the user that the previous session is truly gone before killing it** — killing breaks whatever session still owns it.
+- **Instance-lock conflict (`instance_lock_conflict` tool error)** → automatic takeover handles the normal case (a live instance of this skill holding the lock is verified via netstat+cmdline, shut down, and replaced — latest user wins). If `error_message` says the port is occupied by *another program*, close that program, then retry; if takeover itself failed, locate the holder from the PID in `error_message` (or `.instance_lease.json` — `pid` field, written once at lock acquisition — or `netstat -ano | findstr <lock_port>`; lock port derived from the skill path) and verify it is this skill's `mcp_server.py` (`Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" | Select CommandLine`), then `taskkill /PID <PID> /F /T` and retry. **Confirm with the user before killing** — it breaks whatever session still owns it. Exit code: `70` = clean shutdown when the stdio session ends.
 - **Pure-numeric passwords/SNs must be sent as JSON strings.** → when relaying a user-provided password or SN (e.g. `847226`) into any tool argument, quote it as a string (`"847226"`), never emit a bare JSON number. Tool schemas declare these credential fields as `string` only; a numeric value that survives as a number into YAML/config can later load back as an integer and break credential handling.
 
 ## Decision Table — error / status → action
@@ -160,7 +162,7 @@ This table is the **single runtime source of truth** for error handling. On any 
 | `error_message` pattern / `status` | Agent Action |
 |------------------------------------|--------------|
 | `not_connected` / `device not found` | Call `connect_device()` first, then retry the failed operation. If it still fails — or this is the first operation after a long idle period — call `search_devices()` to refresh stale IPs in the registry, then retry |
-| `needs_password` (status) | Cached credentials expired (cloud re-auth also failed), cloud service unreachable, the device has no SN so cloud auth cannot start (incl. O-class third-party ONVIF), or the device has no cloud station record (submitted to the default station — the APP may not receive it) — ask user for password → `connect_device(camera_name, password=user_input)` |
+| `needs_password` (status) | Cached credentials expired (the cloud re-issued password is the same stale credential, so another App-approval round cannot recover — **do not send the user to re-approve in the App; ask for the current password directly**), cloud service unreachable, the device has no SN so cloud auth cannot start (incl. O-class third-party ONVIF), or the device has no cloud station record (submitted to the default station — the APP may not receive it) — ask user for password → `connect_device(camera_name, password=user_input)` (if the registration was auto-removed, also pass `ip=<the IP from the error message>`) |
 | `no_sn` (status) | Connection refused: an S/J-asserted XPAI device lost its SN (retry after `search_devices()`), or a WS-Discovery device failed ONVIF admission (RTSP-only, no ONVIF control plane) — report to user; check ONVIF support/port or supply ONVIF credentials. **Forbidden workaround:** manual `register_camera` / hand-editing config.yaml to bypass the gate |
 | `error_code="UNSUPPORTED_PROTOCOL"` (incl. `not support illumination`) | J/O-class camera asked for an SK-private-protocol-only capability (illumination / image settings / tracking / events) — inform user of the device-class limitation; not a malfunction or timeout |
 | `auth_rejected` / `cloud_pwd_failed` / `cached credentials cleared` | Auth-failure group: user denied cloud authorization → inform user, cannot connect; cloud password mismatch → device may have changed password, ask user for the correct one; cached credentials cleared (tool already attempted cloud re-auth) → prompt user for password → `connect_device(camera_name, password=user_input)` |
@@ -172,9 +174,9 @@ This table is the **single runtime source of truth** for error handling. On any 
 | `recording in progress` (screenshot rejected on the same camera) | Camera is recording; stop recording (`toggle_recording` action=stop) before screenshotting the same camera |
 | `storage full` | Suggest cleanup via `manage_storage_status()` or change storage policy |
 | `MCP tools not available` | Follow [Installation](#installation) steps and check MCP registration + startup stderr (see [MCP-Only Interaction](#mcp-only-interaction-hard-rule)); do not assume a lock conflict or write workaround scripts |
-| `协议库准备失败` / startup exit code 1 with preparation error | Report the stderr reason and resolve the environment, network, version, or file-access issue before restarting; do not attempt camera tools |
+| `未安装 camera-proto` (first camera tool call reports the missing package) | Run `"<MCP_PYTHON>" -m pip install -r <SKILL_ROOT>/requirements.txt` (the MCP-launching Python; the tool error prints this command with actual paths), then retry the same tool — no server restart needed |
 | `DEVICE_UNREACHABLE` (from private protocol / SK HTTP, on illumination / image / tracking tools, ONVIF connection healthy) | **Bounded auto-retry, no user confirmation needed:** retry the same call with unchanged parameters after 2-3 seconds, up to 3 attempts. Transient private-protocol port flapping; do not reconnect or rediscover. Report only after all retries fail |
-| `exit code 71` / instance lock conflict | Another session holds the camera, or a stale lock. Auto-recovery usually handles this; if not → see Gotchas (instance-lock conflict recovery) |
+| `error_code="instance_lock_conflict"` (tool error) | Lock port occupied by a non-skill program, or takeover failed. The normal "another session of this skill holds the lock" case never surfaces this — it is auto-taken-over. Relay `error_message` (names the holding PID), resolve, then retry; manual recovery → see Gotchas (instance-lock conflict) |
 
 ## Conditional Loading Index
 
