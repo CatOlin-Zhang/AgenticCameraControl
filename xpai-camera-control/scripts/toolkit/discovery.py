@@ -10,11 +10,11 @@ except ImportError:
     import camera_proto
 
 SUBTYPE_NAMES = {
-    "1": "枪机",
-    "2": "球机",
-    "3": "半球",
-    "5": "摇头机",
-    "6": "枪球联动",
+    "1": "Bullet Camera",
+    "2": "PTZ Camera",
+    "3": "Dome Camera",
+    "5": "PT Camera",
+    "6": "Bullet-Dome Linkage",
 }
 
 @dataclass
@@ -51,7 +51,7 @@ class SkDiscoveredDevice:
 
     @property
     def subtype_name(self) -> str:
-        return SUBTYPE_NAMES.get(self.subtype, f"未知({self.subtype})")
+        return SUBTYPE_NAMES.get(self.subtype, f"Unknown({self.subtype})")
 
     @property
     def rtsp_paths(self) -> List[str]:

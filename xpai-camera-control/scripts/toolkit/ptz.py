@@ -171,9 +171,9 @@ def _sk_ptz_set(cam, payload: dict) -> Tuple[bool, str]:
     ok, data, status = _envelope(camera_proto.ptz_set(
         cam.ip, cam.sn_code, cam.username, cam.password, payload, _SK_PTZ_TIMEOUT))
     if not ok or not data:
-        return False, f"SK SET_PTZ 请求失败 (status={status})"
+        return False, f"SK SET_PTZ request failed (status={status})"
     if not camera_proto.code_ok(data.get("code", "")):
-        return False, f"SK SET_PTZ 返回 code={data.get('code')} msg={data.get('msg')}"
+        return False, f"SK SET_PTZ returned code={data.get('code')} msg={data.get('msg')}"
     return True, ""
 
 def _resolve_direction(direction) -> Optional[PTZDirection]:
@@ -274,7 +274,7 @@ def _onvif_ptz(cam) -> Tuple[Optional[object], str, str]:
         onvif_cam = (_connected_devices.get(cam.name) or {}).get("onvif_camera")
         if onvif_cam is None:
             if not cam.port:
-                return None, "", "缺少 ONVIF 端口，请先调用 connect_device 完成连接"
+                return None, "", "Missing ONVIF port; call connect_device first to complete the connection"
             from onvif import ONVIFCamera
             onvif_cam = ONVIFCamera(
                 host=cam.ip, port=cam.port,
@@ -282,10 +282,10 @@ def _onvif_ptz(cam) -> Tuple[Optional[object], str, str]:
             )
         profiles = onvif_cam.create_media_service().GetProfiles()
         if not profiles:
-            return None, "", "ONVIF 未返回任何 Profile，设备可能不支持 PTZ"
+            return None, "", "ONVIF returned no profiles; the device may not support PTZ"
         return onvif_cam.create_ptz_service(), profiles[0].token, ""
     except Exception as e:
-        return None, "", f"ONVIF PTZ 服务初始化失败: {e}"
+        return None, "", f"ONVIF PTZ service initialization failed: {e}"
 
 def _onvif_move(cam, vx: float, vy: float, vz: float, duration: float) -> Tuple[bool, str]:
     ptz, token, err = _onvif_ptz(cam)
@@ -298,7 +298,7 @@ def _onvif_move(cam, vx: float, vy: float, vz: float, duration: float) -> Tuple[
     if vz:
         velocity["Zoom"] = {"x": vz}
     if not velocity:
-        return False, "速度向量为零，无有效移动方向"
+        return False, "Velocity vector is zero; no valid movement direction"
 
     try:
         ptz.ContinuousMove({
@@ -307,13 +307,13 @@ def _onvif_move(cam, vx: float, vy: float, vz: float, duration: float) -> Tuple[
             "Timeout": timedelta(seconds=max(_ONVIF_MIN_MOVE_TIMEOUT, duration)),
         })
     except Exception as e:
-        return False, f"ONVIF ContinuousMove 失败: {e}"
+        return False, f"ONVIF ContinuousMove failed: {e}"
 
     time.sleep(duration)
     try:
         ptz.Stop({"ProfileToken": token, "PanTilt": True, "Zoom": True})
     except Exception as e:
-        return False, f"ONVIF 移动已启动但停止失败: {e}"
+        return False, f"ONVIF movement started but stop failed: {e}"
     return True, ""
 
 def _onvif_stop(cam) -> Tuple[bool, str]:
@@ -324,7 +324,7 @@ def _onvif_stop(cam) -> Tuple[bool, str]:
         ptz.Stop({"ProfileToken": token, "PanTilt": True, "Zoom": True})
         return True, ""
     except Exception as e:
-        return False, f"ONVIF Stop 失败: {e}"
+        return False, f"ONVIF Stop failed: {e}"
 
 def _onvif_status(cam) -> Tuple[Optional[dict], str]:
     ptz, token, err = _onvif_ptz(cam)
@@ -333,7 +333,7 @@ def _onvif_status(cam) -> Tuple[Optional[dict], str]:
     try:
         status = ptz.GetStatus({"ProfileToken": token})
     except Exception as e:
-        return None, f"ONVIF GetStatus 失败: {e}"
+        return None, f"ONVIF GetStatus failed: {e}"
 
     pan = tilt = zoom = 0.0
     available = False
@@ -373,7 +373,7 @@ def _onvif_control(
     if degrees is not None:
         return PTZMoveResult(
             success=False, protocol="onvif", degrees=degrees,
-            error_message="ONVIF 位移空间为归一化坐标，无法按角度移动，请改用 duration_seconds",
+            error_message="ONVIF position space is normalized; movement by degrees is not supported — use duration_seconds instead",
         )
 
     duration = duration_seconds if duration_seconds is not None else 1.0
@@ -420,7 +420,7 @@ def control_ptz(
     if not direction:
         return PTZMoveResult(
             success=False,
-            error_message="无效方向，可用: up/down/left/right/upleft/upright/downleft/downright/zoom_in/zoom_out",
+            error_message="Invalid direction; valid: up/down/left/right/upleft/upright/downleft/downright/zoom_in/zoom_out",
         )
 
     speed = max(0.1, min(1.0, speed))
@@ -428,7 +428,7 @@ def control_ptz(
     if degrees is not None and duration_seconds is not None:
         return PTZMoveResult(
             success=False,
-            error_message="degrees 和 duration_seconds 不能同时指定",
+            error_message="degrees and duration_seconds cannot both be specified",
         )
     if degrees is None and duration_seconds is None:
         duration_seconds = 1.0
@@ -441,7 +441,7 @@ def control_ptz(
     if not cam:
         return PTZMoveResult(
             success=False,
-            error_message=f"摄像头 '{camera_name}' 未注册，请先注册",
+            error_message=f"Camera '{camera_name}' is not registered; register it first",
         )
 
     if cam.protocol_type in ("J", "O"):
@@ -454,7 +454,7 @@ def control_ptz(
         if not ok:
             return PTZMoveResult(
                 success=False, protocol="sky_private",
-                error_message=f"zoom 启动失败: {err}",
+                error_message=f"zoom start failed: {err}",
             )
         time.sleep(duration)
         ok, err = _sk_ptz_set(cam, {"cmd": "stop", "action": sk_cmd})
@@ -462,7 +462,7 @@ def control_ptz(
             return PTZMoveResult(
                 success=False, protocol="sky_private",
                 requested_duration_seconds=duration,
-                error_message=f"zoom 已启动但停止失败: {err}",
+                error_message=f"zoom started but stop failed: {err}",
             )
         return PTZMoveResult(
             success=True, protocol="sky_private",
@@ -483,7 +483,7 @@ def control_ptz(
             if not ok:
                 return PTZMoveResult(
                     success=False, protocol="sky_private",
-                    error_message=f"水平方向({h_axis})移动启动失败: {err}",
+                    error_message=f"Failed to start horizontal ({h_axis}) movement: {err}",
                 )
             time.sleep(half)
             _sk_ptz_set(cam, {"cmd": "stop", "action": h_axis})
@@ -492,7 +492,7 @@ def control_ptz(
             if not ok:
                 return PTZMoveResult(
                     success=False, protocol="sky_private",
-                    error_message=f"垂直方向({v_axis})移动启动失败: {err}",
+                    error_message=f"Failed to start vertical ({v_axis}) movement: {err}",
                 )
             time.sleep(half)
             _sk_ptz_set(cam, {"cmd": "stop", "action": v_axis})
@@ -504,7 +504,7 @@ def control_ptz(
             if not ok:
                 return PTZMoveResult(
                     success=False, protocol="sky_private",
-                    error_message=f"方向移动启动失败: {err}",
+                    error_message=f"Failed to start directional movement: {err}",
                 )
             time.sleep(duration_seconds)
             _sk_ptz_set(cam, {"cmd": "stop", "action": sk_cmd})
@@ -528,7 +528,7 @@ def control_ptz(
         if not ok:
             return PTZMoveResult(
                 success=False, protocol="sky_private", degrees=degrees,
-                error_message=f"水平方向({h_axis})移动启动失败: {err}",
+                error_message=f"Failed to start horizontal ({h_axis}) movement: {err}",
             )
         time.sleep(half)
         _sk_ptz_set(cam, {"cmd": "stop", "action": h_axis})
@@ -537,7 +537,7 @@ def control_ptz(
         if not ok:
             return PTZMoveResult(
                 success=False, protocol="sky_private", degrees=degrees,
-                error_message=f"垂直方向({v_axis})移动启动失败: {err}",
+                error_message=f"Failed to start vertical ({v_axis}) movement: {err}",
             )
         time.sleep(half)
         _sk_ptz_set(cam, {"cmd": "stop", "action": v_axis})
@@ -549,7 +549,7 @@ def control_ptz(
         if not ok:
             return PTZMoveResult(
                 success=False, protocol="sky_private", degrees=degrees,
-                error_message=f"方向移动启动失败: {err}",
+                error_message=f"Failed to start directional movement: {err}",
             )
         time.sleep(duration_seconds)
         _sk_ptz_set(cam, {"cmd": "stop", "action": sk_cmd})
@@ -569,7 +569,7 @@ def get_ptz_parameters(
 
     cam = _get_camera(camera_name)
     if not cam:
-        return PTZParameters(error_message=f"摄像头 '{camera_name}' 未注册")
+        return PTZParameters(error_message=f"Camera '{camera_name}' is not registered")
 
     if cam.protocol_type in ("J", "O"):
         status, err = _onvif_status(cam)
@@ -584,14 +584,14 @@ def get_ptz_parameters(
             zoom_range=_ONVIF_POSITION_RANGE,
             is_moving=status["is_moving"],
             protocol="onvif",
-            error_message="" if status["position_available"] else "设备未上报 PTZ 位置",
+            error_message="" if status["position_available"] else "Device did not report PTZ position",
         )
 
     pos = _sk_ptz_get(cam)
     if pos is None:
         return PTZParameters(
             protocol="sky_private",
-            error_message="SK GET_PTZ 查询失败",
+            error_message="SK GET_PTZ query failed",
         )
 
     return PTZParameters(
@@ -617,21 +617,21 @@ def calibrate_ptz(
     if not cam:
         return CalibrateResult(
             success=False, protocol="sky_private",
-            error_message=f"摄像头 '{camera_name}' 未注册",
+            error_message=f"Camera '{camera_name}' is not registered",
         )
 
     if cam.protocol_type in ("J", "O"):
         return CalibrateResult(
             success=False, protocol="onvif",
             action=(action or "").strip(),
-            error_message="该协议设备不支持 PTZ 标定，请改用 control_ptz 手动调整视角",
+            error_message="This protocol does not support PTZ calibration; use control_ptz to adjust the view manually",
         )
 
     action = (action or "").strip()
     if action not in ("set_home", "go_home"):
         return CalibrateResult(
             success=False, protocol="sky_private",
-            error_message=f"action={action!r} 无效，可选: set_home / go_home",
+            error_message=f"Invalid action={action!r}; options: set_home / go_home",
         )
 
     if action == "set_home":
@@ -640,7 +640,7 @@ def calibrate_ptz(
             return CalibrateResult(
                 success=False, protocol="sky_private",
                 action=action,
-                error_message=f"SK calibrate 失败: {err}",
+                error_message=f"SK calibrate failed: {err}",
             )
         time.sleep(2)
 
@@ -649,7 +649,7 @@ def calibrate_ptz(
             return CalibrateResult(
                 success=False, protocol="sky_private",
                 action=action,
-                error_message="SK calibrate 已执行，但 GET_PTZ 读取坐标失败，Home 位未存储",
+                error_message="SK calibrate executed, but GET_PTZ coordinate read failed; home position not stored",
             )
 
         home_x = pos.get("x", 0)
@@ -668,7 +668,7 @@ def calibrate_ptz(
             return CalibrateResult(
                 success=False, protocol="sky_private",
                 action=action,
-                error_message=f"go_home 需先校准，但 SK calibrate 失败: {err}",
+                error_message=f"go_home requires prior calibration, but SK calibrate failed: {err}",
             )
         time.sleep(2)
         pos = _sk_ptz_get(cam)
@@ -676,7 +676,7 @@ def calibrate_ptz(
             return CalibrateResult(
                 success=False, protocol="sky_private",
                 action=action,
-                error_message="SK calibrate 已执行，但 GET_PTZ 读取坐标失败",
+                error_message="SK calibrate executed, but GET_PTZ coordinate read failed",
             )
         _calibrated_home = (pos.get("x", 0), pos.get("y", 0))
 
@@ -686,7 +686,7 @@ def calibrate_ptz(
         return CalibrateResult(
             success=False, protocol="sky_private",
             action=action,
-            error_message=f"SK move 归位失败: {err}",
+            error_message=f"SK move to home failed: {err}",
         )
 
     return CalibrateResult(
@@ -705,7 +705,7 @@ def _move_to_position(
     if not cam:
         return PTZMoveResult(
             success=False,
-            error_message=f"摄像头 '{camera_name}' 未注册",
+            error_message=f"Camera '{camera_name}' is not registered",
         )
 
     ok, err = _sk_ptz_set(cam, {"cmd": "move", "x": x, "y": y, "z": z})
@@ -725,7 +725,7 @@ def stop_ptz(
     if not cam:
         return PTZMoveResult(
             success=False,
-            error_message=f"摄像头 '{camera_name}' 未注册",
+            error_message=f"Camera '{camera_name}' is not registered",
         )
 
     if cam.protocol_type in ("J", "O"):

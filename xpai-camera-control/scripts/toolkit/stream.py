@@ -63,22 +63,12 @@ class StorageResult:
     error_message: str = ""
 
 def _rtsp_transport_selectable() -> bool:
-    """当前 cv2 是否支持逐次指定 rtsp_transport。
 
-    版本差异（2026-09 以本地假 RTSP 服务器记录 SETUP Transport 头实测，
-    覆盖 opencv-python 4.8.0 / 4.14.0 / 5.0.0）：
-    - 古董 OpenCV：若存在 CAP_PROP_OPENCV_FFMPEG_CAPTURE_OPTIONS 常量，
-      FFmpeg 默认走 UDP，必须显式指定 rtsp_transport;tcp；
-    - opencv-python ≥4.8（本 skill 支持域）：该常量不存在，RTSP 默认即 TCP，
-      OPENCV_FFMPEG_CAPTURE_OPTIONS 环境变量被忽略，传未知属性 ID 会抛
-      cv2.error —— transport 不可选，UDP 兜底无法表达，也无需表达。
-    """
     import cv2
     return getattr(cv2, "CAP_PROP_OPENCV_FFMPEG_CAPTURE_OPTIONS", None) is not None
 
 def _rtsp_transport_plan() -> Tuple[str, ...]:
-    """TCP 优先；仅当传输可选时才排入 UDP 兜底
-    （新版 cv2 下两次尝试实际同为 TCP，白白浪费一轮 open 超时预算）。"""
+
     return ("tcp", "udp") if _rtsp_transport_selectable() else ("tcp",)
 
 def _open_rtsp_capture(rtsp_url: str, transport: str = "tcp"):
@@ -93,7 +83,7 @@ def _open_rtsp_capture(rtsp_url: str, transport: str = "tcp"):
             ])
         except (TypeError, AttributeError, cv2.error):
             pass
-    # 新版 cv2（4.14+/5.x）：无该常量，默认即 TCP；老老版 cv2：无参数数组支持
+
     try:
         return cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG, [
             cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000,
@@ -103,8 +93,7 @@ def _open_rtsp_capture(rtsp_url: str, transport: str = "tcp"):
         return cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
 
 def _open_rtsp_capture_with_fallback(rtsp_url: str):
-    """TCP 优先，open 失败且传输可选时回退 UDP（与录像路径 transport 策略对齐）。
-    新版 cv2 传输不可选（默认即 TCP），失败时直接返回未打开的 cap 由调用方处理。"""
+
     cap = _open_rtsp_capture(rtsp_url, "tcp")
     if cap.isOpened():
         return cap
@@ -114,7 +103,7 @@ def _open_rtsp_capture_with_fallback(rtsp_url: str):
     return _open_rtsp_capture(rtsp_url, "udp")
 
 def _read_last_frame(cap, attempts: int = 6):
-    """连续 read，返回最后一帧成功画面（给编码器留出出帧时间）。"""
+
     frame = None
     for _ in range(attempts):
         ret, f = cap.read()
@@ -146,7 +135,7 @@ def get_audio_video_stream(
         else:
             return StreamResult(
                 success=False,
-                error_message=f"设备 {camera_name} 未连接，请先调用 connect_device()",
+                error_message=f"Device {camera_name} is not connected; call connect_device() first",
             )
 
     ip = conn_info.get("ip", "")
@@ -180,12 +169,12 @@ def get_audio_video_stream(
         elif access == "auth_required":
             return StreamResult(
                 success=False,
-                error_message=f"设备 {camera_name} 需要密码认证，请提供正确的密码",
+                error_message=f"Device {camera_name} requires password authentication; provide the correct password",
             )
         else:
             return StreamResult(
                 success=False,
-                error_message=f"设备 {camera_name}({ip}) RTSP 流不可达",
+                error_message=f"Device {camera_name}({ip}) stream unavailable (RTSP unreachable)",
             )
 
     cap = _open_rtsp_capture_with_fallback(rtsp_url)
@@ -201,7 +190,7 @@ def get_audio_video_stream(
             cap.release()
             return StreamResult(
                 success=False,
-                error_message=f"无法从 {ip}:{rtsp_port} 获取视频流，请检查 RTSP 路径和认证信息",
+                error_message=f"Cannot get video stream from {ip}:{rtsp_port}; check the RTSP path and credentials",
             )
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -267,7 +256,7 @@ def capture_video_screenshot(
             return ScreenshotResult(
                 success=False,
                 file_path=file_path,
-                error_message=f"设备 {camera_name} 未连接，请先调用 connect_device()",
+                error_message=f"Device {camera_name} is not connected; call connect_device() first",
             )
 
     try:
@@ -276,7 +265,7 @@ def capture_video_screenshot(
         return ScreenshotResult(
             success=False,
             file_path=file_path,
-            error_message="缺少 opencv-python，请安装: pip install opencv-python",
+            error_message="opencv-python is missing; install it with: pip install opencv-python",
         )
 
     def _attempt_capture():
@@ -319,14 +308,14 @@ def capture_video_screenshot(
                 return ScreenshotResult(
                     success=False,
                     file_path=file_path,
-                    error_message="无法从流中读取帧数据",
+                    error_message="Cannot read frame data from the stream",
                 )
             return ScreenshotResult(
                 success=False,
                 file_path=file_path,
-                error_message=f"无法从 {ip}:{rtsp_port} 打开视频流"
-                              f"（已尝试 {'、'.join(paths)} × {'/'.join(transport_plan)}），"
-                              f"请检查 RTSP 路径和认证信息",
+                error_message=f"Cannot open video stream from {ip}:{rtsp_port}"
+                              f" (tried {', '.join(paths)} × {'/'.join(transport_plan)}); "
+                              f"check the RTSP path and credentials",
             )
 
         height, width = frame.shape[:2]
@@ -336,19 +325,19 @@ def capture_video_screenshot(
             if success_enc:
                 encoded.tofile(file_path)
             else:
-                raise RuntimeError("imencode 返回失败")
+                raise RuntimeError("imencode failed")
         except Exception as e:
             return ScreenshotResult(
                 success=False,
                 file_path=file_path,
-                error_message=f"保存截图失败: {e}",
+                error_message=f"Failed to save screenshot: {e}",
             )
 
         if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
             return ScreenshotResult(
                 success=False,
                 file_path=file_path,
-                error_message="截图文件写入失败或为空",
+                error_message="Screenshot file write failed or is empty",
             )
 
         return ScreenshotResult(
@@ -389,10 +378,10 @@ def _resolve_transport_plan(rtsp_transport: Optional[Any]) -> List[str]:
     else:
         plan = list(rtsp_transport)
     if not plan:
-        raise ValueError("rtsp_transport 不能为空")
+        raise ValueError("rtsp_transport must not be empty")
     bad = [t for t in plan if t not in _VALID_RTSP_TRANSPORTS]
     if bad:
-        raise ValueError(f"不支持的 rtsp_transport: {bad}，可选 {sorted(_VALID_RTSP_TRANSPORTS)}")
+        raise ValueError(f"Unsupported rtsp_transport: {bad}; valid: {sorted(_VALID_RTSP_TRANSPORTS)}")
     return plan
 
 def _probe_dimensions(rtsp_url: str, transport_plan: List[str], timeout: int = 15) -> Tuple[int, int]:
@@ -534,7 +523,7 @@ def _stop_orphan_recording(camera_name: str, entry: dict) -> "RecordingResult":
         return RecordingResult(
             success=False, is_recording=False,
             duration_seconds=reported_duration,
-            error_message="录像文件为空或不存在，录像可能未成功启动",
+            error_message="Recording file is empty or missing; recording may not have started",
         )
 
     _remove_log_if_empty(file_path)
@@ -614,7 +603,7 @@ def toggle_recording(
             )
         return RecordingResult(
             success=True, is_recording=False,
-            error_message="当前没有正在进行的录像",
+            error_message="No recording in progress",
         )
 
     if action == RecordingAction.STOP:
@@ -626,7 +615,7 @@ def toggle_recording(
                 return _stop_orphan_recording(camera_name, persisted)
             return RecordingResult(
                 success=False, is_recording=False,
-                error_message="当前没有正在进行的录像",
+                error_message="No recording in progress",
             )
 
         if state.timer is not None:
@@ -665,7 +654,7 @@ def toggle_recording(
             return RecordingResult(
                 success=False, is_recording=False,
                 duration_seconds=reported_duration,
-                error_message="录像文件为空或不存在，录像可能未成功启动",
+                error_message="Recording file is empty or missing; recording may not have started",
             )
 
         _remove_log_if_empty(file_path)
@@ -682,7 +671,7 @@ def toggle_recording(
         if existing and existing.process is not None and existing.process.poll() is None:
             return RecordingResult(
                 success=False, is_recording=True,
-                error_message=f"摄像头 {camera_name} 正在录像（文件: {existing.file_path}），请先停止再开始",
+                error_message=f"Camera {camera_name} recording in progress (file: {existing.file_path}); stop it before starting a new recording",
             )
 
         if existing:
@@ -695,15 +684,15 @@ def toggle_recording(
             return RecordingResult(
                 success=False, is_recording=True,
                 file_path=persisted.get("file_path", ""),
-                error_message=f"摄像头 {camera_name} 正在录像（文件: {persisted.get('file_path', '')}），"
-                              f"若为重试调用则无需重复启动；如需重新录像请先调用 stop",
+                error_message=f"Camera {camera_name} recording in progress (file: {persisted.get('file_path', '')}); "
+                              f"if this is a retry, no need to start again; call stop first to re-record",
             )
 
         ffmpeg_path = _resolve_binary("ffmpeg")
         if not ffmpeg_path:
             return RecordingResult(
                 success=False, is_recording=False,
-                error_message="ffmpeg 未安装，无法录像",
+                error_message="ffmpeg is not installed; recording unavailable",
             )
 
         from .device_mgmt import _connected_devices, _find_cached_camera, _build_rtsp_url
@@ -712,7 +701,7 @@ def toggle_recording(
         if not conn_info and not cached:
             return RecordingResult(
                 success=False, is_recording=False,
-                error_message=f"摄像头 '{camera_name}' 未注册",
+                error_message=f"Camera '{camera_name}' is not registered",
             )
 
         if cached:
@@ -736,7 +725,7 @@ def toggle_recording(
         except OSError as e:
             return RecordingResult(
                 success=False, is_recording=False,
-                error_message=f"创建录像目录失败: {e}",
+                error_message=f"Failed to create recording directory: {e}",
             )
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -801,7 +790,7 @@ def toggle_recording(
                     log_handle.close()
                 return RecordingResult(
                     success=False, is_recording=False,
-                    error_message="ffmpeg 未安装",
+                    error_message="ffmpeg is not installed",
                 )
 
             popen_time = time.time()
@@ -900,16 +889,16 @@ def toggle_recording(
                         os.remove(p)
                 except OSError:
                     pass
-            last_error = f"transport={transport} 启动后无数据输出"
+            last_error = f"transport={transport} produced no data after startup"
 
         return RecordingResult(
             success=False, is_recording=False,
-            error_message=f"录像启动失败（已尝试 transport: {transport_plan}）: {last_error}",
+            error_message=f"Recording failed to start (transports tried: {transport_plan}): {last_error}",
         )
 
     return RecordingResult(
         success=False, is_recording=False,
-        error_message=f"未知的 action: {action}",
+        error_message=f"Unknown action: {action}",
     )
 
 def manage_storage_status(
@@ -955,7 +944,7 @@ def manage_storage_status(
                     storage_path=storage_path,
                     format=cfg["format"],
                     policy=cfg["policy"],
-                    error_message=f"存储路径不可写: {e}",
+                    error_message=f"Storage path is not writable: {e}",
                 )
             cfg["path"] = storage_path
 
@@ -966,7 +955,7 @@ def manage_storage_status(
                     storage_path=storage_path,
                     format=cfg["format"],
                     policy=cfg["policy"],
-                    error_message=f"无效的文件格式: {format}，支持: {valid_formats}",
+                    error_message=f"Invalid file format: {format}; valid: {valid_formats}",
                 )
             cfg["format"] = format
 
@@ -977,7 +966,7 @@ def manage_storage_status(
                     storage_path=storage_path,
                     format=cfg["format"],
                     policy=cfg["policy"],
-                    error_message=f"无效的存储策略: {policy}，支持: {valid_policies}",
+                    error_message=f"Invalid storage policy: {policy}; valid: {valid_policies}",
                 )
             cfg["policy"] = policy
 
@@ -1050,13 +1039,13 @@ def _switch_video_codec(cam, codec: str) -> str:
     from .illumination import _envelope
 
     if not cam.sn_code:
-        return f"摄像头 {cam.name} 缺少 SN，无法切换视频编码；请先重新扫描/注册该设备"
-    unreachable = f"无法连接 {cam.ip}:{_SK_VIDEO_PORT}（SK HTTP 无响应）"
+        return f"Camera {cam.name} has no SN; cannot switch video codec; re-scan/register the device first"
+    unreachable = f"Cannot connect to {cam.ip}:{_SK_VIDEO_PORT} (SK HTTP no response)"
 
     ok, resp, _status = _envelope(camera_proto.video_get_option(
         cam.ip, cam.sn_code, cam.username, cam.password, _SK_VIDEO_TIMEOUT))
     if not ok or not resp:
-        return f"查询视频编码能力失败：{unreachable}"
+        return f"Failed to query video codec capabilities: {unreachable}"
     supported = set()
     for stream in resp.get("video") or []:
         if not isinstance(stream, dict):
@@ -1066,17 +1055,17 @@ def _switch_video_codec(cam, codec: str) -> str:
                     and isinstance(spec.get("specs"), list)):
                 supported.update(str(item) for item in spec["specs"])
     if codec not in supported:
-        return (f"设备不支持视频编码 {codec}"
-                + (f"（支持：{', '.join(sorted(supported))}）" if supported else "")
-                + "，未切换编码")
+        return (f"Device does not support video codec {codec}"
+                + (f" (supported: {', '.join(sorted(supported))})" if supported else "")
+                + "; codec not switched")
 
     ok, resp, _status = _envelope(camera_proto.video_get(
         cam.ip, cam.sn_code, cam.username, cam.password, _SK_VIDEO_TIMEOUT))
     if not ok or not resp:
-        return f"查询当前视频配置失败：{unreachable}"
+        return f"Failed to query current video config: {unreachable}"
     streams = resp.get("video")
     if not isinstance(streams, list) or not streams:
-        return "查询当前视频配置失败：响应缺少 video 字段"
+        return "Failed to query current video config: response missing 'video' field"
     if all(str(s.get("encode", "")).upper() == codec
            for s in streams if isinstance(s, dict)):
         return ""
@@ -1085,19 +1074,19 @@ def _switch_video_codec(cam, codec: str) -> str:
     ok, resp, _status = _envelope(camera_proto.video_set(
         cam.ip, cam.sn_code, cam.username, cam.password, payload, _SK_VIDEO_TIMEOUT))
     if not ok or not resp:
-        return f"设置视频编码失败：{unreachable}"
+        return f"Failed to set video codec: {unreachable}"
     if not camera_proto.code_ok(resp.get("code", "")):
-        return f"设备拒绝设置视频编码（code={resp.get('code')} msg={resp.get('msg')}）"
+        return f"Device rejected the video codec set (code={resp.get('code')} msg={resp.get('msg')})"
 
     ok, resp, _status = _envelope(camera_proto.video_get(
         cam.ip, cam.sn_code, cam.username, cam.password, _SK_VIDEO_TIMEOUT))
     if not ok or not resp:
-        return "设置已下发但读回校验失败（SK HTTP 无响应）"
+        return "Set command sent but read-back verification failed (SK HTTP no response)"
     streams = resp.get("video")
     if not isinstance(streams, list) or any(
             str(s.get("encode", "")).upper() != codec
             for s in streams if isinstance(s, dict)):
-        return f"设置后读回校验不一致，编码未生效为 {codec}"
+        return f"Read-back mismatch after set; codec is not {codec}"
     return ""
 
 def start_webrtc_stream(
@@ -1119,7 +1108,7 @@ def start_webrtc_stream(
         if codec not in ("H264", "H265"):
             return WebRTCResult(
                 success=False,
-                error_message=f"不支持的编码：{video_codec}；video_codec 仅支持 h264/h265，省略表示不改设备编码",
+                error_message=f"Unsupported codec: {video_codec}; video_codec only supports h264/h265; omit it to keep the device codec unchanged",
             )
 
     binary = go2rtc_path or _ensure_go2rtc()
@@ -1127,9 +1116,9 @@ def start_webrtc_stream(
         return WebRTCResult(
             success=False,
             error_message=(
-                f"未检测到 go2rtc（WebRTC 转流工具，约 15MB 单文件）。"
-                f"请按 SKILL.md 的 Obtaining go2rtc 说明获取对应平台二进制，"
-                f"放到 {_GO2RTC_SKILL_DIR} 或加入 PATH 后重试。"
+                f"go2rtc not detected (WebRTC relay tool, a single ~15MB file). "
+                f"Follow the Obtaining go2rtc instructions in SKILL.md to get the binary for your platform, "
+                f"place it in {_GO2RTC_SKILL_DIR} or add it to PATH, then retry."
             ),
         )
 
@@ -1137,13 +1126,13 @@ def start_webrtc_stream(
     cameras = dm.get_registered_cameras()
     target = next((c for c in cameras if c.name == camera_name), None)
     if target is None:
-        return WebRTCResult(success=False, error_message=f"未找到摄像头: {camera_name}")
+        return WebRTCResult(success=False, error_message=f"Camera not found: {camera_name}")
 
     if codec:
         if dm._is_non_sk_camera(camera_name):
             return WebRTCResult(
                 success=False,
-                error_message=dm._unsupported_protocol_message(camera_name, "视频编码切换"),
+                error_message=dm._unsupported_protocol_message(camera_name, "video codec switching"),
             )
         switch_error = _switch_video_codec(target, codec)
         if switch_error:
@@ -1184,7 +1173,7 @@ def start_webrtc_stream(
         return WebRTCResult(
             success=False,
             rtsp_url=rtsp_url,
-            error_message=f"go2rtc 启动失败: {e}",
+            error_message=f"go2rtc failed to start: {e}",
         )
 
     web_url = f"http://localhost:{port}"

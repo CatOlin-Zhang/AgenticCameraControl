@@ -172,11 +172,9 @@ This table is the **single runtime source of truth** for error handling. On any 
 | `limit_reached=true` | Stop sending PTZ commands in that direction — physical limit reached |
 | `stream unavailable` / RTSP failure | Check camera is online, verify network connectivity |
 | `error_code="timeout"` (stream/screenshot) | Tool hit its hard timeout budget. Retry once with a larger `timeout_seconds` (max 120); if still failing, check device online status |
-| `stream busy` (another stream operation already in progress) | Global stream slot occupied (screenshot/stream-probe/recording establishment are serialized). Wait a few seconds and retry |
 | `recording in progress` (screenshot rejected on the same camera) | Camera is recording; stop recording (`toggle_recording` action=stop) before screenshotting the same camera |
-| `storage full` | Suggest cleanup via `manage_storage_status()` or change storage policy |
-| `MCP tools not available` | Follow [Installation](#installation) steps and check MCP registration + startup stderr (see [MCP-Only Interaction](#mcp-only-interaction-hard-rule)); do not assume a lock conflict or write workaround scripts |
-| `未安装 camera-proto` (first camera tool call reports the missing package) | Run `"<MCP_PYTHON>" -m pip install -r <SKILL_ROOT>/requirements.txt` (the MCP-launching Python; the tool error prints this command with actual paths), then retry the same tool — no server restart needed |
+| Screenshot/recording write failure (file not created or empty) — causes: disk full, invalid `save_path`, no write permission | Before long recordings: query `manage_storage_status()` (action=query) and judge free space yourself. On failure: check space / path validity / permissions, then clean up or change policy via `manage_storage_status()`, fix the path, and retry |
+| `camera-proto package is not installed` (first camera tool call reports the missing package) | Run `"<MCP_PYTHON>" -m pip install -r <SKILL_ROOT>/requirements.txt` (the MCP-launching Python; the tool error prints this command with actual paths), then retry the same tool — no server restart needed |
 | `DEVICE_UNREACHABLE` (from private protocol / SK HTTP, on illumination / image / tracking tools, ONVIF connection healthy) | **Bounded auto-retry, no user confirmation needed:** retry the same call with unchanged parameters after 2-3 seconds, up to 3 attempts. Transient private-protocol port flapping; do not reconnect or rediscover. Report only after all retries fail |
 | `error_code="instance_lock_conflict"` (tool error) | Lock port occupied by a non-skill program, or takeover failed. The normal "another session of this skill holds the lock" case never surfaces this — it is auto-taken-over. Relay `error_message` (names the holding PID), resolve, then retry; manual recovery → see Gotchas (instance-lock conflict) |
 
@@ -186,7 +184,7 @@ Load a reference **only when its trigger fires** — do not pre-read.
 
 | Trigger | Read |
 |---------|------|
-| Tool failure beyond the Decision Table, user asks "why does X fail", or wants to self-troubleshoot | [references/FAQ.md](references/FAQ.md) — Agent self-healing + English-speaking users (中文自助版 `references/FAQ.zh-CN.md`: give its path only, do not load it) |
+| Tool failure beyond the Decision Table, user asks "why does X fail", or wants to self-troubleshoot | [references/FAQ.md](references/FAQ.md) — Agent self-healing + English-speaking users (Chinese self-help version `references/FAQ.zh-CN.md`: give its path only, do not load it) |
 | Auth flow details beyond the Decision Table (cloud auth internals, direct_connect) | [references/WORKFLOW.md — Phase 2](references/WORKFLOW.md#phase-2--connect--authorize-detailed-tool-calls) |
 | Building an external consumer on the event store | [references/EVENT_INTEGRATION.md](references/EVENT_INTEGRATION.md) |
 | config.yaml full schema or example configs | [references/CONFIG.md](references/CONFIG.md) |

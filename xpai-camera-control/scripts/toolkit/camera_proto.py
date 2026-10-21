@@ -78,19 +78,19 @@ def _bind(lib):
 
 def _library_name():
     if ctypes.sizeof(ctypes.c_void_p) != 8:
-        raise RuntimeError("摄像头协议库需要 64 位 Python 解释器。")
+        raise RuntimeError("The camera protocol library requires a 64-bit Python interpreter.")
     machine = platform.machine().lower()
     if sys.platform == "win32" and sysconfig.get_platform() == "win-amd64":
         return "camera_proto.dll"
     if sys.platform == "linux" and machine in ("amd64", "x86_64"):
         if platform.libc_ver()[0] != "glibc":
-            raise RuntimeError("Linux 协议库仅支持 glibc x64；不支持 musl/Alpine 或无法识别的 libc。")
+            raise RuntimeError("Linux protocol library supports glibc x64 only. musl/Alpine and unrecognized libc are not supported.")
         return "camera_proto.so"
     if sys.platform == "darwin" and machine in ("x86_64", "arm64"):
         return "camera_proto.dylib"
     raise RuntimeError(
-        f"不支持当前协议库平台：{sys.platform}/{machine}；"
-        "仅支持 Windows x64、Linux glibc x64、macOS Intel/ARM64 的 64 位解释器。")
+        f"Unsupported platform for the protocol library: {sys.platform}/{machine}; "
+        "only Windows x64, Linux glibc x64, and macOS Intel/ARM64 64-bit interpreters are supported.")
 
 
 def _pip_hint() -> str:
@@ -109,22 +109,22 @@ def _ensure():
             import camera_proto as _pkg
         except ImportError as exc:
             raise RuntimeError(
-                f"未安装 camera-proto 依赖；请运行 {_pip_hint()}") from exc
+                f"camera-proto package is not installed; run {_pip_hint()}") from exc
         path = Path(_pkg.__file__).resolve().parent / "lib" / _library_name()
         if not path.is_file():
             raise RuntimeError(
-                f"未找到摄像头协议库 {path}；请重新运行 {_pip_hint()}")
+                f"Camera protocol library not found at {path}; re-run {_pip_hint()}")
         try:
             lib = ctypes.CDLL(str(path))
             _bind(lib)
         except (OSError, AttributeError) as exc:
             raise RuntimeError(
-                f"摄像头协议库加载失败（{path.name}），请检查系统/解释器架构及原生依赖，"
-                f"并重新运行 {_pip_hint()} 校验依赖：{exc}") from exc
+                f"Failed to load camera protocol library ({path.name}); check system/interpreter architecture and native dependencies, "
+                f"then re-run {_pip_hint()} to verify dependencies: {exc}") from exc
         if lib.sk_version() != _ABI_VERSION:
             raise RuntimeError(
-                f"摄像头协议库 ABI 版本不匹配；请重新运行 {_pip_hint()} "
-                "安装固定版本 camera-proto")
+                f"Camera protocol library ABI version mismatch; re-run {_pip_hint()} "
+                "to install the pinned camera-proto version")
         _lib = lib
         return lib
 
@@ -134,7 +134,7 @@ def _b(value) -> Optional[bytes]:
         return None
     result = value if isinstance(value, bytes) else str(value).encode("utf-8")
     if b"\x00" in result:
-        raise ValueError("协议字符串参数不能包含 NUL")
+        raise ValueError("Protocol string arguments must not contain NUL")
     return result
 
 
@@ -151,18 +151,18 @@ def _call(name, *args) -> Dict[str, Any]:
     lib = _ensure()
     ptr = getattr(lib, name)(*args)
     if not ptr:
-        return {"ok": 0, "http_status": 0, "error": last_error() or "协议库无返回"}
+        return {"ok": 0, "http_status": 0, "error": last_error() or "protocol library returned nothing"}
     text = _take_str(lib, ptr)
     try:
         env = json.loads(text) if text else None
         if not isinstance(env, dict):
-            raise ValueError("非 JSON 对象")
+            raise ValueError("not a JSON object")
     except (TypeError, ValueError) as exc:
         match = re.match(r'\s*\{\s*"ok"\s*:\s*\d+\s*,\s*"http_status"\s*:\s*(\d+)',
                          text or "")
         status = int(match.group(1)) if match else 0
         return {"ok": 0, "http_status": status,
-                "error": f"设备响应体非合法 JSON（HTTP {status}）: {exc}"}
+                "error": f"Device response body is not valid JSON (HTTP {status}): {exc}"}
     body = env.get("body")
     if isinstance(body, dict):
         body.pop("cmd_name", None)
@@ -389,7 +389,7 @@ def cloud_auth_check(sn, claw_id, timeout=10.0) -> Dict[str, Any]:
 def rtsp_ua() -> str:
     value = _ensure().sk_alarm_rtsp_ua()
     if not value:
-        raise RuntimeError(last_error() or "报警会话参数不可用")
+        raise RuntimeError(last_error() or "alarm session parameters unavailable")
     return value.decode("utf-8")
 
 
@@ -398,15 +398,15 @@ class AlarmParser:
         self._lib = _ensure()
         self._handle = self._lib.sk_alarm_parser_new()
         if not self._handle:
-            raise RuntimeError("报警解析器创建失败（%s）" % last_error())
+            raise RuntimeError("Failed to create alarm parser (%s)" % last_error())
 
     def feed(self, data) -> List[Dict[str, Any]]:
         if not isinstance(data, (bytes, bytearray)):
-            raise TypeError("feed 需要 bytes/bytearray")
+            raise TypeError("feed requires bytes/bytearray")
         if not self._handle:
-            raise RuntimeError("报警解析器已释放")
+            raise RuntimeError("Alarm parser has been released")
         if len(data) > 0x7FFFFFFF:
-            raise ValueError("报警数据过长")
+            raise ValueError("Alarm data too long")
         buffer = bytes(data)
         ptr = self._lib.sk_alarm_parser_feed(self._handle, buffer, len(buffer))
         text = _take_str(self._lib, ptr)
@@ -438,12 +438,12 @@ def _import_self_check() -> None:
     try:
         try:
             abi = _ensure().sk_version().decode("utf-8")
-            message = (f"[xpai-camera-control] 自检通过：python={sys.executable}；"
-                       f"camera-proto ABI {abi} 已加载")
+            message = (f"[xpai-camera-control] Self-check passed: python={sys.executable}; "
+                       f"camera-proto ABI {abi} loaded")
         except Exception as exc:
-            message = (f"[xpai-camera-control] 自检失败：{exc}\n"
-                       f"[xpai-camera-control] 修复：{_pip_hint()}"
-                       "（安装后直接重试摄像头工具，无需重启）")
+            message = (f"[xpai-camera-control] Self-check failed: {exc}\n"
+                       f"[xpai-camera-control] Fix: {_pip_hint()}"
+                       " (after installing, retry the camera tool directly, no server restart needed)")
         print(message, file=sys.stderr)
     except Exception:
         pass

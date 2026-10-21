@@ -52,60 +52,60 @@ _SK_TRACKING_TIMEOUT = 3.0
 _SETTABLE_FIELDS = {"enable", "tracking", "level"}
 
 _TRACKING_LABELS = {
-    "enable": "使能开关",
-    "tracking": "追踪",
-    "indoor": "场景模式",
-    "thresh": "灵敏度",
-    "level": "灵敏度等级",
-    "screenenable": "目标标记",
-    "blink": "框闪烁",
-    "alarm_enable": "声音报警",
-    "alarm_type": "报警类型",
-    "white_light": "白光报警",
-    "duration": "白光时长",
-    "timestrategy": "侦测时间",
-    "humandistance": "人形大小",
-    "drag": "目标标记显示",
-    "mbdesc": "侦测区域",
-    "distance": "目标大小",
-    "object": "目标类型",
-    "trigger": "触发目标",
-    "idenable": "车牌检测",
+    "enable": "Enable switch",
+    "tracking": "Tracking",
+    "indoor": "Scene mode",
+    "thresh": "Sensitivity",
+    "level": "Sensitivity level",
+    "screenenable": "Target marker",
+    "blink": "Box blinking",
+    "alarm_enable": "Audio alarm",
+    "alarm_type": "Alarm type",
+    "white_light": "White-light alarm",
+    "duration": "White-light duration",
+    "timestrategy": "Detection schedule",
+    "humandistance": "Human size",
+    "drag": "Target marker display",
+    "mbdesc": "Detection region",
+    "distance": "Target size",
+    "object": "Target type",
+    "trigger": "Trigger target",
+    "idenable": "License plate detection",
 
-    "x0": "界线起点X", "y0": "界线起点Y",
-    "x1": "界线终点X", "y1": "界线终点Y",
-    "x2": "方向起点X", "y2": "方向起点Y",
-    "x3": "方向终点X", "y3": "方向终点Y",
-    "dir": "检测方向",
-    "enter_alarm_enable": "进入报警",
-    "enter_alarm_type": "进入报警类型",
-    "leave_alarm_enable": "离开报警",
-    "leave_alarm_type": "离开报警类型",
+    "x0": "Line start X", "y0": "Line start Y",
+    "x1": "Line end X", "y1": "Line end Y",
+    "x2": "Direction start X", "y2": "Direction start Y",
+    "x3": "Direction end X", "y3": "Direction end Y",
+    "dir": "Detection direction",
+    "enter_alarm_enable": "Enter alarm",
+    "enter_alarm_type": "Enter alarm type",
+    "leave_alarm_enable": "Leave alarm",
+    "leave_alarm_type": "Leave alarm type",
 
-    "dx0": "方向起点X(A点)", "dy0": "方向起点Y(A点)",
-    "dx1": "方向终点X(B点)", "dy1": "方向终点Y(B点)",
-    "AtoB_alarm_enable": "A到B报警",
-    "AtoB_alarm_type": "A到B报警类型",
-    "BtoA_alarm_enable": "B到A报警",
-    "BtoA_alarm_type": "B到A报警类型",
+    "dx0": "Direction start X (point A)", "dy0": "Direction start Y (point A)",
+    "dx1": "Direction end X (point B)", "dy1": "Direction end Y (point B)",
+    "AtoB_alarm_enable": "A→B alarm",
+    "AtoB_alarm_type": "A→B alarm type",
+    "BtoA_alarm_enable": "B→A alarm",
+    "BtoA_alarm_type": "B→A alarm type",
 }
 
 _TRACKING_VALUE_TEXTS = {
-    "enable": {0: "关闭", 1: "打开"},
-    "tracking": {0: "关闭", 1: "打开"},
-    "screenenable": {0: "关闭", 1: "打开"},
-    "blink": {0: "关闭", 1: "闪烁"},
-    "drag": {0: "不显示", 1: "显示"},
-    "alarm_enable": {0: "关闭", 1: "打开"},
-    "white_light": {0: "关闭", 1: "打开"},
-    "idenable": {0: "关闭", 1: "打开"},
-    "enter_alarm_enable": {0: "关闭", 1: "打开"},
-    "leave_alarm_enable": {0: "关闭", 1: "打开"},
-    "AtoB_alarm_enable": {0: "关闭", 1: "打开"},
-    "BtoA_alarm_enable": {0: "关闭", 1: "打开"},
-    "indoor": {0: "室外模式", 1: "室内模式", 2: "室外人车"},
-    "level": {0: "关闭", 1: "低", 2: "中", 3: "高"},
-    "dir": {0: "进入区域", 1: "离开区域", 2: "双向"},
+    "enable": {0: "Off", 1: "On"},
+    "tracking": {0: "Off", 1: "On"},
+    "screenenable": {0: "Off", 1: "On"},
+    "blink": {0: "Off", 1: "Blinking"},
+    "drag": {0: "Hidden", 1: "Shown"},
+    "alarm_enable": {0: "Off", 1: "On"},
+    "white_light": {0: "Off", 1: "On"},
+    "idenable": {0: "Off", 1: "On"},
+    "enter_alarm_enable": {0: "Off", 1: "On"},
+    "leave_alarm_enable": {0: "Off", 1: "On"},
+    "AtoB_alarm_enable": {0: "Off", 1: "On"},
+    "BtoA_alarm_enable": {0: "Off", 1: "On"},
+    "indoor": {0: "Outdoor mode", 1: "Indoor mode", 2: "Outdoor (person+vehicle)"},
+    "level": {0: "Off", 1: "Low", 2: "Medium", 3: "High"},
+    "dir": {0: "Enter region", 1: "Leave region", 2: "Both directions"},
 }
 
 @dataclass
@@ -322,8 +322,8 @@ def big_tracking_query(
         if not opt["ok"]:
             if opt.get("status") is None:
                 return _sk_err(TrackingQueryResult, "DEVICE_UNREACHABLE",
-                                 f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
-                                 "确认摄像头在线、网络可达", camera=cam.name)
+                                 f"Cannot connect to {cam.ip}:{_SK_TRACKING_PORT} (SK HTTP no response)",
+                                 "Check the camera is online and reachable", camera=cam.name)
         else:
             cur = _sk_human_cur(cam)
             if cur["ok"]:
@@ -340,8 +340,8 @@ def big_tracking_query(
         if not opt["ok"]:
             if opt.get("status") is None:
                 return _sk_err(TrackingQueryResult, "DEVICE_UNREACHABLE",
-                                 f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
-                                 "确认摄像头在线、网络可达", camera=cam.name)
+                                 f"Cannot connect to {cam.ip}:{_SK_TRACKING_PORT} (SK HTTP no response)",
+                                 "Check the camera is online and reachable", camera=cam.name)
         else:
             cur = _sk_vehicle_cur(cam)
             if cur["ok"]:
@@ -358,8 +358,8 @@ def big_tracking_query(
         if not opt["ok"]:
             if opt.get("status") is None:
                 return _sk_err(TrackingQueryResult, "DEVICE_UNREACHABLE",
-                                 f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
-                                 "确认摄像头在线、网络可达", camera=cam.name)
+                                 f"Cannot connect to {cam.ip}:{_SK_TRACKING_PORT} (SK HTTP no response)",
+                                 "Check the camera is online and reachable", camera=cam.name)
         else:
             cur = _sk_area_cur(cam)
             if cur["ok"]:
@@ -376,8 +376,8 @@ def big_tracking_query(
         if not opt["ok"]:
             if opt.get("status") is None:
                 return _sk_err(TrackingQueryResult, "DEVICE_UNREACHABLE",
-                                 f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
-                                 "确认摄像头在线、网络可达", camera=cam.name)
+                                 f"Cannot connect to {cam.ip}:{_SK_TRACKING_PORT} (SK HTTP no response)",
+                                 "Check the camera is online and reachable", camera=cam.name)
         else:
             cur = _sk_motion_cur(cam)
             if cur["ok"]:
@@ -394,8 +394,8 @@ def big_tracking_query(
         if not opt["ok"]:
             if opt.get("status") is None:
                 return _sk_err(TrackingQueryResult, "DEVICE_UNREACHABLE",
-                                 f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
-                                 "确认摄像头在线、网络可达", camera=cam.name)
+                                 f"Cannot connect to {cam.ip}:{_SK_TRACKING_PORT} (SK HTTP no response)",
+                                 "Check the camera is online and reachable", camera=cam.name)
         else:
             cur = _sk_line_cur(cam)
             if cur["ok"]:
@@ -407,12 +407,12 @@ def big_tracking_query(
                 result.line_current = {
                     k: v for k, v in cur["current"].items() if k in _SETTABLE_FIELDS}
 
-    result.message = (f"侦测查询完成: "
-                      f"人形={len(result.human_capabilities)}项, "
-                      f"车辆={len(result.vehicle_capabilities)}项, "
-                      f"区域={len(result.area_capabilities)}项, "
-                      f"移动={len(result.motion_capabilities)}项, "
-                      f"越界={len(result.line_capabilities)}项")
+    result.message = (f"Detection query complete: "
+                      f"human={len(result.human_capabilities)}, "
+                      f"vehicle={len(result.vehicle_capabilities)}, "
+                      f"area={len(result.area_capabilities)}, "
+                      f"motion={len(result.motion_capabilities)}, "
+                      f"line={len(result.line_capabilities)}")
     return result
 
 def big_tracking_set(
@@ -433,8 +433,8 @@ def big_tracking_set(
         updates["level"] = sensitivity_level
     if not updates:
         return _sk_err(TrackingSetResult, "NO_PARAMS",
-                       "未传入任何要修改的参数",
-                       "至少传 enable 或 tracking 参数；可先调 big_tracking_query 查看可设置项")
+                       "No parameters provided to modify",
+                       "Pass at least enable or tracking; call big_tracking_query first to see settable fields")
 
     err, cam = _sk_resolve_camera(name, answers, TrackingSetResult)
     if err:
@@ -443,8 +443,8 @@ def big_tracking_set(
     dt = detect_type.lower() if detect_type else "human"
     if dt not in ("human", "vehicle", "area", "motion", "line"):
         return _sk_err(TrackingSetResult, "INVALID_DETECT_TYPE",
-                       f"不支持的侦测类型：{detect_type}",
-                       "支持: human(人形追踪)/vehicle(车辆追踪)/area(区域检测)/motion(移动侦测)/line(越界侦测)")
+                       f"Unsupported detection type: {detect_type}",
+                       "Supported: human (person tracking) / vehicle (vehicle tracking) / area (region detection) / motion (motion detection) / line (line-crossing detection)")
 
     if dt in ("area", "line") and tracking is not None:
         updates.pop("tracking", None)
@@ -464,10 +464,10 @@ def big_tracking_set(
     if not opt["ok"]:
         if opt.get("status") is None:
             return _sk_err(TrackingSetResult, "DEVICE_UNREACHABLE",
-                           f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
+                           f"Cannot connect to {cam.ip}:{_SK_TRACKING_PORT} (SK HTTP no response)",
                            camera=cam.name)
         return _sk_err(TrackingSetResult, "OPTION_QUERY_FAILED",
-                       f"查询{dt}侦测能力失败（code={opt.get('code') or '404'}）",
+                       f"Failed to query {dt} detection capabilities (code={opt.get('code') or '404'})",
                        camera=cam.name)
     cap_map: Dict[str, dict] = {}
     for item in opt["capabilities"]:
@@ -478,23 +478,23 @@ def big_tracking_set(
         item = cap_map.get(k)
         if item is None:
             return _sk_err(TrackingSetResult, "PARAM_NOT_SUPPORTED",
-                           f"该摄像头不支持{dt}侦测参数 {k}",
-                           f"支持的参数：{', '.join(sorted(cap_map)) or '无'}",
+                           f"Camera does not support {dt} detection parameter {k}",
+                           f"Supported parameters: {', '.join(sorted(cap_map)) or 'none'}",
                            camera=cam.name)
         specs = item.get("specs") or {}
         lo, hi = _coerce_int(specs.get("min")), _coerce_int(specs.get("max"))
         if lo is not None and hi is not None and not (lo <= v <= hi):
             return _sk_err(TrackingSetResult, "PARAM_OUT_OF_RANGE",
-                           f"{k}={v} 超出允许范围 {lo}-{hi}", camera=cam.name)
+                           f"{k}={v} out of allowed range {lo}-{hi}", camera=cam.name)
 
     base = cur_fn(cam)
     if not base["ok"]:
         if base.get("status") is None:
             return _sk_err(TrackingSetResult, "DEVICE_UNREACHABLE",
-                           f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
+                           f"Cannot connect to {cam.ip}:{_SK_TRACKING_PORT} (SK HTTP no response)",
                            camera=cam.name)
         return _sk_err(TrackingSetResult, "CURRENT_QUERY_FAILED",
-                       f"查询{dt}侦测当前值失败（code={base.get('code')}）",
+                       f"Failed to query current {dt} detection values (code={base.get('code')})",
                        camera=cam.name)
 
     payload = dict(base["current"])
@@ -504,11 +504,11 @@ def big_tracking_set(
     if not set_result["ok"]:
         if set_result.get("status") is None:
             return _sk_err(TrackingSetResult, "DEVICE_UNREACHABLE",
-                           f"无法连接 {cam.ip}:{_SK_TRACKING_PORT}（SK HTTP 无响应）",
+                           f"Cannot connect to {cam.ip}:{_SK_TRACKING_PORT} (SK HTTP no response)",
                            camera=cam.name)
         return _sk_err(TrackingSetResult, "SET_FAILED",
-                       f"{dt}侦测设置命令失败（code={set_result.get('code')} "
-                       f"msg={set_result.get('msg')}）",
+                       f"{dt} detection set command failed (code={set_result.get('code')} "
+                       f"msg={set_result.get('msg')})",
                        camera=cam.name)
 
     rb = cur_fn(cam)
@@ -516,12 +516,12 @@ def big_tracking_set(
     cur = {k: full_cur[k] for k in _SETTABLE_FIELDS if k in full_cur}
     updated = {k: cur[k] for k in updates if k in cur}
 
-    type_names = {"human": "人形追踪", "vehicle": "车辆追踪", "area": "区域检测",
-                  "motion": "移动侦测", "line": "越界侦测"}
+    type_names = {"human": "Human tracking", "vehicle": "Vehicle tracking", "area": "Region detection",
+                  "motion": "Motion detection", "line": "Line-crossing detection"}
     return TrackingSetResult(
         ok=True, camera=cam.name, channel="sk", detect_type=dt,
         updated=updated, current=cur,
-        message=f"{type_names.get(dt, dt)}参数已生效：{updated}")
+        message=f"{type_names.get(dt, dt)} parameters applied: {updated}")
 
 def manage_tracking(
     action: TrackingAction = TrackingAction.QUERY,
@@ -542,7 +542,7 @@ def manage_tracking(
     if _is_non_sk_camera(resolved_name):
         return TrackingSetResult(
             ok=False, error_code="UNSUPPORTED_PROTOCOL",
-            message=_unsupported_protocol_message(resolved_name, "智能侦测/追踪"),
+            message=_unsupported_protocol_message(resolved_name, "smart detection/tracking"),
         )
 
     if action == TrackingAction.QUERY:
@@ -559,4 +559,4 @@ def manage_tracking(
             sensitivity_level=sensitivity_level, answers=answers)
     else:
         return TrackingSetResult(ok=False, error_code="INVALID_ACTION",
-                                 message=f"不支持的操作：{action}")
+                                 message=f"Unsupported action: {action}")

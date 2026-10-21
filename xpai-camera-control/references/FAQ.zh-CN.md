@@ -9,10 +9,10 @@
 **问：`"<MCP_PYTHON>" -m pip install -r requirements.txt` 很慢或失败。**
 答：请使用 64 位 Python 3.10+ 解释器——`<MCP_PYTHON>` 为启动 MCP 的解释器绝对路径；始终用 `-m pip` 绑定该解释器安装（裸 `pip` 可能属于其他 Python 环境）。国内网络可改用镜像源安装（`"<MCP_PYTHON>" -m pip install -r requirements.txt -i <镜像地址>`）——全部依赖（含原生库 camera-proto）都是普通 PyPI 包，镜像同样适用。
 
-**问：调用摄像头工具报「未安装 camera-proto 依赖」。**
+**问：调用摄像头工具报「camera-proto package is not installed」（未安装 camera-proto 依赖）。**
 答：依赖未安装到启动 MCP 的解释器里。用同一解释器运行 `"<MCP_PYTHON>" -m pip install -r requirements.txt`（工具报错中会打印带实际路径的该命令），然后重试刚才的工具即可——无需重启 MCP Server（加载器会在下次调用时自动重试，安装即生效）。依赖安装在配置阶段完成，MCP 启动本身不下载任何资源。
 
-**问：调用摄像头工具报「协议库加载失败」/「ABI 版本不匹配」/「未找到摄像头协议库」。**
+**问：调用摄像头工具报「Failed to load camera protocol library」（协议库加载失败）/「Camera protocol library ABI version mismatch」（ABI 版本不匹配）/「Camera protocol library not found」（未找到摄像头协议库）。**
 答：加载失败通常是系统/解释器架构或原生依赖问题；ABI 不匹配是 camera-proto 版本与门面不配对；未找到协议库则是包文件不完整。先用启动 MCP 的解释器运行 `"<MCP_PYTHON>" -m pip install -r requirements.txt` 校验固定版本依赖，再重试工具；加载失败仍复现时检查是否为 64 位解释器与对应系统架构。
 
 **问：工具列表里完全没有摄像头工具。**
@@ -58,8 +58,11 @@
 **问：录像停不下来。**
 答：录像必须以 `toggle_recording(action="start", duration=<秒>)` 启动，由 Server 到时自动停止。「先启动、等一会再调 stop」的方式会淹没停止调用，导致录像无限持续并占用设备 RTSP 会话。
 
-**问：返回 `stream busy` 或 `error_code="timeout"`。**
-答：busy：全局流槽位被占用，等几秒重试。timeout：用更大的 `timeout_seconds`（上限 120）重试一次；仍失败则检查设备是否在线。
+**问：流/截图返回 `error_code="timeout"`。**
+答：用更大的 `timeout_seconds`（上限 120）重试一次；仍失败则检查设备是否在线。
+
+**问：截图/录像写入失败（文件未创建或为空）。**
+答：可能原因：磁盘空间不足、`save_path` 无效（不存在或无写权限；Windows 下含中文等非 ASCII 字符的路径会使 `cv2.imwrite()` 静默失败）、或录像时长太短未产生数据。长录像前先用 `manage_storage_status()`（action=query）查可用容量并自行判断是否充足；报错后依次排查空间、路径、权限再重试。
 
 ### 云台 · 事件 · 数据
 
@@ -101,10 +104,10 @@
 | 症状 | 快速处理 | 权威出处 |
 |------|---------|---------|
 | Server 启动即退（exit 70） | stdio 会话结束的正常退出，重启即可；锁冲突已是工具级错误，见上文 | [SKILL.md Gotchas](../SKILL.md#gotchas) · README 故障排查 |
-| 工具报「未安装 camera-proto」/「协议库加载失败」/「ABI 版本不匹配」 | 用启动 MCP 的解释器跑 `"<MCP_PYTHON>" -m pip install -r requirements.txt` 后重试同一工具（无需重启） | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [Installation](../SKILL.md#installation) |
+| 工具报「camera-proto package is not installed」/「Failed to load camera protocol library」（协议库加载失败）/「ABI version mismatch」 | 用启动 MCP 的解释器跑 `"<MCP_PYTHON>" -m pip install -r requirements.txt` 后重试同一工具（无需重启） | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [Installation](../SKILL.md#installation) |
 | `not_connected` / `needs_password` / `no_sn` / 授权失败组 | 重连 / 询问密码 / 终态处理 | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [WORKFLOW.md Phase 2](WORKFLOW.md) |
 | 事件/补光/图像/追踪返回 `UNSUPPORTED_PROTOCOL` | 设备类别限制，告知用户 | [SKILL.md 能力矩阵](../SKILL.md#extended-capabilities--protocol-matrix) · `commands/*.md` |
-| 流 / 截图 / 录像错误（`timeout`、`busy`、`recording in progress`） | 按决策表重试规则 | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [commands/stream.md](commands/stream.md) |
+| 流 / 截图 / 录像错误（`timeout`、`recording in progress`、写入失败） | 按决策表重试规则 | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [commands/stream.md](commands/stream.md) |
 | 云台 `degraded` / `limit_reached` / J-O 限制 | 原样转达 / 停发该方向 / 改用时长 | [SKILL.md Phase 4](../SKILL.md#phase-4--ptz-control) · [commands/ptz.md](commands/ptz.md) |
 | 补光/图像/追踪 `DEVICE_UNREACHABLE` | 有界自动重试 ×3 | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · `commands/*.md` 的 `## Error codes` |
 | 事件存储外部消费 | 契约与 schema | [EVENT_INTEGRATION.md](EVENT_INTEGRATION.md) · [commands/events.md](commands/events.md) |

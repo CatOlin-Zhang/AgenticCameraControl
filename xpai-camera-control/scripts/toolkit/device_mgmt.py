@@ -162,19 +162,15 @@ class CloudAuthRequestResult:
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 
-# config.yaml 敏感字段（password/sn_code/sn/pkdk）不以明文落盘：
-# 写盘前 _enc 混淆（XOR + base64），读取使用处 _dec 还原。
 _XOR_KEY = 0x5A
 
 def _enc(value: str) -> str:
-    """混淆后落盘；空串原样返回。"""
     if not value:
         return ""
     raw = str(value).encode("utf-8")
     return base64.b64encode(bytes(b ^ _XOR_KEY for b in raw)).decode("ascii")
 
 def _dec(value: Any) -> str:
-    """还原混淆字段；空值或还原失败返回空串（按无凭据处理，走重新输入流程）。"""
     if not value:
         return ""
     try:
@@ -281,7 +277,7 @@ def _onvif_post_with_auth(
     username: str, password: str, timeout: float = 5.0,
 ) -> Tuple[int, str]:
     if _requests_lib is None:
-        raise RuntimeError("requests 未安装")
+        raise RuntimeError("The 'requests' package is not installed")
     auth_xml = _onvif_digest_auth_header(username, password)
     if "xmlns:wsse=" not in body:
         body = body.replace(
@@ -563,7 +559,6 @@ def _sync_registry_with_discovery(
             else str(dev.device_class)
         )
         try:
-            # 承接原条目中搜索拿不到的字段（已验证端口/补光缓存等），避免整条替换导致回退
             register_camera(
                 name=name,
                 ip=dev.ip,
@@ -586,7 +581,6 @@ def _sync_registry_with_discovery(
         except Exception:
             continue
 
-    # 任一发现链路失败时"本轮未发现"不可靠，只注册不清理
     if not prune:
         return
 
@@ -727,7 +721,7 @@ def _search_jcp_devices(timeout: float) -> SearchResult:
                     raise ValueError
             except (TypeError, ValueError):
                 rtsp_port = camera_proto.JCP_RTSP_PORT
-                notes.append(f"{dev_ip}: 忽略无效 JCP RTSP 端口 {raw_port!r}，使用 {rtsp_port}")
+                notes.append(f"{dev_ip}: ignoring invalid JCP RTSP port {raw_port!r}; using {rtsp_port}")
 
             access = _probe_stream_access(dev_ip, rtsp_port, camera_proto.JCP_RTSP_PATH_MAIN)
             devices.append(DiscoveredDevice(
@@ -749,7 +743,7 @@ def _search_jcp_devices(timeout: float) -> SearchResult:
             ))
         return SearchResult(success=True, devices=devices, error_message="; ".join(notes))
     except Exception as e:
-        return SearchResult(success=False, error_message=f"JCP 发现失败: {e}")
+        return SearchResult(success=False, error_message=f"JCP discovery failed: {e}")
 
 def _search_ws_discovery_devices(timeout: float) -> SearchResult:
     import select
@@ -778,7 +772,7 @@ def _search_ws_discovery_devices(timeout: float) -> SearchResult:
     if not socks:
         return SearchResult(
             success=False,
-            error_message="无可用网络接口，WS-Discovery 探测失败",
+            error_message="No available network interface; WS-Discovery probe failed",
         )
 
     found: Dict[str, dict] = {}
@@ -999,8 +993,8 @@ def _cloud_auth_and_connect(
             success=False, status="needs_password",
             needs_password=True,
             error_message=(
-                f"设备 {camera_name}({ip}) 为第三方 ONVIF(O) 类设备，无 SK/JCP SN，"
-                f"不支持云端授权。请直接输入密码后调用 connect_device。"
+                f"Device {camera_name}({ip}) is a third-party ONVIF (O-class) device without an SK/JCP SN; "
+                f"cloud authorization is not supported. Enter the password directly and call connect_device."
             ),
             protocol_type="O",
         )
@@ -1010,8 +1004,8 @@ def _cloud_auth_and_connect(
             success=False, status="needs_password",
             needs_password=True,
             error_message=(
-                f"设备 {camera_name}({ip}) 无 SN，无法发起云端授权。"
-                f"请直接输入密码后调用 connect_device。"
+                f"Device {camera_name}({ip}) has no SN; cloud authorization cannot start. "
+                f"Enter the password directly and call connect_device."
             ),
         )
 
@@ -1022,8 +1016,8 @@ def _cloud_auth_and_connect(
             success=False, status="needs_password",
             needs_password=True,
             error_message=(
-                f"云端授权服务不可用（{cr.error_message}）。"
-                f"请直接输入设备 {camera_name}({ip}) 的密码。"
+                f"Cloud authorization service unavailable ({cr.error_message}). "
+                f"Enter the password for device {camera_name}({ip}) directly."
             ),
         )
 
@@ -1084,9 +1078,9 @@ def _cloud_auth_and_connect(
                     success=False, status="cloud_pwd_failed",
                     needs_password=True,
                     error_message=(
-                        f"云端下发的密码无法通过设备 {camera_name}({ip}) 的验证"
-                        f"（{conn.error_message}），设备可能修改过密码或存在凭据隔离。"
-                        f"请输入正确密码。"
+                        f"The cloud-issued password failed device verification for {camera_name}({ip}) "
+                        f"({conn.error_message}); the device may have changed its password or has credential isolation. "
+                        f"Enter the correct password."
                     ),
                 )
 
@@ -1094,7 +1088,7 @@ def _cloud_auth_and_connect(
             return ConnectResult(
                 success=False, status="auth_rejected",
                 error_message=(
-                    f"用户拒绝了设备 {camera_name}({ip}) 的云端授权请求，无法连接。"
+                    f"User rejected the cloud authorization request for device {camera_name}({ip}); cannot connect."
                 ),
             )
 
@@ -1103,8 +1097,8 @@ def _cloud_auth_and_connect(
                 success=False, status="needs_password",
                 needs_password=True,
                 error_message=(
-                    f"云端授权出错（{result.message}）。"
-                    f"请直接输入设备 {camera_name}({ip}) 的密码。"
+                    f"Cloud authorization error ({result.message}). "
+                    f"Enter the password for device {camera_name}({ip}) directly."
                 ),
             )
 
@@ -1112,9 +1106,9 @@ def _cloud_auth_and_connect(
         success=False, status="needs_password",
         needs_password=True,
         error_message=(
-            f"云端授权等待超时（5 分钟），用户未确认"
-            f"{'（设备无站点记录，APP 端可能未收到请求）' if cr.station_default else ''}。"
-            f"请直接输入设备 {camera_name}({ip}) 的密码。"
+            f"Cloud authorization timed out after 5 minutes; user did not confirm"
+            f"{' (device has no station record; the APP may not have received the request)' if cr.station_default else ''}. "
+            f"Enter the password for device {camera_name}({ip}) directly."
         ),
     )
 
@@ -1158,7 +1152,7 @@ def connect_device(
     else:
         return ConnectResult(
             success=False, status="failed",
-            error_message=f"未找到设备 {camera_name} 的连接信息（config.yaml 中无记录且未提供 IP）",
+            error_message=f"Connection info for device {camera_name} not found (no config.yaml record and no IP provided)",
         )
 
     if dev_pwd:
@@ -1191,10 +1185,10 @@ def connect_device(
                     return ConnectResult(
                         success=False, status="no_sn",
                         error_message=(
-                            f"设备 {camera_name}({dev_ip}) 密码验证通过但 SN 探测失败，"
-                            f"已拒绝进入连接态（连接态设备必须在 config 中注册 SN，"
-                            f"否则依赖 SN 的功能将全部失效）。"
-                            f"请确认设备支持 SK 或 JCP 发现协议后重试。"
+                            f"Device {camera_name}({dev_ip}) passed password verification but SN probing failed; "
+                            f"refused to enter connected state (connected devices must have an SN registered in config, "
+                            f"otherwise all SN-dependent features will fail). "
+                            f"Confirm the device supports SK or JCP discovery, then retry."
                         ),
                         protocol_type=cached_class,
                     )
@@ -1205,8 +1199,8 @@ def connect_device(
                     return ConnectResult(
                         success=False, status="failed",
                         error_message=(
-                            f"设备 {camera_name}({dev_ip}) 仅 RTSP 可达，ONVIF 控制面验证未通过"
-                            f"且无 SK/JCP 应答，无法确认设备身份，已拒绝进入连接态。"
+                            f"Device {camera_name}({dev_ip}) is only reachable over RTSP; ONVIF control-plane verification failed "
+                            f"and there is no SK/JCP response; device identity cannot be confirmed; refused to enter connected state."
                         ),
                     )
 
@@ -1262,16 +1256,16 @@ def connect_device(
                 success=False, status="needs_password",
                 needs_password=True,
                 error_message=(
-                    f"缓存凭据已失效（{last_result.error_message}）。"
-                    f"云端重新授权下发的仍是同一份失效凭据，"
-                    f"再次授权（重新点击同意）也无法通过设备验证。"
-                    f"请手动输入设备 {camera_name}({dev_ip}) 的当前正确密码。"
+                    f"Cached credentials cleared (invalid: {last_result.error_message}). "
+                    f"Cloud re-auth re-issued the same stale credential; "
+                    f"approving again cannot pass device verification. "
+                    f"Enter the current correct password for device {camera_name}({dev_ip}) manually."
                 ),
             )
         return ConnectResult(
             success=False, status="failed",
             needs_password=True,
-            error_message=f"密码认证失败: {last_result.error_message}，请确认密码后重试",
+            error_message=f"Password authentication failed: {last_result.error_message}; verify the password and retry",
         )
 
     if dev_class == "password_required":
@@ -1284,8 +1278,8 @@ def connect_device(
                 success=False, status="needs_password",
                 needs_password=True,
                 error_message=(
-                    f"设备 {camera_name}({dev_ip}) 为非 XPAI 的 ONVIF 设备（无 SN，"
-                    f"无云端授权通道），请直接提供设备密码后重试。"
+                    f"Device {camera_name}({dev_ip}) is a non-XPAI ONVIF device (no SN, "
+                    f"no cloud authorization channel); provide the device password directly and retry."
                 ),
                 protocol_type=effective_protocol,
             )
@@ -1328,10 +1322,10 @@ def connect_device(
                 return ConnectResult(
                     success=False, status="no_sn",
                     error_message=(
-                        f"设备 {camera_name}({dev_ip}) 免密可达但 SN 探测失败，"
-                        f"已拒绝进入连接态（连接态设备必须在 config 中注册 SN，"
-                        f"否则依赖 SN 的功能将全部失效）。"
-                        f"请确认设备支持 SK 或 JCP 发现协议且网络可达后重试。"
+                        f"Device {camera_name}({dev_ip}) reachable without password but SN probing failed; "
+                        f"refused to enter connected state (connected devices must have an SN registered in config, "
+                        f"otherwise all SN-dependent features will fail). "
+                        f"Confirm the device supports SK or JCP discovery and is reachable, then retry."
                     ),
                     protocol_type=cached_class,
                 )
@@ -1341,8 +1335,8 @@ def connect_device(
                 return ConnectResult(
                     success=False, status="failed",
                     error_message=(
-                        f"设备 {camera_name}({dev_ip}) 仅 RTSP 可达，ONVIF 控制面验证未通过"
-                        f"且无 SK/JCP 应答，无法确认设备身份，已拒绝进入连接态。"
+                        f"Device {camera_name}({dev_ip}) is only reachable over RTSP; ONVIF control-plane verification failed "
+                        f"and there is no SK/JCP response; device identity cannot be confirmed; refused to enter connected state."
                     ),
                 )
 
@@ -1405,8 +1399,8 @@ def connect_device(
                 success=False, status="needs_password",
                 needs_password=True,
                 error_message=(
-                    f"设备 {camera_name}({dev_ip}) 为非 XPAI 的 ONVIF 设备（无 SN，"
-                    f"无云端授权通道），请直接提供设备密码后重试。"
+                    f"Device {camera_name}({dev_ip}) is a non-XPAI ONVIF device (no SN, "
+                    f"no cloud authorization channel); provide the device password directly and retry."
                 ),
                 protocol_type=effective_protocol,
             )
@@ -1420,7 +1414,7 @@ def connect_device(
     return ConnectResult(
         success=False,
         status="failed",
-        error_message=f"设备 {dev_ip} 不可达（RTSP 端口 {dev_rtsp_port} 无响应）",
+        error_message=f"Device {dev_ip} unreachable (RTSP port {dev_rtsp_port} no response)",
     )
 
 _connected_devices: Dict[str, dict] = {}
@@ -1440,7 +1434,6 @@ def _probe_and_save_illumination(
         from .illumination import probe_illumination_capability
 
         if cached is None:
-            # 回读刚写入的注册表条目补齐字段，避免默认值覆盖 device_class / rtsp_*
             cached = next(
                 (c for c in _load_config_cameras() if c.name == camera_name), None
             )
@@ -1560,7 +1553,7 @@ def _try_connect_with_password(
         _connected_devices.pop(camera_name, None)
         return ConnectResult(
             success=False, status="failed",
-            error_message="TCP/ONVIF 连接成功但 RTSP 认证失败（密码可能对 RTSP 无效）",
+            error_message="TCP/ONVIF connection succeeded but RTSP authentication failed (password may be invalid for RTSP)",
         )
 
     if rtsp_ok:
@@ -1582,7 +1575,7 @@ def _try_connect_with_password(
             _connected_devices.pop(camera_name, None)
             return ConnectResult(
                 success=False, status="failed",
-                error_message="RTSP 端口不可达，密码未经 RTSP 验证（云端授权密码要求强制 RTSP 验证）",
+                error_message="RTSP port unreachable; password not verified over RTSP (cloud-issued passwords require mandatory RTSP verification)",
             )
 
         return ConnectResult(
@@ -1593,7 +1586,7 @@ def _try_connect_with_password(
     _connected_devices.pop(camera_name, None)
     return ConnectResult(
         success=False, status="failed",
-        error_message="TCP/ONVIF/RTSP 均连接失败",
+        error_message="TCP/ONVIF/RTSP all failed to connect",
     )
 
 def _rtsp_read_response_head(sock) -> str:
@@ -1857,14 +1850,14 @@ def request_cloud_auth(sn: str) -> CloudAuthRequestResult:
         return CloudAuthRequestResult(
             success=False,
             claw_id=claw_id,
-            error_message=f"云端请求失败: {e}",
+            error_message=f"Cloud request failed: {e}",
         )
 
     if not env.get("ok"):
         return CloudAuthRequestResult(
             success=False,
             claw_id=claw_id,
-            error_message=env.get("error", "云端请求失败"),
+            error_message=env.get("error", "Cloud request failed"),
         )
 
     payload = env.get("body") or {}
@@ -1877,7 +1870,7 @@ def request_cloud_auth(sn: str) -> CloudAuthRequestResult:
     return CloudAuthRequestResult(
         success=False,
         claw_id=claw_id,
-        error_message=f"云端拒绝请求（code={payload.get('code')}）: {payload.get('msg', '')}",
+        error_message=f"Cloud rejected the request (code={payload.get('code')}): {payload.get('msg', '')}",
     )
 
 def poll_auth_status(
@@ -1886,7 +1879,7 @@ def poll_auth_status(
     camera_name = coerce_str(camera_name)
 
     if _yaml_lib is None:
-        return AuthStatusResult(status=AuthStatus.ERROR, camera_name=camera_name, message="pyyaml 未安装")
+        return AuthStatusResult(status=AuthStatus.ERROR, camera_name=camera_name, message="pyyaml is not installed")
 
     cameras = get_registered_cameras()
     camera = next(
@@ -1897,7 +1890,7 @@ def poll_auth_status(
         return AuthStatusResult(
             status=AuthStatus.ERROR,
             camera_name=camera_name,
-            message=f"未在 config.yaml 找到摄像头或其 SN: {camera_name}",
+            message=f"Camera or its SN not found in config.yaml: {camera_name}",
         )
 
     claw_id = get_or_create_claw_id()
@@ -1908,14 +1901,14 @@ def poll_auth_status(
         return AuthStatusResult(
             status=AuthStatus.ERROR,
             camera_name=camera_name,
-            message=f"云端请求失败: {e}",
+            message=f"Cloud request failed: {e}",
         )
 
     if not env.get("ok"):
         return AuthStatusResult(
             status=AuthStatus.ERROR,
             camera_name=camera_name,
-            message=env.get("error", "云端请求失败"),
+            message=env.get("error", "Cloud request failed"),
         )
 
     payload = env.get("body")
@@ -1926,7 +1919,7 @@ def poll_auth_status(
         return AuthStatusResult(
             status=AuthStatus.ERROR,
             camera_name=camera_name,
-            message=f"云端拒绝请求（code={payload.get('code')}）: {payload.get('msg', '')}",
+            message=f"Cloud rejected the request (code={payload.get('code')}): {payload.get('msg', '')}",
         )
 
     data = payload.get("data") or {}
@@ -1953,7 +1946,7 @@ def poll_auth_status(
         return AuthStatusResult(
             status=AuthStatus.AUTHORIZED,
             camera_name=camera.name,
-            message=f"用户已授权（devicePwd={device_pwd}）" if device_pwd else "用户已授权",
+            message=f"User authorized (devicePwd={device_pwd})" if device_pwd else "User authorized",
             auth_status_code=auth_code,
             device_pwd=device_pwd,
         )
@@ -1961,7 +1954,7 @@ def poll_auth_status(
         return AuthStatusResult(
             status=AuthStatus.REJECTED,
             camera_name=camera.name,
-            message="用户在 APP 端拒绝了授权",
+            message="User rejected the authorization in the APP",
             auth_status_code=auth_code,
         )
     else:
@@ -1969,7 +1962,7 @@ def poll_auth_status(
         return AuthStatusResult(
             status=AuthStatus.PENDING,
             camera_name=camera.name,
-            message="等待用户确认（设备无站点记录，已提交默认站点）" if from_default else "等待用户确认",
+            message="Waiting for user confirmation (device has no station record; submitted to the default station)" if from_default else "Waiting for user confirmation",
             auth_status_code=auth_code,
         )
 
@@ -1992,7 +1985,7 @@ def disconnect_device(
     return DisconnectResult(
         success=True,
         session_released=False,
-        error_message="设备未在连接列表中",
+        error_message="Device is not in the connected list",
     )
 
 def _find_camera(name: str):
@@ -2006,12 +1999,12 @@ def _is_non_sk_camera(name: str) -> bool:
     cam = _find_camera(name)
     return bool(cam and cam.protocol_type in ("J", "O"))
 
-_PROTOCOL_LABELS = {"J": "JCP(J) 协议", "O": "第三方 ONVIF(O) 协议"}
+_PROTOCOL_LABELS = {"J": "JCP (J) protocol", "O": "Third-party ONVIF (O) protocol"}
 
 def _unsupported_protocol_message(name: str, capability: str) -> str:
     cam = _find_camera(name)
-    label = _PROTOCOL_LABELS.get((cam.protocol_type if cam else "") or "", "非 SK 协议")
-    return f"该摄像头为 {label}设备，不支持{capability}（此能力为创维私有协议专有）"
+    label = _PROTOCOL_LABELS.get((cam.protocol_type if cam else "") or "", "non-SK protocol")
+    return f"This camera is a {label} device; {capability} is not supported (this capability is exclusive to the SK private protocol)"
 
 def _dev_to_name(dev) -> str:
     base = dev.model or dev.sn_code or "camera"
@@ -2041,10 +2034,10 @@ def big_register(
             cr = connect_device(rr.camera_name, password=password)
             if not cr.success:
                 rr.success = False
-                rr.error_message = f"注册成功但 ONVIF 鉴权失败: {cr.error_message}"
+                rr.error_message = f"Registration succeeded but ONVIF authentication failed: {cr.error_message}"
         except Exception as e:
             rr.success = False
-            rr.error_message = f"注册成功但鉴权异常: {e}"
+            rr.error_message = f"Registration succeeded but authentication raised an exception: {e}"
 
     return rr
 
@@ -2053,7 +2046,7 @@ def _resolve_connect_target(name: str) -> Tuple[Optional[CameraConfig], Optional
     if not cameras:
         return None, AuthOrchestrateResult(
             success=False, status="no_devices",
-            error_message="config.yaml 中没有已注册设备，请先调用 search_devices",
+            error_message="No registered devices in config.yaml; call search_devices first",
         )
     if not name:
         if len(cameras) == 1:
@@ -2064,7 +2057,7 @@ def _resolve_connect_target(name: str) -> Tuple[Optional[CameraConfig], Optional
                 {"name": c.name, "ip": c.ip, "sn": c.sn_code, "model": ""}
                 for c in cameras
             ],
-            error_message="config.yaml 中有多台设备，请指定 name 重新调用",
+            error_message="Multiple devices in config.yaml; specify the name and call again",
         )
     target = next((c for c in cameras if c.name == name or c.sn_code == name), None)
     if target is None:
@@ -2074,7 +2067,7 @@ def _resolve_connect_target(name: str) -> Tuple[Optional[CameraConfig], Optional
                 {"name": c.name, "ip": c.ip, "sn": c.sn_code, "model": ""}
                 for c in cameras
             ],
-            error_message=f"未找到摄像头 '{name}'",
+            error_message=f"Camera '{name}' not found",
         )
     return target, None
 
@@ -2087,7 +2080,7 @@ def big_connect(name: str = "") -> AuthOrchestrateResult:
         return AuthOrchestrateResult(
             success=False, status="no_sn",
             camera_name=target.name,
-            error_message=f"设备 '{target.name}' 未记录 SN，无法发起云端授权",
+            error_message=f"Device '{target.name}' has no SN recorded; cloud authorization cannot start",
         )
 
     cr = request_cloud_auth(target.sn_code)
@@ -2116,7 +2109,7 @@ def big_connect(name: str = "") -> AuthOrchestrateResult:
                 success=False, status="rejected",
                 camera_name=target.name, sn=target.sn_code,
                 claw_id=cr.claw_id,
-                error_message="用户在 APP 端拒绝了授权",
+                error_message="User rejected the authorization in the APP",
             )
         elif result.status == AuthStatus.ERROR:
             return AuthOrchestrateResult(
@@ -2131,8 +2124,8 @@ def big_connect(name: str = "") -> AuthOrchestrateResult:
         camera_name=target.name, sn=target.sn_code,
         claw_id=cr.claw_id,
         error_message=(
-            f"授权等待超时（10 分钟），用户未确认"
-            f"{'（设备无站点记录，APP 端可能未收到请求）' if cr.station_default else ''}"
+            f"Authorization timed out after 10 minutes; user did not confirm"
+            f"{' (device has no station record; the APP may not have received the request)' if cr.station_default else ''}"
         ),
     )
 
@@ -2151,7 +2144,7 @@ def resolve_target(
         try:
             sr = search_devices(timeout=15.0)
         except Exception as e:
-            return {"ok": False, "error_code": "SEARCH_FAILED", "message": f"重 search 失败: {e}"}
+            return {"ok": False, "error_code": "SEARCH_FAILED", "message": f"Re-search failed: {e}"}
         if sr.success:
             for dev in sr.devices:
                 if _dev_to_name(dev) == chosen:
@@ -2163,18 +2156,18 @@ def resolve_target(
                     if reg.success:
                         return {"ok": True, "camera": _find_camera(chosen), "via": "user_picked_registered"}
                     return {"ok": False, "error_code": "AUTO_REGISTER_FAILED",
-                            "message": f"注册 {chosen} 失败: {reg.error_message}"}
+                            "message": f"Failed to register {chosen}: {reg.error_message}"}
         return {"ok": False, "error_code": "CAMERA_NOT_FOUND",
-                "message": f"选了 {chosen!r} 但局域网未发现该设备",
-                "hint": "重新调 search_devices 看当前可发现设备"}
+                "message": f"Picked {chosen!r} but the device was not found on the LAN",
+                "hint": "Call search_devices again to see currently discoverable devices"}
 
     if name:
         cam = _find_camera(name)
         if cam:
             return {"ok": True, "camera": cam, "via": "registered"}
         return {"ok": False, "error_code": "CAMERA_NOT_FOUND",
-                "message": f"name={name!r} 不在 config.yaml",
-                "hint": "用 get_registered_cameras 看已注册列表，或 search_devices 找新设备"}
+                "message": f"name={name!r} is not in config.yaml",
+                "hint": "Use get_registered_cameras to list registered cameras, or search_devices for new devices"}
 
     cams = get_registered_cameras()
     if len(cams) == 1:
@@ -2183,7 +2176,7 @@ def resolve_target(
         return {"ok": False, "error_code": "NEEDS_INPUT",
                 "needs_input": [{
                     "key": "camera",
-                    "question": f"已注册 {len(cams)} 台摄像头，选哪台？",
+                    "question": f"{len(cams)} cameras registered; please select one",
                     "options": [{"label": f"{c.name} ({c.ip})", "value": c.name} for c in cams],
                 }]}
 
@@ -2191,13 +2184,13 @@ def resolve_target(
         sr = search_devices(timeout=15.0)
     except Exception as e:
         return {"ok": False, "error_code": "NO_CAMERAS",
-                "message": f"config.yaml 空 + search 失败: {e}",
-                "hint": "检查网络或手动 search_devices"}
+                "message": f"config.yaml empty and search failed: {e}",
+                "hint": "Check the network or run search_devices manually"}
 
     if not sr.success or not sr.devices:
         return {"ok": False, "error_code": "NO_CAMERAS",
-                "message": "config.yaml 空 + 局域网内未发现任何设备",
-                "hint": "检查相机电源和网络"}
+                "message": "config.yaml empty and no devices discovered on the LAN",
+                "hint": "Check camera power and network"}
 
     if len(sr.devices) == 1:
         dev = sr.devices[0]
@@ -2210,13 +2203,13 @@ def resolve_target(
         if reg.success:
             return {"ok": True, "camera": _find_camera(dev_name), "via": "auto_registered"}
         return {"ok": False, "error_code": "AUTO_REGISTER_FAILED",
-                "message": f"自动注册 {dev_name} 失败: {reg.error_message}",
-                "hint": "手动调 register_camera 排查"}
+                "message": f"Auto-register {dev_name} failed: {reg.error_message}",
+                "hint": "Call register_camera manually to investigate"}
 
     return {"ok": False, "error_code": "NEEDS_INPUT",
             "needs_input": [{
                 "key": "camera",
-                "question": f"局域网发现 {len(sr.devices)} 台设备，注册哪台？",
+                "question": f"{len(sr.devices)} devices discovered on the LAN; which one to register?",
                 "options": [{
                     "label": f"{d.model or d.sn_code or '?'} ({d.ip})",
                     "value": _dev_to_name(d),

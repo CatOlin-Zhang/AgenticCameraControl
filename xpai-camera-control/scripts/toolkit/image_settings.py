@@ -44,15 +44,15 @@ _SK_IMAGE_TIMEOUT = 3.0
 _SK_IMAGE_SUPPORTED = ("brightness", "contrast", "saturation", "sharpness", "flip")
 
 _SK_IMAGE_LABELS = {
-    "brightness": "亮度",
-    "contrast": "对比度",
-    "saturation": "饱和度",
-    "sharpness": "锐度",
-    "flip": "图像翻转",
+    "brightness": "Brightness",
+    "contrast": "Contrast",
+    "saturation": "Saturation",
+    "sharpness": "Sharpness",
+    "flip": "Image flip",
 }
 
 _SK_IMAGE_VALUE_TEXTS = {
-    "flip": {0: "正常", 1: "对角翻转", 2: "水平翻转", 3: "垂直翻转"},
+    "flip": {0: "Normal", 1: "Diagonal flip", 2: "Horizontal flip", 3: "Vertical flip"},
 }
 
 @dataclass
@@ -106,9 +106,9 @@ def _sk_set(cam, updates: Dict[str, Any]) -> ImageSetResult:
     if not opt["ok"]:
         if opt.get("status") is None:
             return _sk_err(ImageSetResult, "DEVICE_UNREACHABLE",
-                           f"无法连接 {cam.ip}:{_SK_IMAGE_PORT}（SK HTTP 无响应）", camera=cam.name)
+                           f"Cannot connect to {cam.ip}:{_SK_IMAGE_PORT} (SK HTTP no response)", camera=cam.name)
         return _sk_err(ImageSetResult, "OPTION_QUERY_FAILED",
-                       f"查询图像能力失败（code={opt.get('code') or '404'}）", camera=cam.name)
+                       f"Failed to query image capabilities (code={opt.get('code') or '404'})", camera=cam.name)
 
     cap_map: Dict[str, dict] = {}
     for item in opt["capabilities"]:
@@ -118,21 +118,21 @@ def _sk_set(cam, updates: Dict[str, Any]) -> ImageSetResult:
         item = cap_map.get(k)
         if item is None:
             return _sk_err(ImageSetResult, "PARAM_NOT_SUPPORTED",
-                           f"该摄像头不支持图像参数 {k}",
-                           f"支持的参数：{', '.join(sorted(cap_map)) or '无'}", camera=cam.name)
+                           f"Camera does not support image parameter {k}",
+                           f"Supported parameters: {', '.join(sorted(cap_map)) or 'none'}", camera=cam.name)
         specs = item.get("specs") or {}
         lo, hi = _coerce_int(specs.get("min")), _coerce_int(specs.get("max"))
         if lo is not None and hi is not None and not (lo <= v <= hi):
             return _sk_err(ImageSetResult, "PARAM_OUT_OF_RANGE",
-                           f"{k}={v} 超出允许范围 {lo}-{hi}", camera=cam.name)
+                           f"{k}={v} out of allowed range {lo}-{hi}", camera=cam.name)
 
     base = _sk_query_current(cam)
     if not base["ok"]:
         if base.get("status") is None:
             return _sk_err(ImageSetResult, "DEVICE_UNREACHABLE",
-                           f"无法连接 {cam.ip}:{_SK_IMAGE_PORT}（SK HTTP 无响应）", camera=cam.name)
+                           f"Cannot connect to {cam.ip}:{_SK_IMAGE_PORT} (SK HTTP no response)", camera=cam.name)
         return _sk_err(ImageSetResult, "CURRENT_QUERY_FAILED",
-                       f"查询图像当前值失败（code={base['code']}）", camera=cam.name)
+                       f"Failed to query current image values (code={base['code']})", camera=cam.name)
     payload = dict(base["current"])
     payload.update(updates)
 
@@ -140,33 +140,33 @@ def _sk_set(cam, updates: Dict[str, Any]) -> ImageSetResult:
         cam.ip, cam.sn_code, cam.username, cam.password, payload, _SK_IMAGE_TIMEOUT))
     if not ok or not resp:
         return _sk_err(ImageSetResult, "DEVICE_UNREACHABLE" if _status is None else "SET_FAILED",
-                       f"设置命令下发失败：{cam.ip}:{_SK_IMAGE_PORT}"
-                       + ("" if _status is None else f"（HTTP {_status}）"), camera=cam.name)
+                       f"Failed to send set command to {cam.ip}:{_SK_IMAGE_PORT}"
+                       + ("" if _status is None else f" (HTTP {_status})"), camera=cam.name)
     if not camera_proto.code_ok(resp.get("code", "")):
         return _sk_err(ImageSetResult, "SET_FAILED",
-                       f"设备拒绝设置（code={resp.get('code')} msg={resp.get('msg')}）", camera=cam.name)
+                       f"Device rejected the set (code={resp.get('code')} msg={resp.get('msg')})", camera=cam.name)
 
     rb = _sk_query_current(cam)
     cur = rb["current"] if rb["ok"] else dict(payload)
     cur = {k: v for k, v in cur.items() if k in _SK_IMAGE_SUPPORTED}
     updated = {k: cur[k] for k in updates if k in cur}
     return ImageSetResult(ok=True, camera=cam.name, channel="sk", updated=updated, current=cur,
-                          message=f"图像参数已生效：{updated}")
+                          message=f"Image parameters applied: {updated}")
 
 def _query_cam(cam) -> ImageQueryResult:
     opt = _sk_query_option(cam)
     if not opt["ok"]:
         if opt.get("status") is None:
             return _sk_err(ImageQueryResult, "DEVICE_UNREACHABLE",
-                           f"无法连接 {cam.ip}:{_SK_IMAGE_PORT}（SK HTTP 无响应）",
-                           "确认摄像头在线、网络可达，且已注册正确凭据", camera=cam.name)
+                           f"Cannot connect to {cam.ip}:{_SK_IMAGE_PORT} (SK HTTP no response)",
+                           "Check the camera is online and reachable, with correct registered credentials", camera=cam.name)
         return _sk_err(ImageQueryResult, "OPTION_QUERY_FAILED",
-                       f"查询图像能力失败（code={opt.get('code') or '404'}）",
-                       "确认设备固件版本是否支持图像设置", camera=cam.name)
+                       f"Failed to query image capabilities (code={opt.get('code') or '404'})",
+                       "Check whether the device firmware supports image settings", camera=cam.name)
     cur = _sk_query_current(cam)
     if not cur["ok"]:
         return _sk_err(ImageQueryResult, "CURRENT_QUERY_FAILED",
-                       f"查询图像当前值失败（code={cur['code']}）", camera=cam.name)
+                       f"Failed to query current image values (code={cur['code']})", camera=cam.name)
 
     caps = [c for c in opt["capabilities"]
             if isinstance(c, dict) and str(c.get("name", "")) in _SK_IMAGE_SUPPORTED]
@@ -206,11 +206,11 @@ def big_image_set(
                  ("flip", flip)):
         if v is not None:
             if isinstance(v, bool) or not isinstance(v, int):
-                return _sk_err(ImageSetResult, "INVALID_PARAM_TYPE", f"{k} 需要整数，收到 {v!r}")
+                return _sk_err(ImageSetResult, "INVALID_PARAM_TYPE", f"{k} expects an int, got {v!r}")
             updates[k] = v
     if not updates:
-        return _sk_err(ImageSetResult, "NO_PARAMS", "未传入任何要修改的图像参数",
-                       "至少传一个参数，如 brightness=150；可先调 big_image_query 查看可设置项")
+        return _sk_err(ImageSetResult, "NO_PARAMS", "No image parameters provided to modify",
+                       "Pass at least one parameter, e.g. brightness=150; call big_image_query first to see available options")
 
     err, cam = _sk_resolve_camera(name, answers, ImageSetResult)
     if err:
@@ -237,7 +237,7 @@ def manage_image_settings(
     if _is_non_sk_camera(resolved_name):
         return ImageSetResult(
             ok=False, error_code="UNSUPPORTED_PROTOCOL",
-            message=_unsupported_protocol_message(resolved_name, "画面参数调节"),
+            message=_unsupported_protocol_message(resolved_name, "image settings"),
         )
 
     if action == ImageAction.QUERY:
@@ -254,4 +254,4 @@ def manage_image_settings(
         )
     else:
         return ImageSetResult(ok=False, error_code="INVALID_ACTION",
-                              message=f"不支持的操作：{action}")
+                              message=f"Unsupported action: {action}")

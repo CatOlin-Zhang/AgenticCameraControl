@@ -63,7 +63,7 @@ Persist camera credentials to `config.yaml`. Renaming is supported: when a new n
 | `rtsp_port`       | int    |    | `554`                | RTSP port                                        |
 | `rtsp_path`       | string |    | `"/md0_0"`           | Main stream path                                 |
 | `device_class`    | string |    | `"direct_connect"`   | `"password_required"` / `"direct_connect"` |
-| `connection_type` | string |    | `"onvif"`            | `"onvif"`（唯一支持值）                        |
+| `connection_type` | string |    | `"onvif"`            | `"onvif"` (only supported value)                        |
 | `sn_code`         | string |    | `""`                 | Serial number                                    |
 | `pkdk`            | string |    | `""`                 | Device public key identifier                     |
 | `rtsp_sub_path`   | string |    | `"/md0_1"`           | Sub stream path                                  |

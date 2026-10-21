@@ -45,14 +45,14 @@ EVENT_SEVERITY_MAP = {
 }
 
 _EVENT_TEXT_MAP = {
-    "motion": ("检测到移动", "检测到画面移动"),
-    "human": ("检测到人形", "检测到有人出现"),
-    "vehicle": ("检测到车辆", "检测到车辆出现"),
-    "tamper": ("镜头遭遮挡", "检测到镜头被遮挡"),
-    "region_intrusion": ("区域入侵告警", "检测到目标进入警戒区域"),
-    "line_crossing": ("越界告警", "检测到目标跨越警戒线"),
-    "high_temp": ("高温告警", "检测到高温异常"),
-    "low_temp": ("低温告警", "检测到低温异常"),
+    "motion": ("Motion detected", "detected movement in the frame"),
+    "human": ("Person detected", "detected a person in the frame"),
+    "vehicle": ("Vehicle detected", "detected a vehicle in the frame"),
+    "tamper": ("Lens blocked", "detected lens obstruction"),
+    "region_intrusion": ("Region intrusion alarm", "detected a target entering the guard region"),
+    "line_crossing": ("Line crossing alarm", "detected a target crossing the guard line"),
+    "high_temp": ("High temperature alarm", "detected abnormally high temperature"),
+    "low_temp": ("Low temperature alarm", "detected abnormally low temperature"),
 }
 
 _SUBTYPE_LABEL_MAP = {
@@ -251,10 +251,10 @@ def _process_event_message(
     dt = datetime.now().astimezone()
     name = display_name or camera_id
     title_phrase, message_phrase = _EVENT_TEXT_MAP.get(
-        event_type, (f"{event_type} 告警", f"上报 {event_type} 事件")
+        event_type, (f"{event_type} alarm", f"reported a {event_type} event")
     )
     label, confidence = _extract_label_confidence(event_type, source, detail or {})
-    suffix = "，已抓拍。" if snapshot_path else "。"
+    suffix = ", snapshot taken." if snapshot_path else "."
 
     return {
         "schema_version": EVENT_SCHEMA_VERSION,
@@ -265,7 +265,7 @@ def _process_event_message(
         "timestamp": dt.isoformat(timespec="seconds"),
         "severity": EVENT_SEVERITY_MAP.get(event_type, "info"),
         "title": f"{name} {title_phrase}",
-        "message": f"{name}摄像头在 {dt.strftime('%H:%M:%S')} {message_phrase}{suffix}",
+        "message": f"{name} camera at {dt.strftime('%H:%M:%S')} {message_phrase}{suffix}",
         "label": label,
         "confidence": confidence,
         "snapshot_path": snapshot_path,
@@ -333,7 +333,7 @@ class _CameraEventMonitor:
             active.append("private")
         else:
             self._channels["private"] = False
-            self._last_error = f"RTSP 端口 {self.rtsp_port} TCP 不可达"
+            self._last_error = f"RTSP port {self.rtsp_port} unreachable over TCP"
         return active
 
     def stop(self) -> None:
@@ -441,10 +441,7 @@ class _CameraEventMonitor:
             backoff = min(backoff * 2, 30.0)
 
     def _send_rtsp_teardown(self, sock: socket.socket) -> None:
-        """close 前尽力发 TEARDOWN，让设备立即释放 RTSP 会话名额，
-        而不是等设备端超时 GC（避免网络抖动反复重连在设备上叠加僵尸会话）。
-        尽力而为：任何失败都静默忽略（半开连接下 sendall 可能抛错），
-        不阻塞重连/停止流程。"""
+
         try:
             session_id = self._rtsp_session_id
             if not session_id:
@@ -482,8 +479,6 @@ class _CameraEventMonitor:
             sock.settimeout(1.0)
             sock.sendall(req.encode("utf-8"))
         except Exception:
-            # 包括半开连接的 OSError、native DLL 缺失的 RuntimeError 等——
-            # 本方法在 finally 中调用，任何异常外泄都会杀死监听线程
             pass
 
     def _open_rtsp_alarm_session(self) -> socket.socket:
@@ -558,8 +553,8 @@ class _CameraEventMonitor:
             describe = send_req("DESCRIBE", base_url, "Accept: application/sdp\r\n")
         describe_ok = bool(describe) and "200" in describe.splitlines()[0]
         if not describe_ok:
-            status_line = describe.splitlines()[0] if describe else "无响应"
-            raise RuntimeError(f"DESCRIBE {base_url} 失败: {status_line}")
+            status_line = describe.splitlines()[0] if describe else "no response"
+            raise RuntimeError(f"DESCRIBE {base_url} failed: {status_line}")
 
         track_urls: List[str] = []
         sdp_base_url = base_url
@@ -617,16 +612,16 @@ class _CameraEventMonitor:
                 interleaved_base += 2
 
         if not session_id:
-            raise RuntimeError("SETUP 未建立会话（无 Session 头或状态非 200）")
+            raise RuntimeError("SETUP established no session (missing Session header or non-200 status)")
 
         play_target = track_urls[0] if track_urls else base_url
         play = send_req(
             "PLAY", play_target,
             f"Session: {session_id}\r\nRange: npt=0.000-\r\n",
         )
-        play_status = play.splitlines()[0] if play else "无响应"
+        play_status = play.splitlines()[0] if play else "no response"
         if "200" not in play_status:
-            raise RuntimeError(f"PLAY {play_target} 失败: {play_status}")
+            raise RuntimeError(f"PLAY {play_target} failed: {play_status}")
         self._rtsp_session_id = session_id
         self._rtsp_cseq = cseq_counter[0]
         self._rtsp_auth_ctx = (digest_realm, digest_nonce, use_basic)
@@ -773,7 +768,7 @@ def start_event_monitor(
             return EventMonitorResult(
                 success=True, camera_name=camera_name, running=True,
                 active_channels=[k for k, v in existing._channels.items() if v],
-                error_message="监听已在运行，无需重复启动",
+                error_message="Monitor already running; no need to start it again",
             )
 
     from .device_mgmt import _connected_devices, _find_cached_camera
@@ -792,8 +787,8 @@ def start_event_monitor(
     else:
         return EventMonitorResult(
             success=False, camera_name=camera_name,
-            error_message=f"设备 {camera_name} 未连接且 config.yaml 中无配置，"
-                          f"请先调用 connect_device()",
+            error_message=f"Device {camera_name} is not connected and has no config.yaml record; "
+                          f"call connect_device() first",
         )
 
     if cached and cached.rtsp_path:
@@ -817,7 +812,7 @@ def start_event_monitor(
     if not active:
         return EventMonitorResult(
             success=False, camera_name=camera_name,
-            error_message=f"私有协议监听启动失败（RTSP {ip}:{rtsp_port} TCP 不可达）",
+            error_message=f"Private-protocol monitor failed to start (RTSP {ip}:{rtsp_port} TCP unreachable)",
         )
 
     with _monitors_lock:
@@ -844,7 +839,7 @@ def stop_event_monitor(
     if monitor is None:
         return EventMonitorResult(
             success=True, camera_name=camera_name, running=False,
-            error_message="该摄像头没有正在运行的事件监听",
+            error_message="No running event monitor for this camera",
         )
 
     monitor.stop()
@@ -864,7 +859,7 @@ def get_pending_events(
     try:
         pending, remaining = _collect_pending(camera_name, max(1, int(limit)), advance=True)
     except Exception as e:
-        return PendingEventsResult(success=False, error_message=f"读取事件存储失败: {e}")
+        return PendingEventsResult(success=False, error_message=f"Failed to read event store: {e}")
 
     return PendingEventsResult(
         success=True,
@@ -891,7 +886,7 @@ def wait_for_events(
         try:
             pending, remaining = _collect_pending(camera_name, limit=100, advance=True)
         except Exception as e:
-            return PendingEventsResult(success=False, error_message=f"读取事件存储失败: {e}")
+            return PendingEventsResult(success=False, error_message=f"Failed to read event store: {e}")
 
         if pending:
             return PendingEventsResult(
@@ -926,7 +921,7 @@ def manage_camera_events(
         except ImportError:
             from device_mgmt import _is_non_sk_camera, _unsupported_protocol_message
         if _is_non_sk_camera(camera_name):
-            msg = _unsupported_protocol_message(camera_name, "告警事件监听")
+            msg = _unsupported_protocol_message(camera_name, "alarm event monitoring")
             if action in (EventAction.START, EventAction.STOP):
                 return EventMonitorResult(success=False, error_message=msg)
             return PendingEventsResult(success=False, error_message=msg)
@@ -935,7 +930,7 @@ def manage_camera_events(
         if not camera_name:
             return EventMonitorResult(
                 success=False,
-                error_message=f"action={action.value} 需要 camera_name 参数",
+                error_message=f"action={action.value} requires the camera_name parameter",
             )
         if action == EventAction.START:
             return start_event_monitor(camera_name, debounce_seconds)
@@ -949,5 +944,5 @@ def manage_camera_events(
 
     return PendingEventsResult(
         success=False,
-        error_message=f"未知的 action: {action}（可选 start/stop/poll/wait）",
+        error_message=f"Unknown action: {action} (options: start/stop/poll/wait)",
     )

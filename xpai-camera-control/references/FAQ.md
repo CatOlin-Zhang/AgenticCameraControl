@@ -11,10 +11,10 @@
 **Q: `"<MCP_PYTHON>" -m pip install -r requirements.txt` is slow or fails.**
 A: Use a 64-bit Python 3.10+ interpreter — `<MCP_PYTHON>` is the absolute path of the interpreter that launches the MCP server; always install via `-m pip` on that exact interpreter (a bare `pip` may belong to a different Python environment). If PyPI is slow in your region, install through a local mirror (`"<MCP_PYTHON>" -m pip install -r requirements.txt -i <mirror-url>`) — all dependencies, including the native library camera-proto, are regular PyPI packages, and mirrors apply to them equally.
 
-**Q: A camera tool call reports "未安装 camera-proto 依赖" (package not installed).**
+**Q: A camera tool call reports "camera-proto package is not installed".**
 A: The dependency is not installed in the interpreter that launches the MCP server. Run `"<MCP_PYTHON>" -m pip install -r requirements.txt` on that same interpreter (the tool error prints this command with the actual paths), then retry the tool — no server restart is needed (the loader retries on the next call, so the install takes effect in the same process). Installation happens at setup time; MCP startup itself downloads nothing.
 
-**Q: A camera tool call reports "协议库加载失败" (library load failure), "ABI 版本不匹配" (ABI mismatch), or "未找到摄像头协议库" (library file missing).**
+**Q: A camera tool call reports "Failed to load camera protocol library", "Camera protocol library ABI version mismatch", or "Camera protocol library not found".**
 A: Load failures are usually a system/interpreter architecture or native-dependency problem; an ABI mismatch means the camera-proto version does not pair with the facade; a missing library file means an incomplete package. First run `"<MCP_PYTHON>" -m pip install -r requirements.txt` on the interpreter that launches the MCP server to verify the pinned dependency, then retry the tool; if load failure persists, check for a 64-bit interpreter matching the system architecture.
 
 **Q: The camera tools are not in my tool list at all.**
@@ -60,8 +60,11 @@ A: `snapshots/` and `video/` (events in `events/`). If you pass a custom `save_p
 **Q: Recording never stops.**
 A: Always start with `toggle_recording(action="start", duration=<seconds>)`; the server auto-stops when time is up. Agent-side "sleep then stop" buries the stop call and holds the camera's RTSP session indefinitely.
 
-**Q: `stream busy` or `error_code="timeout"`.**
-A: Busy: the global stream slot is occupied — wait a few seconds and retry. Timeout: retry once with a larger `timeout_seconds` (max 120); if it still fails, check the device is online.
+**Q: `error_code="timeout"` on stream/screenshot.**
+A: Retry once with a larger `timeout_seconds` (max 120); if it still fails, check the device is online.
+
+**Q: Screenshot/recording fails to write (file not created or empty).**
+A: Possible causes: disk full, invalid `save_path` (nonexistent or no write permission; non-ASCII paths on Windows make `cv2.imwrite()` fail silently), or a recording too short to produce data. Before long recordings, query `manage_storage_status()` (action=query) and judge free space yourself; on failure, check space, path, and permissions, then retry.
 
 ### PTZ · Events · Data
 
@@ -103,10 +106,10 @@ Symptom-first map to the authoritative source (this FAQ paraphrases; the sources
 | Symptom | Quick fix | Authoritative source |
 |---------|-----------|----------------------|
 | Server exits immediately; tools unavailable (exit 70) | Clean shutdown (stdio session ended) — restart; lock conflicts are tool errors now, see FAQ above | [SKILL.md Gotchas](../SKILL.md#gotchas) · README Troubleshooting |
-| Tool reports "未安装 camera-proto" / "协议库加载失败" / "ABI 版本不匹配" | Run `"<MCP_PYTHON>" -m pip install -r requirements.txt` with the MCP-launching interpreter, then retry the same tool (no restart needed) | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [Installation](../SKILL.md#installation) |
+| Tool reports "camera-proto package is not installed" / library load failure / ABI mismatch | Run `"<MCP_PYTHON>" -m pip install -r requirements.txt` with the MCP-launching interpreter, then retry the same tool (no restart needed) | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [Installation](../SKILL.md#installation) |
 | `not_connected` / `needs_password` / `no_sn` / auth-failure group | Reconnect / ask for password / final-refusal handling | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [WORKFLOW.md Phase 2](WORKFLOW.md) |
 | `UNSUPPORTED_PROTOCOL` on events/illumination/image/tracking | Device-class limitation, inform user | [SKILL.md Capability Matrix](../SKILL.md#extended-capabilities--protocol-matrix) · `commands/*.md` |
-| Stream / screenshot / recording errors (`timeout`, `busy`, `recording in progress`) | Retry rules per Decision Table | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [commands/stream.md](commands/stream.md) |
+| Stream / screenshot / recording errors (`timeout`, `recording in progress`, write failure) | Retry rules per Decision Table | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [commands/stream.md](commands/stream.md) |
 | PTZ `degraded` / `limit_reached` / J-O limits | Relay reason / stop direction / use duration | [SKILL.md Phase 4](../SKILL.md#phase-4--ptz-control) · [commands/ptz.md](commands/ptz.md) |
 | `DEVICE_UNREACHABLE` (illumination/image/tracking) | Bounded auto-retry ×3 | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · `## Error codes` in `commands/*.md` |
 | Event store external consumption | Contract & schema | [EVENT_INTEGRATION.md](EVENT_INTEGRATION.md) · [commands/events.md](commands/events.md) |
