@@ -283,9 +283,6 @@ def capture_video_screenshot(
             if p and p not in paths:
                 paths.append(p)
 
-        # TCP 优先、UDP 兜底（与录像路径 transport 策略对齐）；
-        # "open 成功但读不到帧"（UDP 丢包的典型形态，如云台转动期码率突发）
-        # 同样换 transport / path 重试，而不是原地报错。
         opened_any = False
         transport_plan = _rtsp_transport_plan()
         for transport in transport_plan:
