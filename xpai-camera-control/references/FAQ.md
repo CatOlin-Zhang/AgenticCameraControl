@@ -35,7 +35,7 @@ A: Check camera and host share the same LAN and the camera is online. Discovery 
 A: Its IP likely changed (DHCP lease renewal) and config.yaml holds a stale IP. Call `search_devices()` once to refresh the registry, then retry. Never retry repeatedly against the cached IP.
 
 **Q: The tool keeps asking for a password (`needs_password`).**
-A: Cached credentials expired and cloud re-auth also failed, the cloud service is unreachable, or the device has no SN for cloud auth. Ask the user for the device password, then `connect_device(camera_name, password=user_input)`.
+A: Cached credentials expired and cloud re-auth also failed, the cloud service is unreachable, or the device has no SN for cloud auth. Ask the user for the device password, then `connect_device(camera_name, password=user_input)`. The password is printed on the camera's body label.
 
 **Q: The cloud authorization prompt never gets confirmed.**
 A: `connect_device` blocks waiting for confirmation in the vendor's mobile APP. Ask the user to confirm it there; the call then completes by itself.
@@ -64,15 +64,12 @@ A: Always start with `toggle_recording(action="start", duration=<seconds>)`; the
 A: Retry once with a larger `timeout_seconds` (max 120); if it still fails, check the device is online.
 
 **Q: Screenshot/recording fails to write (file not created or empty).**
-A: Possible causes: disk full, invalid `save_path` (nonexistent or no write permission; non-ASCII paths on Windows make `cv2.imwrite()` fail silently), or a recording too short to produce data. Before long recordings, query `manage_storage_status()` (action=query) and judge free space yourself; on failure, check space, path, and permissions, then retry.
+A: Possible causes: disk full, invalid `save_path` (nonexistent or no write permission; non-ASCII paths on Windows make `cv2.imwrite()` fail silently), or a recording too short to produce data. Check free space on the disk containing the actual save directory, path, and permissions, then retry. For recording errors, inspect the ffmpeg `.log` file beside the video.
 
 ### PTZ · Events · Data
 
-**Q: PTZ result shows `degraded=true` or `limit_reached=true`.**
-A: Physical-limit guard. Relay `degrade_reason` to the user verbatim (never report a degraded move as completed); on `limit_reached`, stop sending commands in that direction.
-
-**Q: PTZ `degrees` mode / calibration unsupported.**
-A: The J/O-class ONVIF backend supports velocity + duration only. Use `duration_seconds`; `calibrate_ptz` is S-class only.
+**Q: PTZ `degrees` mode unsupported.**
+A: The J/O-class ONVIF backend supports velocity + duration only. Use `duration_seconds`.
 
 **Q: No events / no illumination / no image settings / no tracking.**
 A: These are S-class-only capabilities. J/O-class returns `UNSUPPORTED_PROTOCOL` with a reason — inform the user of the device-class limitation; not a malfunction or timeout.
@@ -84,7 +81,7 @@ A: Events require an S-class camera and `manage_camera_events(action="start")` w
 A: Transient private-protocol port flapping — bounded auto-retry: same parameters after 2-3 s, up to 3 attempts, no user confirmation needed. Do not reconnect or rediscover mid-retry.
 
 **Q: Does my data leave the LAN? Are passwords stored in plaintext?**
-A: Usage-phase traffic is LAN-only; the connection phase talks to the vendor cloud only to verify connection status. Files are written only to `config.yaml`, `snapshots/`, `video/`, `events/`. Credentials (`password`/`sn_code`/`sn`/`pkdk`) are stored obfuscated and restored in memory only at the point of use.
+A: Usage-phase traffic is LAN-only; the connection phase talks to the vendor cloud only to verify connection status. Files are written only to `config.yaml`, `snapshots/`, `video/`, `events/`. Credentials (`password`/`sn_code`/`sn`/`pkdk`) are stored obfuscated (XOR + base64 with an `enc1:` prefix) and restored in memory only at the point of use; values passed back through the tool API are decoded exactly once.
 
 ## Best Practices
 
@@ -110,7 +107,7 @@ Symptom-first map to the authoritative source (this FAQ paraphrases; the sources
 | `not_connected` / `needs_password` / `no_sn` / auth-failure group | Reconnect / ask for password / final-refusal handling | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [WORKFLOW.md Phase 2](WORKFLOW.md) |
 | `UNSUPPORTED_PROTOCOL` on events/illumination/image/tracking | Device-class limitation, inform user | [SKILL.md Capability Matrix](../SKILL.md#extended-capabilities--protocol-matrix) · `commands/*.md` |
 | Stream / screenshot / recording errors (`timeout`, `recording in progress`, write failure) | Retry rules per Decision Table | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [commands/stream.md](commands/stream.md) |
-| PTZ `degraded` / `limit_reached` / J-O limits | Relay reason / stop direction / use duration | [SKILL.md Phase 4](../SKILL.md#phase-4--ptz-control) · [commands/ptz.md](commands/ptz.md) |
+| PTZ `degrees` mode unsupported on J/O cameras | Use `duration_seconds` | [SKILL.md Phase 4](../SKILL.md#phase-4--ptz-control) · [commands/ptz.md](commands/ptz.md) |
 | `DEVICE_UNREACHABLE` (illumination/image/tracking) | Bounded auto-retry ×3 | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · `## Error codes` in `commands/*.md` |
 | Event store external consumption | Contract & schema | [EVENT_INTEGRATION.md](EVENT_INTEGRATION.md) · [commands/events.md](commands/events.md) |
 | config.yaml schema / manual pre-configuration | Full schema | [CONFIG.md](CONFIG.md) |

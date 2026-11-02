@@ -1,9 +1,8 @@
-import json
 import time
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Protocol, Tuple, cast
 
 try:
     from . import camera_proto
@@ -25,22 +24,12 @@ class PTZDirection(str, Enum):
     DOWN = "down"
     LEFT = "left"
     RIGHT = "right"
-    UPLEFT = "upleft"
-    UPRIGHT = "upright"
-    DOWNLEFT = "downleft"
-    DOWNRIGHT = "downright"
-    ZOOM_IN = "zoom_in"
-    ZOOM_OUT = "zoom_out"
 
 _DIRECTION_ALIAS: Dict[str, PTZDirection] = {
     "上": PTZDirection.UP,
     "下": PTZDirection.DOWN,
     "左": PTZDirection.LEFT,
     "右": PTZDirection.RIGHT,
-    "左上": PTZDirection.UPLEFT,
-    "右上": PTZDirection.UPRIGHT,
-    "左下": PTZDirection.DOWNLEFT,
-    "右下": PTZDirection.DOWNRIGHT,
 }
 
 _SK_CMD_MAP: Dict[PTZDirection, str] = {
@@ -48,83 +37,23 @@ _SK_CMD_MAP: Dict[PTZDirection, str] = {
     PTZDirection.DOWN:      "down",
     PTZDirection.LEFT:      "left",
     PTZDirection.RIGHT:     "right",
-    PTZDirection.UPLEFT:    "upleft",
-    PTZDirection.UPRIGHT:   "upright",
-    PTZDirection.DOWNLEFT:  "downleft",
-    PTZDirection.DOWNRIGHT: "downright",
-    PTZDirection.ZOOM_IN:   "zoom+",
-    PTZDirection.ZOOM_OUT:  "zoom-",
-}
-
-_PTZ_ZOOM = frozenset({PTZDirection.ZOOM_IN, PTZDirection.ZOOM_OUT})
-
-_DIAGONAL_TO_AXES: Dict[str, Tuple[str, str]] = {
-    "upleft":    ("up", "left"),
-    "upright":   ("up", "right"),
-    "downleft":  ("down", "left"),
-    "downright": ("down", "right"),
 }
 
 _DEGREES_PER_SECOND = 34.0
 
 _SK_PTZ_TIMEOUT = 5.0
 
-_calibrated_home: Optional[Tuple[int, int]] = None
-
-def _safe_int(val, default: int = 0) -> int:
-    if val is None or val == "":
-        return default
-    try:
-        return int(val)
-    except (TypeError, ValueError):
-        return default
-
-def _safe_float(val, default: float = 0.0) -> float:
-    if val is None or val == "":
-        return default
-    try:
-        return float(val)
-    except (TypeError, ValueError):
-        return default
-
 @dataclass
 class PTZMoveResult:
     success: bool
     protocol: str = ""
-    current_pan: float = 0.0
-    current_tilt: float = 0.0
-    current_zoom: float = 0.0
     error_message: str = ""
 
     requested_duration_seconds: float = 0.0
     actual_duration_seconds: float = 0.0
-    limit_reached: bool = False
-    degraded: bool = False
-    degrade_reason: str = ""
 
     degrees: float = 0.0
-    position: str = ""
     method: str = ""
-
-@dataclass
-class PTZParameters:
-    pan: float = 0.0
-    tilt: float = 0.0
-    zoom: float = 0.0
-    pan_range: float = 0.0
-    tilt_range: float = 0.0
-    zoom_range: float = 0.0
-    is_moving: bool = False
-    protocol: str = ""
-    error_message: str = ""
-
-@dataclass
-class CalibrateResult:
-    success: bool
-    protocol: str = ""
-    error_message: str = ""
-    home_position: str = ""
-    action: str = ""
 
 @dataclass
 class PTZInfo:
@@ -140,32 +69,6 @@ class PTZInfo:
 def _get_camera(camera_name: str):
     from .device_mgmt import _find_camera
     return _find_camera(camera_name)
-
-def _sk_ptz_get(cam) -> Optional[dict]:
-    ok, data, status = _envelope(camera_proto.ptz_get(
-        cam.ip, cam.sn_code, cam.username, cam.password, _SK_PTZ_TIMEOUT))
-    if not ok or not data:
-        return None
-    if not camera_proto.code_ok(data.get("code", "")):
-        return None
-
-    pos_sub = data.get("position", {})
-    if isinstance(pos_sub, dict):
-        x = _safe_int(pos_sub.get("x", data.get("x", 0)))
-        y = _safe_int(pos_sub.get("y", data.get("y", 0)))
-        z = _safe_float(pos_sub.get("z", data.get("z", 1.0)), 1.0)
-    else:
-        x = _safe_int(data.get("x", 0))
-        y = _safe_int(data.get("y", 0))
-        z = _safe_float(data.get("z", 1.0), 1.0)
-
-    return {
-        "x": x, "y": y, "z": z,
-        "x_range": _safe_int(data.get("x_range", 421), 421),
-        "y_range": _safe_int(data.get("y_range", 134), 134),
-        "z_range": _safe_float(data.get("z_range", 10.0), 10.0),
-        "raw": data,
-    }
 
 def _sk_ptz_set(cam, payload: dict) -> Tuple[bool, str]:
     ok, data, status = _envelope(camera_proto.ptz_set(
@@ -193,82 +96,15 @@ _DIRECTION_SIGN: Dict[PTZDirection, tuple] = {
     PTZDirection.DOWN:      (0, -1),
     PTZDirection.LEFT:      (-1, 0),
     PTZDirection.RIGHT:     (+1, 0),
-    PTZDirection.UPLEFT:    (-1, +1),
-    PTZDirection.UPRIGHT:   (+1, +1),
-    PTZDirection.DOWNLEFT:  (-1, -1),
-    PTZDirection.DOWNRIGHT: (+1, -1),
 }
-
-_GUARD_POLL_INTERVAL = 0.4
-_GUARD_STALL_POLLS = 2
-_GUARD_EDGE_MARGIN = 1.0
-_GUARD_MOVE_EPS = 1e-3
-
-def _query_ptz_position(cam) -> Optional[dict]:
-    return _sk_ptz_get(cam)
-
-def _axis_at_limit(pos: float, rng: float, sign: int) -> bool:
-    if sign == 0 or rng <= 0:
-        return False
-    if sign > 0:
-        return pos >= rng - _GUARD_EDGE_MARGIN
-    return pos <= _GUARD_EDGE_MARGIN
-
-def _at_direction_limit(pos: dict, direction: PTZDirection) -> bool:
-    pan_sign, tilt_sign = _DIRECTION_SIGN.get(direction, (0, 0))
-    pan_limited = _axis_at_limit(pos.get("x", 0), pos.get("x_range", 0), pan_sign) if pan_sign else True
-    tilt_limited = _axis_at_limit(pos.get("y", 0), pos.get("y_range", 0), tilt_sign) if tilt_sign else True
-    return pan_limited and tilt_limited
-
-def _guarded_wait(
-    cam,
-    direction: PTZDirection,
-    duration_seconds: float,
-) -> tuple:
-    start = time.monotonic()
-    last = _query_ptz_position(cam)
-    if last is None:
-        time.sleep(duration_seconds)
-        return duration_seconds, False, None
-
-    pan_sign, tilt_sign = _DIRECTION_SIGN.get(direction, (0, 0))
-    stall_count = 0
-    final_pos = last
-    limit_reached = False
-
-    while True:
-        remaining = duration_seconds - (time.monotonic() - start)
-        if remaining <= 0:
-            break
-        time.sleep(min(_GUARD_POLL_INTERVAL, remaining))
-
-        cur = _query_ptz_position(cam)
-        if cur is None:
-            continue
-        final_pos = cur
-
-        if _at_direction_limit(cur, direction):
-            limit_reached = True
-            break
-
-        moved = False
-        if pan_sign and abs(cur.get("x", 0) - last.get("x", 0)) > _GUARD_MOVE_EPS:
-            moved = True
-        if tilt_sign and abs(cur.get("y", 0) - last.get("y", 0)) > _GUARD_MOVE_EPS:
-            moved = True
-        stall_count = 0 if moved else stall_count + 1
-        if stall_count >= _GUARD_STALL_POLLS:
-            limit_reached = True
-            break
-        last = cur
-
-    return time.monotonic() - start, limit_reached, final_pos
 
 _ONVIF_MIN_MOVE_TIMEOUT = 1.0
 
-_ONVIF_POSITION_RANGE = 1.0
+class _ONVIFPTZService(Protocol):
+    def ContinuousMove(self, request: Dict[str, Any]) -> Any: ...
+    def Stop(self, request: Dict[str, Any]) -> Any: ...
 
-def _onvif_ptz(cam) -> Tuple[Optional[object], str, str]:
+def _onvif_ptz(cam) -> Tuple[Optional[_ONVIFPTZService], str, str]:
     try:
         from .device_mgmt import _connected_devices
         onvif_cam = (_connected_devices.get(cam.name) or {}).get("onvif_camera")
@@ -283,22 +119,18 @@ def _onvif_ptz(cam) -> Tuple[Optional[object], str, str]:
         profiles = onvif_cam.create_media_service().GetProfiles()
         if not profiles:
             return None, "", "ONVIF returned no profiles; the device may not support PTZ"
-        return onvif_cam.create_ptz_service(), profiles[0].token, ""
+        return cast(_ONVIFPTZService, onvif_cam.create_ptz_service()), profiles[0].token, ""
     except Exception as e:
         return None, "", f"ONVIF PTZ service initialization failed: {e}"
 
-def _onvif_move(cam, vx: float, vy: float, vz: float, duration: float) -> Tuple[bool, str]:
+def _onvif_move(cam, vx: float, vy: float, duration: float) -> Tuple[bool, str]:
     ptz, token, err = _onvif_ptz(cam)
     if ptz is None:
         return False, err
 
-    velocity: dict = {}
-    if vx or vy:
-        velocity["PanTilt"] = {"x": vx, "y": vy}
-    if vz:
-        velocity["Zoom"] = {"x": vz}
-    if not velocity:
+    if not (vx or vy):
         return False, "Velocity vector is zero; no valid movement direction"
+    velocity = {"PanTilt": {"x": vx, "y": vy}}
 
     try:
         ptz.ContinuousMove({
@@ -311,7 +143,7 @@ def _onvif_move(cam, vx: float, vy: float, vz: float, duration: float) -> Tuple[
 
     time.sleep(duration)
     try:
-        ptz.Stop({"ProfileToken": token, "PanTilt": True, "Zoom": True})
+        ptz.Stop({"ProfileToken": token, "PanTilt": True})
     except Exception as e:
         return False, f"ONVIF movement started but stop failed: {e}"
     return True, ""
@@ -321,47 +153,10 @@ def _onvif_stop(cam) -> Tuple[bool, str]:
     if ptz is None:
         return False, err
     try:
-        ptz.Stop({"ProfileToken": token, "PanTilt": True, "Zoom": True})
+        ptz.Stop({"ProfileToken": token, "PanTilt": True})
         return True, ""
     except Exception as e:
         return False, f"ONVIF Stop failed: {e}"
-
-def _onvif_status(cam) -> Tuple[Optional[dict], str]:
-    ptz, token, err = _onvif_ptz(cam)
-    if ptz is None:
-        return None, err
-    try:
-        status = ptz.GetStatus({"ProfileToken": token})
-    except Exception as e:
-        return None, f"ONVIF GetStatus failed: {e}"
-
-    pan = tilt = zoom = 0.0
-    available = False
-    position = getattr(status, "Position", None)
-    if position is not None:
-        pan_tilt = getattr(position, "PanTilt", None)
-        if pan_tilt is not None:
-            pan = _safe_float(getattr(pan_tilt, "x", 0.0))
-            tilt = _safe_float(getattr(pan_tilt, "y", 0.0))
-            available = True
-        zoom_pos = getattr(position, "Zoom", None)
-        if zoom_pos is not None:
-            zoom = _safe_float(getattr(zoom_pos, "x", 0.0))
-            available = True
-
-    is_moving = False
-    move_status = getattr(status, "MoveStatus", None)
-    if move_status is not None:
-        for axis in ("PanTilt", "Zoom"):
-            state = getattr(move_status, axis, None)
-            if isinstance(state, str) and state.strip().upper() not in ("", "IDLE"):
-                is_moving = True
-
-    return {
-        "pan": pan, "tilt": tilt, "zoom": zoom,
-        "position_available": available,
-        "is_moving": is_moving,
-    }, ""
 
 def _onvif_control(
     cam,
@@ -373,19 +168,13 @@ def _onvif_control(
     if degrees is not None:
         return PTZMoveResult(
             success=False, protocol="onvif", degrees=degrees,
-            error_message="ONVIF position space is normalized; movement by degrees is not supported — use duration_seconds instead",
+            error_message="ONVIF movement by degrees is not supported — use duration_seconds instead",
         )
 
     duration = duration_seconds if duration_seconds is not None else 1.0
 
-    if direction in _PTZ_ZOOM:
-        vz = speed if direction is PTZDirection.ZOOM_IN else -speed
-        ok, err = _onvif_move(cam, 0.0, 0.0, vz, duration)
-        method = "onvif_zoom"
-    else:
-        pan_sign, tilt_sign = _DIRECTION_SIGN.get(direction, (0, 0))
-        ok, err = _onvif_move(cam, pan_sign * speed, tilt_sign * speed, 0.0, duration)
-        method = "onvif_time"
+    pan_sign, tilt_sign = _DIRECTION_SIGN.get(direction, (0, 0))
+    ok, err = _onvif_move(cam, pan_sign * speed, tilt_sign * speed, duration)
 
     if not ok:
         return PTZMoveResult(
@@ -394,18 +183,12 @@ def _onvif_control(
             error_message=err,
         )
 
-    result = PTZMoveResult(
+    return PTZMoveResult(
         success=True, protocol="onvif",
         requested_duration_seconds=duration,
         actual_duration_seconds=duration,
-        method=method,
+        method="onvif_time",
     )
-    status, _ = _onvif_status(cam)
-    if status:
-        result.current_pan = status["pan"]
-        result.current_tilt = status["tilt"]
-        result.current_zoom = status["zoom"]
-    return result
 
 def control_ptz(
     camera_name: str,
@@ -416,11 +199,11 @@ def control_ptz(
 ) -> PTZMoveResult:
     camera_name = coerce_str(camera_name)
 
-    direction = _resolve_direction(direction)
-    if not direction:
+    resolved_direction = _resolve_direction(direction)
+    if resolved_direction is None:
         return PTZMoveResult(
             success=False,
-            error_message="Invalid direction; valid: up/down/left/right/upleft/upright/downleft/downright/zoom_in/zoom_out",
+            error_message="Invalid direction; valid: up/down/left/right",
         )
 
     speed = max(0.1, min(1.0, speed))
@@ -445,114 +228,38 @@ def control_ptz(
         )
 
     if cam.protocol_type in ("J", "O"):
-        return _onvif_control(cam, direction, speed, duration_seconds, degrees)
+        return _onvif_control(cam, resolved_direction, speed, duration_seconds, degrees)
 
-    if direction in _PTZ_ZOOM:
-        sk_cmd = _SK_CMD_MAP.get(direction, "")
+    if degrees is None:
         duration = duration_seconds if duration_seconds is not None else 1.0
+        sk_cmd = _SK_CMD_MAP[resolved_direction]
         ok, err = _sk_ptz_set(cam, {"cmd": sk_cmd})
         if not ok:
             return PTZMoveResult(
                 success=False, protocol="sky_private",
-                error_message=f"zoom start failed: {err}",
+                error_message=f"Failed to start directional movement: {err}",
             )
         time.sleep(duration)
-        ok, err = _sk_ptz_set(cam, {"cmd": "stop", "action": sk_cmd})
-        if not ok:
-            return PTZMoveResult(
-                success=False, protocol="sky_private",
-                requested_duration_seconds=duration,
-                error_message=f"zoom started but stop failed: {err}",
-            )
+        _sk_ptz_set(cam, {"cmd": "stop", "action": sk_cmd})
+
         return PTZMoveResult(
             success=True, protocol="sky_private",
             requested_duration_seconds=duration,
             actual_duration_seconds=duration,
-            method="sk_zoom",
-        )
-
-    dir_str = direction.value
-    if degrees is None:
-        half = duration_seconds / 2.0
-
-        if dir_str in _DIAGONAL_TO_AXES:
-
-            h_axis, v_axis = _DIAGONAL_TO_AXES[dir_str]
-
-            ok, err = _sk_ptz_set(cam, {"cmd": h_axis})
-            if not ok:
-                return PTZMoveResult(
-                    success=False, protocol="sky_private",
-                    error_message=f"Failed to start horizontal ({h_axis}) movement: {err}",
-                )
-            time.sleep(half)
-            _sk_ptz_set(cam, {"cmd": "stop", "action": h_axis})
-
-            ok, err = _sk_ptz_set(cam, {"cmd": v_axis})
-            if not ok:
-                return PTZMoveResult(
-                    success=False, protocol="sky_private",
-                    error_message=f"Failed to start vertical ({v_axis}) movement: {err}",
-                )
-            time.sleep(half)
-            _sk_ptz_set(cam, {"cmd": "stop", "action": v_axis})
-
-        else:
-
-            sk_cmd = _SK_CMD_MAP.get(direction, "")
-            ok, err = _sk_ptz_set(cam, {"cmd": sk_cmd})
-            if not ok:
-                return PTZMoveResult(
-                    success=False, protocol="sky_private",
-                    error_message=f"Failed to start directional movement: {err}",
-                )
-            time.sleep(duration_seconds)
-            _sk_ptz_set(cam, {"cmd": "stop", "action": sk_cmd})
-
-        return PTZMoveResult(
-            success=True, protocol="sky_private",
-            requested_duration_seconds=duration_seconds,
-            actual_duration_seconds=duration_seconds,
             method="sk_time",
         )
 
     duration_seconds = degrees / 34.0
     duration_seconds = max(0.1, min(10.0, duration_seconds))
-    half = duration_seconds / 2.0
-
-    if dir_str in _DIAGONAL_TO_AXES:
-
-        h_axis, v_axis = _DIAGONAL_TO_AXES[dir_str]
-
-        ok, err = _sk_ptz_set(cam, {"cmd": h_axis})
-        if not ok:
-            return PTZMoveResult(
-                success=False, protocol="sky_private", degrees=degrees,
-                error_message=f"Failed to start horizontal ({h_axis}) movement: {err}",
-            )
-        time.sleep(half)
-        _sk_ptz_set(cam, {"cmd": "stop", "action": h_axis})
-
-        ok, err = _sk_ptz_set(cam, {"cmd": v_axis})
-        if not ok:
-            return PTZMoveResult(
-                success=False, protocol="sky_private", degrees=degrees,
-                error_message=f"Failed to start vertical ({v_axis}) movement: {err}",
-            )
-        time.sleep(half)
-        _sk_ptz_set(cam, {"cmd": "stop", "action": v_axis})
-
-    else:
-
-        sk_cmd = _SK_CMD_MAP.get(direction, "")
-        ok, err = _sk_ptz_set(cam, {"cmd": sk_cmd})
-        if not ok:
-            return PTZMoveResult(
-                success=False, protocol="sky_private", degrees=degrees,
-                error_message=f"Failed to start directional movement: {err}",
-            )
-        time.sleep(duration_seconds)
-        _sk_ptz_set(cam, {"cmd": "stop", "action": sk_cmd})
+    sk_cmd = _SK_CMD_MAP[resolved_direction]
+    ok, err = _sk_ptz_set(cam, {"cmd": sk_cmd})
+    if not ok:
+        return PTZMoveResult(
+            success=False, protocol="sky_private", degrees=degrees,
+            error_message=f"Failed to start directional movement: {err}",
+        )
+    time.sleep(duration_seconds)
+    _sk_ptz_set(cam, {"cmd": "stop", "action": sk_cmd})
 
     return PTZMoveResult(
         success=True, protocol="sky_private",
@@ -561,160 +268,6 @@ def control_ptz(
         actual_duration_seconds=round(duration_seconds, 2),
         method="sk_degrees",
     )
-
-def get_ptz_parameters(
-    camera_name: str,
-) -> PTZParameters:
-    camera_name = coerce_str(camera_name)
-
-    cam = _get_camera(camera_name)
-    if not cam:
-        return PTZParameters(error_message=f"Camera '{camera_name}' is not registered")
-
-    if cam.protocol_type in ("J", "O"):
-        status, err = _onvif_status(cam)
-        if status is None:
-            return PTZParameters(protocol="onvif", error_message=err)
-        return PTZParameters(
-            pan=status["pan"],
-            tilt=status["tilt"],
-            zoom=status["zoom"],
-            pan_range=_ONVIF_POSITION_RANGE,
-            tilt_range=_ONVIF_POSITION_RANGE,
-            zoom_range=_ONVIF_POSITION_RANGE,
-            is_moving=status["is_moving"],
-            protocol="onvif",
-            error_message="" if status["position_available"] else "Device did not report PTZ position",
-        )
-
-    pos = _sk_ptz_get(cam)
-    if pos is None:
-        return PTZParameters(
-            protocol="sky_private",
-            error_message="SK GET_PTZ query failed",
-        )
-
-    return PTZParameters(
-        pan=float(pos.get("x", 0)),
-        tilt=float(pos.get("y", 0)),
-        zoom=float(pos.get("z", 0)),
-        pan_range=float(pos.get("x_range", 0)),
-        tilt_range=float(pos.get("y_range", 0)),
-        zoom_range=float(pos.get("z_range", 0)),
-        is_moving=False,
-        protocol="sky_private",
-    )
-
-def calibrate_ptz(
-    camera_name: str,
-    action: str = "set_home",
-) -> CalibrateResult:
-    camera_name = coerce_str(camera_name)
-
-    global _calibrated_home
-
-    cam = _get_camera(camera_name)
-    if not cam:
-        return CalibrateResult(
-            success=False, protocol="sky_private",
-            error_message=f"Camera '{camera_name}' is not registered",
-        )
-
-    if cam.protocol_type in ("J", "O"):
-        return CalibrateResult(
-            success=False, protocol="onvif",
-            action=(action or "").strip(),
-            error_message="This protocol does not support PTZ calibration; use control_ptz to adjust the view manually",
-        )
-
-    action = (action or "").strip()
-    if action not in ("set_home", "go_home"):
-        return CalibrateResult(
-            success=False, protocol="sky_private",
-            error_message=f"Invalid action={action!r}; options: set_home / go_home",
-        )
-
-    if action == "set_home":
-        ok, err = _sk_ptz_set(cam, {"cmd": "calibrate"})
-        if not ok:
-            return CalibrateResult(
-                success=False, protocol="sky_private",
-                action=action,
-                error_message=f"SK calibrate failed: {err}",
-            )
-        time.sleep(2)
-
-        pos = _sk_ptz_get(cam)
-        if pos is None:
-            return CalibrateResult(
-                success=False, protocol="sky_private",
-                action=action,
-                error_message="SK calibrate executed, but GET_PTZ coordinate read failed; home position not stored",
-            )
-
-        home_x = pos.get("x", 0)
-        home_y = pos.get("y", 0)
-        _calibrated_home = (home_x, home_y)
-
-        return CalibrateResult(
-            success=True, protocol="sky_private",
-            action=action,
-            home_position=f"x={home_x},y={home_y}",
-        )
-
-    if _calibrated_home is None:
-        ok, err = _sk_ptz_set(cam, {"cmd": "calibrate"})
-        if not ok:
-            return CalibrateResult(
-                success=False, protocol="sky_private",
-                action=action,
-                error_message=f"go_home requires prior calibration, but SK calibrate failed: {err}",
-            )
-        time.sleep(2)
-        pos = _sk_ptz_get(cam)
-        if pos is None:
-            return CalibrateResult(
-                success=False, protocol="sky_private",
-                action=action,
-                error_message="SK calibrate executed, but GET_PTZ coordinate read failed",
-            )
-        _calibrated_home = (pos.get("x", 0), pos.get("y", 0))
-
-    home_x, home_y = _calibrated_home
-    ok, err = _sk_ptz_set(cam, {"cmd": "move", "x": home_x, "y": home_y, "z": 1.0})
-    if not ok:
-        return CalibrateResult(
-            success=False, protocol="sky_private",
-            action=action,
-            error_message=f"SK move to home failed: {err}",
-        )
-
-    return CalibrateResult(
-        success=True, protocol="sky_private",
-        action=action,
-        home_position=f"x={home_x},y={home_y}",
-    )
-
-def _move_to_position(
-    camera_name: str,
-    x: int,
-    y: int,
-    z: float = 1.0,
-) -> PTZMoveResult:
-    cam = _get_camera(camera_name)
-    if not cam:
-        return PTZMoveResult(
-            success=False,
-            error_message=f"Camera '{camera_name}' is not registered",
-        )
-
-    ok, err = _sk_ptz_set(cam, {"cmd": "move", "x": x, "y": y, "z": z})
-    if ok:
-        return PTZMoveResult(
-            success=True, protocol="sky_private",
-            current_pan=float(x), current_tilt=float(y), current_zoom=z,
-        )
-    return PTZMoveResult(success=False, protocol="sky_private", error_message=err)
 
 def stop_ptz(
     camera_name: str,

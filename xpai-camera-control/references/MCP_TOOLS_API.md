@@ -9,7 +9,7 @@ All tool functions are exposed via MCP (Model Context Protocol). The caller send
 ## Table of Contents
 
 1. [Device Management](#1-device-management)
-2. [Stream & Storage](#2-stream--storage)
+2. [Stream](#2-stream)
 3. [PTZ Control](#3-ptz-control)
 4. [Event Listening](#4-event-listening)
 5. [WebRTC Live Preview](#5-webrtc-live-preview)
@@ -125,7 +125,7 @@ Scan the LAN to discover available cameras (WS-Discovery + Skyworth private prot
 
 ### `connect_device`
 
-Connect to a camera. Automatically loads cached credentials (validated across the TCP/ONVIF/RTSP channels); when the cache is invalid, cloud re-authorization is attempted first, and only if that fails is the user asked for input. If the camera has not been used for a long time or a previous connection/stream attempt failed, call `search_devices` first to refresh the registry (the device IP may have changed) before connecting.
+Connect to a camera. Automatically loads cached credentials (validated over RTSP; ONVIF is used for control-plane reachability); when the cache is invalid, cloud re-authorization is attempted first, and only if that fails is the user asked for input. If the camera has not been used for a long time or a previous connection/stream attempt failed, call `search_devices` first to refresh the registry (the device IP may have changed) before connecting.
 
 **Parameters**:
 
@@ -183,7 +183,7 @@ Disconnect a camera and release all resources.
 
 ---
 
-## 2. Stream & Storage
+## 2. Stream
 
 ### `get_audio_video_stream`
 
@@ -266,41 +266,13 @@ Start, stop, or query local MP4 recording. Defaults to the `video/` directory.
 
 ---
 
-### `manage_storage_status`
-
-Query disk usage and available space for recordings/screenshots, or set the storage path, file format, and storage policy.
-
-**Parameters**:
-
-| Parameter     | Type   | Required | Default   | Description                                                           |
-|--------------|--------|:--:|-----------|------------------------------------------------------------------------|
-| `camera_name` | string | ✅  | —         | Camera name                                                            |
-| `action`      | string |    | `"query"` | `"query"` / `"set"`                                                  |
-| `path`        | string |    | —         | Storage path (`set` only)                                              |
-| `format`      | string |    | —         | `"mp4"` / `"avi"` / `"jpg"` (`set` only)                             |
-| `policy`      | string |    | —         | `"overwrite"` / `"stop_when_full"` / `"circular"` (`set` only)       |
-
-**Returns**: `StorageResult`
-
-| Field                 | Type   | Description              |
-|----------------------|--------|--------------------------|
-| `success`            | bool   | Whether it succeeded     |
-| `used_space_mb`      | float  | Used space (MB)          |
-| `available_space_mb` | float  | Available space (MB)     |
-| `storage_path`       | string | Current storage path     |
-| `format`             | string | Current file format      |
-| `policy`             | string | Current storage policy   |
-| `error_message`      | string | Failure reason           |
-
----
-
 ## 3. PTZ Control
 
 ### `control_ptz`
 
-Control the PTZ rotation direction or zoom. Supports 8 directions and zoom. Built-in physical limit protection stops movement early when a boundary is reached.
+Control PTZ pan/tilt in four directions. Movement stops after the requested duration without querying the PTZ position.
 
-> **Dispatched by protocol**: SK-class (`protocol_type="S"`) uses the Skyworth private protocol; JCP-class (`protocol_type="J"`) and third-party ONVIF-class (`protocol_type="O"`) use ONVIF (`ContinuousMove`/`Stop`/`GetStatus`, normalized velocity vectors). **J/O-class does not support the `degrees` angle mode** (returns an explicit unsupported notice; use `duration_seconds` instead).
+> **Dispatched by protocol**: SK-class (`protocol_type="S"`) uses the Skyworth private protocol; JCP-class (`protocol_type="J"`) and third-party ONVIF-class (`protocol_type="O"`) use ONVIF (`ContinuousMove`/`Stop`, normalized velocity vectors). **J/O-class does not support the `degrees` angle mode** (returns an explicit unsupported notice; use `duration_seconds` instead).
 
 **Parameters**:
 
@@ -312,7 +284,7 @@ Control the PTZ rotation direction or zoom. Supports 8 directions and zoom. Buil
 | `duration_seconds` | number |    | —       | Rotation duration (seconds); mutually exclusive with `degrees`; defaults to `1.0` when neither is given |
 | `degrees`          | number |    | —       | Rotation angle (converted at 1 second = 34 degrees); mutually exclusive with `duration_seconds` (not supported by J/O-class) |
 
-**direction values**: `up` / `down` / `left` / `right` / `upleft` / `upright` / `downleft` / `downright` / `zoom_in` / `zoom_out`
+**direction values**: `up` / `down` / `left` / `right`
 
 **Returns**: `PTZMoveResult`
 
@@ -320,72 +292,17 @@ Control the PTZ rotation direction or zoom. Supports 8 directions and zoom. Buil
 |------------------------------|--------|----------------------------------------------------------------|
 | `success`                    | bool   | Whether the operation succeeded                                |
 | `protocol`                   | string | Protocol used (`"sky_private"` or `"onvif"`)                   |
-| `current_pan`                | float  | Current pan position                                           |
-| `current_tilt`               | float  | Current tilt position                                          |
-| `current_zoom`               | float  | Current zoom factor                                            |
 | `requested_duration_seconds` | float  | Requested move duration                                        |
-| `actual_duration_seconds`    | float  | Actual move duration                                           |
-| `limit_reached`              | bool   | Whether a physical limit was reached                           |
+| `actual_duration_seconds`    | float  | Duration used for the movement command                         |
 | `degrees`                    | float  | Requested angle in degrees mode                                |
-| `method`                     | string | Execution method: `"sk_time"` / `"sk_degrees"` / `"sk_zoom"` / `"onvif_time"` / `"onvif_zoom"` |
+| `method`                     | string | Execution method: `"sk_time"` / `"sk_degrees"` / `"onvif_time"` |
 | `error_message`              | string | Failure reason                                                 |
-
----
-
-### `get_ptz_parameters`
-
-Read the PTZ's current position coordinates, movement ranges, and status (read-only query).
-
-**Parameters**:
-
-| Parameter     | Type   | Required | Description |
-|--------------|--------|:--:|-------------|
-| `camera_name` | string | ✅  | Camera name |
-
-**Returns**: `PTZParameters`
-
-| Field            | Type   | Description              |
-|-----------------|--------|--------------------------|
-| `pan`           | float  | Current pan position     |
-| `tilt`          | float  | Current tilt position    |
-| `zoom`          | float  | Current zoom factor      |
-| `pan_range`     | float  | Pan movement range       |
-| `tilt_range`    | float  | Tilt movement range      |
-| `zoom_range`    | float  | Zoom range               |
-| `is_moving`     | bool   | Whether currently moving |
-| `protocol`      | string | Protocol used            |
-| `error_message` | string | Query failure reason     |
-
----
-
-### `calibrate_ptz`
-
-Physical PTZ calibration and homing. A hardware calibration operation, takes about 10-30 seconds.
-
-> **Not supported by J/O-class**: JCP/O-class cameras (`protocol_type="J"`/`"O"`) do not support PTZ calibration; the call returns `success=false`, `protocol="onvif"`, and an explicit notice — use `control_ptz` + `duration_seconds` to adjust the viewing angle manually.
-
-**Parameters**:
-
-| Parameter     | Type   | Required | Default       | Description                                                |
-|--------------|--------|:--:|---------------|-------------------------------------------------------------|
-| `camera_name` | string | ✅  | —             | Camera name                                                 |
-| `action`      | string |    | `"set_home"` | `"set_home"` calibrate and store home / `"go_home"` return to the stored home position |
-
-**Returns**: `CalibrateResult`
-
-| Field            | Type   | Description                        |
-|-----------------|--------|------------------------------------|
-| `success`       | bool   | Whether the operation succeeded    |
-| `protocol`      | string | Protocol used                      |
-| `action`        | string | Action executed                    |
-| `home_position` | string | Home position coordinates (e.g. `"x=0,y=0"`) |
-| `error_message` | string | Failure reason                     |
 
 ---
 
 ### `stop_ptz`
 
-Immediately emergency-stop all ongoing PTZ movement.
+Immediately stop ongoing pan/tilt movement.
 
 **Parameters**:
 
@@ -398,7 +315,7 @@ Immediately emergency-stop all ongoing PTZ movement.
 | Field            | Type   | Description              |
 |-----------------|--------|--------------------------|
 | `success`       | bool   | Whether the stop succeeded |
-| `protocol`      | string | `"sky_private"`          |
+| `protocol`      | string | `"sky_private"` or `"onvif"` |
 | `error_message` | string | Failure reason           |
 
 ---

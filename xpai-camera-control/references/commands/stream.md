@@ -15,7 +15,7 @@ Fetch the real-time video stream URL.
 | **Safety** | Explicit Prompt + Code Validation |
 | **Returns** | `StreamResult` (see field table below) |
 | **Parameters** | `camera_name`: camera identifier. `sub_stream`: use sub-stream (lower quality) if `True`. `timeout_seconds`: max wait in seconds for the stream probe (default 20, max 120); raise it for known slow devices. |
-| **Agent behavior** | Output the `stream_url` to the user so they can open it in a media player (VLC, ffplay, PotPlayer) for live viewing. |
+| **Agent behavior** | Output the complete `stream_url` unchanged so the user can copy it into a media player (VLC, ffplay, PotPlayer). The URL contains credentials; do not share it publicly. |
 
 **Execution model:** the stream probe runs **in-process via OpenCV (FFmpeg backend)** with hard per-stage timeouts (8 s open / 5 s read). RTSP media transport is **TCP on all supported OpenCV versions (≥ 4.8, empirically verified)**; the code additionally requests TCP explicitly (with UDP fallback) on legacy builds where the OpenCV API still allows selecting the transport. On open failure the main ↔ sub stream paths are tried in turn. There is **no code-level serial slot** — see the concurrency guidance under `capture_video_screenshot`. The MCP layer enforces a tool-level timeout (`timeout_seconds`).
 
@@ -26,7 +26,7 @@ Fetch the real-time video stream URL.
 | Field | Type | Description |
 |-------|------|-------------|
 | `success` | bool | Whether the stream URL was retrieved |
-| `stream_url` | string | RTSP URL with auto-injected credentials (e.g. `rtsp://admin:***@192.168.1.100:554/md0_0`) |
+| `stream_url` | string | RTSP URL with auto-injected credentials (e.g. `rtsp://admin:pass@192.168.1.100:554/md0_0`) |
 | `codec` | string | Video codec: `"H.264"` / `"H.265"` / `"MJPEG"` |
 | `resolution` | string | Resolution string (e.g. `"2560x1440"`) |
 | `fps` | float | Frame rate |
@@ -85,28 +85,4 @@ Start, stop, or query the status of local video recording.
 | `file_path` | string | Recording file path (populated on stop) |
 | `duration_seconds` | float | Recorded duration in seconds (populated on stop; elapsed time on `status`) |
 | `auto_stop` | bool | Whether a fixed-duration auto-stop is set (`duration` was passed on `start`) |
-| `error_message` | string | Failure reason (empty on success) |
-
----
-
-### `manage_storage_status(camera_name, action="query", path=None, format=None, policy=None) -> StorageResult`
-
-Query storage usage or configure storage path, format, and policy.
-
-| Aspect | Detail |
-|--------|--------|
-| **Safety** | Explicit Prompt + Code Validation |
-| **Returns** | `StorageResult` (see field table below) |
-| **Parameters** | `camera_name`: camera identifier. `action`: `"query"` or `"set"`. `path`, `format` (`"mp4"`/`"avi"`/`"jpg"`), `policy` (`"overwrite"`/`"stop_when_full"`/`"circular"`): set mode parameters (optional). |
-
-**StorageResult return fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `success` | bool | Whether the operation succeeded |
-| `used_space_mb` | float | Used storage space in MB |
-| `available_space_mb` | float | Available storage space in MB |
-| `storage_path` | string | Current storage directory path |
-| `format` | string | File format: `"mp4"` / `"avi"` / `"jpg"` |
-| `policy` | string | Storage policy: `"overwrite"` / `"stop_when_full"` / `"circular"` |
 | `error_message` | string | Failure reason (empty on success) |

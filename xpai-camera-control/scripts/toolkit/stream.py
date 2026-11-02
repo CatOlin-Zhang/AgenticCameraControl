@@ -21,10 +21,6 @@ class RecordingAction(str, Enum):
     STOP = "stop"
     STATUS = "status"
 
-class StorageAction(str, Enum):
-    QUERY = "query"
-    SET = "set"
-
 @dataclass
 class StreamResult:
     success: bool
@@ -50,16 +46,6 @@ class RecordingResult:
     file_path: str = ""
     duration_seconds: float = 0.0
     auto_stop: bool = False
-    error_message: str = ""
-
-@dataclass
-class StorageResult:
-    success: bool
-    used_space_mb: float = 0.0
-    available_space_mb: float = 0.0
-    storage_path: str = ""
-    format: str = ""
-    policy: str = ""
     error_message: str = ""
 
 def _rtsp_transport_selectable() -> bool:
@@ -354,8 +340,6 @@ def capture_video_screenshot(
     return result
 
 _RECORDING_STARTUP_COMPENSATION = 1.5
-
-_storage_config: Dict[str, dict] = {}
 
 _VALID_RTSP_TRANSPORTS = frozenset({"tcp", "udp"})
 
@@ -763,8 +747,8 @@ def toggle_recording(
                 "-rtsp_transport", transport,
                 "-timeout", "5000000",
                 "-i", rtsp_url,
+                "-c:a", "aac",
                 "-c:v", "copy",
-                "-an",
                 "-movflags", "+faststart",
             ]
             if ffmpeg_timeout is not None:
@@ -899,107 +883,6 @@ def toggle_recording(
     return RecordingResult(
         success=False, is_recording=False,
         error_message=f"Unknown action: {action}",
-    )
-
-def manage_storage_status(
-    camera_name: str,
-    action: StorageAction = StorageAction.QUERY,
-    path: Optional[str] = None,
-    format: Optional[str] = None,
-    policy: Optional[str] = None,
-) -> StorageResult:
-    camera_name = coerce_str(camera_name)
-
-    import os
-    import shutil
-
-    if camera_name not in _storage_config:
-        default_dir = os.path.join(os.path.dirname(__file__), "..", "..", "video")
-        _storage_config[camera_name] = {
-            "path": default_dir,
-            "format": "mp4",
-            "policy": "stop_when_full",
-        }
-
-    cfg = _storage_config[camera_name]
-    storage_path = cfg["path"]
-
-    if action == StorageAction.SET:
-
-        valid_formats = {"mp4", "avi", "jpg"}
-        valid_policies = {"overwrite", "stop_when_full", "circular"}
-
-        if path is not None:
-            storage_path = path
-            try:
-                os.makedirs(storage_path, exist_ok=True)
-
-                test_file = os.path.join(storage_path, ".write_test")
-                with open(test_file, "w") as f:
-                    f.write("test")
-                os.remove(test_file)
-            except Exception as e:
-                return StorageResult(
-                    success=False,
-                    storage_path=storage_path,
-                    format=cfg["format"],
-                    policy=cfg["policy"],
-                    error_message=f"Storage path is not writable: {e}",
-                )
-            cfg["path"] = storage_path
-
-        if format is not None:
-            if format not in valid_formats:
-                return StorageResult(
-                    success=False,
-                    storage_path=storage_path,
-                    format=cfg["format"],
-                    policy=cfg["policy"],
-                    error_message=f"Invalid file format: {format}; valid: {valid_formats}",
-                )
-            cfg["format"] = format
-
-        if policy is not None:
-            if policy not in valid_policies:
-                return StorageResult(
-                    success=False,
-                    storage_path=storage_path,
-                    format=cfg["format"],
-                    policy=cfg["policy"],
-                    error_message=f"Invalid storage policy: {policy}; valid: {valid_policies}",
-                )
-            cfg["policy"] = policy
-
-    used_mb = 0.0
-    available_mb = 0.0
-
-    if os.path.exists(storage_path):
-        try:
-            total_size = 0
-            for dirpath, dirnames, filenames in os.walk(storage_path):
-                for fname in filenames:
-                    fp = os.path.join(dirpath, fname)
-                    try:
-                        total_size += os.path.getsize(fp)
-                    except OSError:
-                        pass
-            used_mb = round(total_size / (1024 * 1024), 2)
-        except Exception:
-            pass
-
-    try:
-        usage = shutil.disk_usage(storage_path)
-        available_mb = round(usage.free / (1024 * 1024), 2)
-    except Exception:
-        pass
-
-    return StorageResult(
-        success=True,
-        used_space_mb=used_mb,
-        available_space_mb=available_mb,
-        storage_path=storage_path,
-        format=cfg["format"],
-        policy=cfg["policy"],
     )
 
 import os as _os

@@ -35,7 +35,7 @@ Read all camera entries from `config.yaml` and return their configurations.
 | `ip` | string | Camera IP address |
 | `port` | int | ONVIF service port (0 = not yet verified) |
 | `username` | string | Login username (default: `"admin"`) |
-| `password` | string | Login password (loaded from config.yaml, never display to user) |
+| `password` | string | Login password (decoded from config.yaml at the point of use; never display to user) |
 | `rtsp_port` | int | RTSP port (default: 554) |
 | `rtsp_path` | string | Main stream RTSP path |
 | `rtsp_sub_path` | string | Sub stream RTSP path |
@@ -56,7 +56,7 @@ Write a camera entry to `config.yaml`, persisting credentials for future auto-co
 |--------|--------|
 | **Safety** | None (internal config write; does not expose credentials to user) |
 | **Returns** | `RegisterResult` (see field table below) |
-| **Parameters** | `name`: unique camera name. `ip`: camera IP. `port`: ONVIF port — **only pass a verified port; omit when unknown (0 = unknown)**, `connect_device` probes the real port and writes it back automatically. `username`/`password`: credentials (saved to config.yaml, never displayed). `rtsp_port`/`rtsp_path`: stream parameters. `device_class`: `"password_required"` or `"direct_connect"`. Additional kwargs: `sn_code`, `pkdk`, `rtsp_sub_path`, `connection_type`, `illumination_modes`, `protocol_type`, `onvif_sn` (internal — written by `connect_device`; do not set manually to bypass connection gates). |
+| **Parameters** | `name`: unique camera name. `ip`: camera IP. `port`: ONVIF port — **only pass a verified port; omit when unknown (0 = unknown)**, `connect_device` probes the real port and writes it back automatically. `username`/`password`: credentials (saved obfuscated to config.yaml, never displayed; `password` accepts plaintext or an `enc1:` value and is decoded once). `rtsp_port`/`rtsp_path`: stream parameters. `device_class`: `"password_required"` or `"direct_connect"`. Additional kwargs: `sn_code`, `pkdk`, `rtsp_sub_path`, `connection_type`, `illumination_modes`, `protocol_type`, `onvif_sn` (internal — written by `connect_device`; do not set manually to bypass connection gates). |
 | **When to call** | After first successful `connect_device()` |
 
 **RegisterResult return fields:**
@@ -144,26 +144,26 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
 | `onvif_port` | int | Verified ONVIF port (0 = not verified; auto-probed by `connect_device`) |
 | `protocol_type` | string | Resolved protocol class of the device (`"S"`/`"J"`/`"O"`, empty when unresolved) — relay O-class degradation to the user |
 
-**ONVIF port verification:** before ONVIF auth, candidate ports are probed with unauthenticated `GetSystemDateAndTime`. Only ports returning a SOAP Envelope are accepted. Verified ports are written back to config.yaml automatically.
+**ONVIF port verification:** before the ONVIF probe, candidate ports are probed with unauthenticated `GetSystemDateAndTime`. Only ports returning a SOAP Envelope are accepted. Verified ports are written back to config.yaml automatically.
 
 **Illumination capability probing:** after a successful connection on the password-auth and direct-connect paths (S-class devices only), `connect_device()` automatically probes the SK private-protocol fill-light capability via `probe_illumination_capability()`. The result is persisted to `config.yaml` as `illumination_modes`; probe failures are silently ignored (the field stays empty) so they never delay the connection flow. If `illumination_modes` is already cached in config.yaml from a previous session, re-probing is skipped.
 
-**J-class (JCP) connection:** JCP cameras connect over **ONVIF + RTSP** — the SK private TCP/HTTP probe is not required (it fails on these devices, which is expected). The SN gate falls back to JCP discovery when the SK SN probe returns nothing, so J-class devices are no longer rejected with `status="no_sn"`. On success the tool persists `protocol_type="J"`, the verified ONVIF port, and the ONVIF-authoritative main/sub RTSP paths (from `GetStreamUri`). The SK-only illumination probe is skipped for J-class.
+**J-class (JCP) connection:** JCP cameras connect over **ONVIF + RTSP**. The SN gate falls back to JCP discovery when the SK SN probe returns nothing, so J-class devices are no longer rejected with `status="no_sn"`. On success the tool persists `protocol_type="J"`, the verified ONVIF port, and the ONVIF-authoritative main/sub RTSP paths (from `GetStreamUri`). The SK-only illumination probe is skipped for J-class.
 
-**O-class (third-party ONVIF-only) connection:** a WS-Discovery device whose SK **and** JCP SN probes return nothing is admitted to the connected state only when the **ONVIF admission probe** passes — ONVIF port probe plus an authenticated `GetDeviceInformation()`. On success the tool persists `protocol_type="O"` and the ONVIF SerialNumber as `onvif_sn` (`sn_code` stays empty — it is the SK-ecosystem key and must never receive an ONVIF serial). O-class never enters cloud authorization (no SN), skips the SK illumination probe, and uses ONVIF-authoritative stream paths + ONVIF PTZ like J-class. If ONVIF admission fails (RTSP-only device), the connection is rejected with `status="no_sn"` and an explicit message; cached-O reconnects stay O without requiring a fresh ONVIF verification, and a later successful SK/JCP probe upgrades a cached O back to S/J.
+**O-class (third-party ONVIF-only) connection:** a WS-Discovery device whose SK **and** JCP SN probes return nothing is admitted to the connected state only when the **ONVIF admission probe** passes — ONVIF port probe plus a `GetDeviceInformation()` reachability check (not a credential check). On success the tool persists `protocol_type="O"` and the ONVIF SerialNumber as `onvif_sn` (`sn_code` stays empty — it is the SK-ecosystem key and must never receive an ONVIF serial). O-class never enters cloud authorization (no SN), skips the SK illumination probe, and uses ONVIF-authoritative stream paths + ONVIF PTZ like J-class. If ONVIF admission fails (RTSP-only device), the connection is rejected with `status="no_sn"` and an explicit message; cached-O reconnects stay O without requiring a fresh ONVIF verification, and a later successful SK/JCP probe upgrades a cached O back to S/J.
 
-**Connection flow (TCP 9010 → ONVIF → RTSP):**
+**Connection flow (ONVIF → RTSP):**
 
-1. Check `config.yaml` for cached credentials → if found, retry connection up to 3 times (1s interval) using TCP/ONVIF/RTSP three-channel verification. For password devices, the password must pass **RTSP authentication** to be considered valid. All retries fail → attempt **cloud re-authorization** (if SN available) to fetch a fresh password; cloud also fails → auto-remove registration from config.yaml → return `status="needs_password"`
-2. If password provided by user → single attempt with TCP/ONVIF/RTSP verification (no retry, no cache cleanup). RTSP auth failure → `status="failed"`
-3. If no password and `device_class == "password_required"` → internally initiate cloud authorization (POST request + polling). Cloud returns password → verify via TCP/ONVIF + RTSP → success: persist credentials; failure: return `status="cloud_pwd_failed"`
+1. Check `config.yaml` for cached credentials → if found, retry connection up to 3 times (1s interval) using ONVIF/RTSP verification. For password devices, the password must pass **RTSP authentication** to be considered valid. All retries fail → attempt **cloud re-authorization** (if SN available) to fetch a fresh password; cloud also fails → auto-remove registration from config.yaml → return `status="needs_password"`
+2. If password provided by user → single attempt with ONVIF/RTSP verification (no retry, no cache cleanup). RTSP auth failure → `status="failed"`
+3. If no password and `device_class == "password_required"` → internally initiate cloud authorization (POST request + polling). Cloud returns password → verify via ONVIF + RTSP → success: persist credentials; failure: return `status="cloud_pwd_failed"`
 4. If not `password_required` → probe RTSP stream:
-   - `200 OK` (direct-connect) → probe SN via XPAI private protocol → verify SK HTTP communication → register to config.yaml with SN → `auth_method="direct"`
+   - `200 OK` (direct-connect) → probe SN via XPAI private protocol → register to config.yaml with SN → `auth_method="direct"`
    - `200 OK` but SN probes empty → ONVIF admission probe: pass → register as `protocol_type="O"` with `onvif_sn` → `auth_method="direct"`; fail → `status="no_sn"` rejection (RTSP-only device)
    - `401 Unauthorized` → SN probes empty and no S/J assertion → `status="needs_password"` (O-class has no cloud channel); otherwise internally initiate cloud authorization (same as step 3)
 5. Cloud authorization outcomes: authorized → auto-connect with cloud password; rejected → `status="auth_rejected"`; timeout/error → `status="needs_password"`. A device with no cloud station record is submitted to the default station (same host as the station-lookup interface); transport, TLS, HTTP and signature failures are reported directly — no fallback
 
-**Password verification standard:** A password is considered valid only when **both** TCP/ONVIF authentication **and** RTSP stream access succeed. If TCP/ONVIF passes but RTSP returns 401, the password is rejected (possible credential isolation or password mismatch on the device).
+**Password verification standard:** A password is valid only when RTSP DESCRIBE returns 200. ONVIF `GetDeviceInformation` is a control-plane reachability check and may succeed with any password; RTSP 401 or an unreachable RTSP port rejects the password.
 
 #### Return JSON examples by scenario
 
@@ -185,7 +185,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
   "success": false,
   "auth_method": "",
   "status": "needs_password",
-  "error_message": "Cached credentials have expired (TCP/ONVIF/RTSP all failed), and cloud re-authorization could not obtain a usable password. Please enter the current password for device living_room_camera (192.168.1.100) directly.",
+  "error_message": "Cached credentials cleared (invalid: RTSP authentication failed (password may be invalid for RTSP)). Cloud re-auth re-issued the same stale credential; approving again cannot pass device verification. Enter the current correct password for device living_room_camera (192.168.1.100) manually.",
   "needs_password": true,
   "onvif_port": 0
 }
@@ -223,20 +223,20 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
   "success": false,
   "auth_method": "",
   "status": "failed",
-  "error_message": "Password authentication failed: TCP/ONVIF/RTSP all failed",
+  "error_message": "Password authentication failed: RTSP authentication failed (password may be invalid for RTSP); verify the password and retry",
   "needs_password": true,
   "onvif_port": 8000
 }
 ```
 
-**RTSP auth failure despite TCP/ONVIF success (credential isolation):**
+**RTSP port unreachable (password not verified):**
 ```json
 {
   "success": false,
   "auth_method": "",
   "status": "failed",
-  "error_message": "TCP/ONVIF connected successfully but RTSP authentication failed (the password may be invalid for RTSP)",
-  "needs_password": false,
+  "error_message": "Password authentication failed: RTSP port unreachable; password not verified over RTSP; verify the password and retry",
+  "needs_password": true,
   "onvif_port": 8000
 }
 ```
@@ -247,7 +247,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
   "success": false,
   "auth_method": "",
   "status": "cloud_pwd_failed",
-  "error_message": "The password delivered by the cloud failed verification on device living_room_camera (192.168.1.100) (TCP/ONVIF connected successfully but RTSP authentication failed (the password may be invalid for RTSP)). The device may have had its LAN password changed or has credential isolation. Please enter the correct LAN password.",
+  "error_message": "The password delivered by the cloud failed verification on device living_room_camera (192.168.1.100) (RTSP authentication failed (password may be invalid for RTSP)). The device may have had its LAN password changed or has credential isolation. Please enter the correct LAN password.",
   "needs_password": true,
   "onvif_port": 0
 }

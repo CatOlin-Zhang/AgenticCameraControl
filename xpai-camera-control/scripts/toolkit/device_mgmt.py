@@ -159,27 +159,41 @@ class CloudAuthRequestResult:
     claw_id: str = ""
     station_default: bool = False
     error_message: str = ""
+    http_status: int = 0
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 
 _XOR_KEY = 0x5A
-
-def _enc(value: str) -> str:
-    if not value:
-        return ""
-    raw = str(value).encode("utf-8")
-    return base64.b64encode(bytes(b ^ _XOR_KEY for b in raw)).decode("ascii")
+_OBF_PREFIX = "enc1:"
 
 def _dec(value: Any) -> str:
+    """Decode a stored value. Accepts prefixed and legacy unprefixed forms."""
     if not value:
         return ""
+    text = str(value)
+    if text.startswith(_OBF_PREFIX):
+        text = text[len(_OBF_PREFIX):]
     try:
-        raw = base64.b64decode(str(value), validate=True)
+        raw = base64.b64decode(text, validate=True)
         return bytes(b ^ _XOR_KEY for b in raw).decode("utf-8")
     except Exception:
         return ""
 
-_SK_TCP_PORT = 9010
+def _to_plain(value: Any) -> str:
+    """Decode an `enc1:` value exactly once; anything else is plaintext."""
+    if not value:
+        return ""
+    text = str(value)
+    if text.startswith(_OBF_PREFIX):
+        return _dec(text) or text
+    return text
+
+def _enc(value: Any) -> str:
+    text = _to_plain(value)
+    if not text:
+        return ""
+    raw = text.encode("utf-8")
+    return _OBF_PREFIX + base64.b64encode(bytes(b ^ _XOR_KEY for b in raw)).decode("ascii")
 
 def _get_local_ip() -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -378,9 +392,9 @@ def register_camera(
 ) -> RegisterResult:
     name = coerce_str(name)
     username = coerce_str(username)
-    password = coerce_str(password)
-    sn_code = coerce_str(sn_code)
-    pkdk = coerce_str(pkdk)
+    password = _to_plain(coerce_str(password))
+    sn_code = _to_plain(coerce_str(sn_code))
+    pkdk = _to_plain(coerce_str(pkdk))
     onvif_sn = coerce_str(onvif_sn)
 
     import os
@@ -390,7 +404,7 @@ def register_camera(
     config_path = os.path.join(config_dir, "config.yaml")
 
     if not os.path.exists(config_path):
-        alt_path = os.path.join(config_dir, "confg.yaml")
+        alt_path = os.path.join(config_dir, "config.yaml")
         if os.path.exists(alt_path):
             config_path = alt_path
 
@@ -1011,14 +1025,17 @@ def _cloud_auth_and_connect(
 
     cr = request_cloud_auth(sn_code)
     if not cr.success:
-
+        if cr.station_default and cr.http_status == 500:
+            message = f"Default station authorization returned HTTP 500. Enter the password for device {camera_name}({ip}) directly."
+        else:
+            message = (
+                f"Cloud authorization service unavailable ({cr.error_message}). "
+                f"Enter the password for device {camera_name}({ip}) directly."
+            )
         return ConnectResult(
             success=False, status="needs_password",
             needs_password=True,
-            error_message=(
-                f"Cloud authorization service unavailable ({cr.error_message}). "
-                f"Enter the password for device {camera_name}({ip}) directly."
-            ),
+            error_message=message,
         )
 
     register_camera(
@@ -1042,7 +1059,6 @@ def _cloud_auth_and_connect(
             conn = _try_connect_with_password(
                 camera_name, ip, port, rtsp_port, rtsp_path,
                 username, result.device_pwd,
-                require_rtsp=True,
             )
             if conn.success:
 
@@ -1126,8 +1142,8 @@ def connect_device(
 ) -> ConnectResult:
     camera_name = coerce_str(camera_name)
     username = coerce_str(username)
-    password = coerce_str(password)
-    sn_code = coerce_str(sn_code)
+    password = _to_plain(coerce_str(password))
+    sn_code = _to_plain(coerce_str(sn_code))
 
     cached = _find_cached_camera(camera_name)
 
@@ -1486,8 +1502,8 @@ def _try_connect_with_password(
     rtsp_path: str,
     username: str,
     password: str,
-    require_rtsp: bool = False,
 ) -> ConnectResult:
+    password = _to_plain(password)
 
     verified_port = _probe_onvif_port(ip, hint_port=onvif_port)
     effective_port = verified_port or onvif_port
@@ -1495,98 +1511,48 @@ def _try_connect_with_password(
     _cached_cfg = _find_cached_camera(camera_name)
     sub_path = (_cached_cfg.rtsp_sub_path if _cached_cfg and _cached_cfg.rtsp_sub_path else "") or "/md0_1"
 
-    env = camera_proto.device_get_info(ip, username, password, timeout=5.0)
-    resp = env.get("body") if env.get("ok") else None
-    tcp_ok = False
-    if resp is not None:
-        _tcp_http_status = env.get("http_status", 0)
-        _tcp_resp_code = resp.get("code", "")
+    conn = {
+        "ip": ip, "port": effective_port,
+        "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
+        "rtsp_sub_path": sub_path,
+        "username": username, "password": password,
+    }
+    _connected_devices[camera_name] = conn
 
-        tcp_ok = (
-            _tcp_http_status == 200
-            or (not _tcp_http_status and
-                (_tcp_resp_code == "" or camera_proto.code_accept(_tcp_resp_code)))
-        )
-        if tcp_ok:
-            _connected_devices[camera_name] = {
-                "ip": ip, "port": effective_port,
-                "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
-                "rtsp_sub_path": sub_path,
-                "username": username, "password": password,
-                "tcp_port": _SK_TCP_PORT,
-            }
-
-    onvif_ok = False
     if effective_port:
         try:
             from onvif import ONVIFCamera
             cam = ONVIFCamera(host=ip, port=effective_port, user=username, passwd=password)
-            dev_svc = cam.create_devicemgmt_service()
-            dev_info = dev_svc.GetDeviceInformation()
-            onvif_ok = True
-
-            conn = _connected_devices.get(camera_name, {
-                "ip": ip, "port": effective_port,
-                "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
-                "rtsp_sub_path": sub_path,
-                "username": username, "password": password,
-            })
+            dev_info = cam.create_devicemgmt_service().GetDeviceInformation()
             conn["onvif_camera"] = cam
             conn["onvif_verified"] = True
             conn["onvif_sn"] = getattr(dev_info, "SerialNumber", "") or ""
-            _connected_devices[camera_name] = conn
         except Exception:
             pass
 
     rtsp_access = _probe_stream_access(ip, rtsp_port, rtsp_path, username, password)
-    rtsp_ok = (rtsp_access == "open")
 
-    if (tcp_ok or onvif_ok) and rtsp_ok:
-
-        return ConnectResult(
-            success=True, auth_method="password", status="connected",
-            onvif_port=verified_port,
-        )
-
-    if (tcp_ok or onvif_ok) and rtsp_access == "auth_required":
-
-        _connected_devices.pop(camera_name, None)
-        return ConnectResult(
-            success=False, status="failed",
-            error_message="TCP/ONVIF connection succeeded but RTSP authentication failed (password may be invalid for RTSP)",
-        )
-
-    if rtsp_ok:
-
-        _connected_devices[camera_name] = {
-            "ip": ip, "port": effective_port,
-            "rtsp_port": rtsp_port, "rtsp_path": rtsp_path,
-            "rtsp_sub_path": sub_path,
-            "username": username, "password": password,
-        }
-        return ConnectResult(
-            success=True, auth_method="password", status="connected",
-            onvif_port=verified_port,
-        )
-
-    if (tcp_ok or onvif_ok) and rtsp_access == "unreachable":
-        if require_rtsp:
-
-            _connected_devices.pop(camera_name, None)
-            return ConnectResult(
-                success=False, status="failed",
-                error_message="RTSP port unreachable; password not verified over RTSP (cloud-issued passwords require mandatory RTSP verification)",
-            )
-
+    if rtsp_access == "open":
         return ConnectResult(
             success=True, auth_method="password", status="connected",
             onvif_port=verified_port,
         )
 
     _connected_devices.pop(camera_name, None)
+
+    if rtsp_access == "auth_required":
+        return ConnectResult(
+            success=False, status="failed",
+            error_message="RTSP authentication failed (password may be invalid for RTSP)",
+        )
+    if rtsp_access == "unreachable":
+        return ConnectResult(
+            success=False, status="failed",
+            error_message="RTSP port unreachable; password not verified over RTSP",
+        )
     return ConnectResult(
         success=False, status="failed",
-        error_message="TCP/ONVIF/RTSP all failed to connect",
+        error_message="ONVIF/RTSP all failed to connect",
     )
 
 def _rtsp_read_response_head(sock) -> str:
@@ -1794,7 +1760,7 @@ def _load_config_cameras() -> List[CameraConfig]:
     if not CONFIG_PATH.exists():
 
         alt_paths = [
-            os.path.join(os.path.dirname(__file__), "..", "..", "confg.yaml"),
+            os.path.join(os.path.dirname(__file__), "..", "..", "config.yaml"),
             "config.yaml",
         ]
         for p in alt_paths:
@@ -1857,7 +1823,9 @@ def request_cloud_auth(sn: str) -> CloudAuthRequestResult:
         return CloudAuthRequestResult(
             success=False,
             claw_id=claw_id,
+            station_default=env.get("station_source") == "default",
             error_message=env.get("error", "Cloud request failed"),
+            http_status=env.get("http_status", 0),
         )
 
     payload = env.get("body") or {}
@@ -1865,12 +1833,15 @@ def request_cloud_auth(sn: str) -> CloudAuthRequestResult:
         return CloudAuthRequestResult(
             success=True, claw_id=claw_id,
             station_default=env.get("station_source") == "default",
+            http_status=env.get("http_status", 0),
         )
 
     return CloudAuthRequestResult(
         success=False,
         claw_id=claw_id,
+        station_default=env.get("station_source") == "default",
         error_message=f"Cloud rejected the request (code={payload.get('code')}): {payload.get('msg', '')}",
+        http_status=env.get("http_status", 0),
     )
 
 def poll_auth_status(

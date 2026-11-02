@@ -47,8 +47,6 @@ def _bind(lib):
         "sk_free_str": ([ctypes.c_void_p], None),
         "sk_code_ok": ([ctypes.c_char_p], ctypes.c_int),
         "sk_code_accept": ([ctypes.c_char_p], ctypes.c_int),
-        "sk_device_get_info": ([ctypes.c_char_p] * 3 + [ctypes.c_double], ctypes.c_void_p),
-        "sk_verify_sk_http": ([ctypes.c_char_p, ctypes.c_double], ctypes.c_void_p),
         "sk_discovery_search": ([ctypes.c_double] + [ctypes.c_char_p] * 3, ctypes.c_void_p),
         "sk_probe_device_sn": ([ctypes.c_char_p, ctypes.c_double,
                                 ctypes.c_char_p, ctypes.c_char_p], ctypes.c_void_p),
@@ -62,7 +60,7 @@ def _bind(lib):
                                   ctypes.c_double, ctypes.c_ushort], ctypes.c_void_p),
     }
     for name in ("sk_filllight_get_option", "sk_filllight_get",
-                 "sk_image_get_option", "sk_image_get", "sk_ptz_get",
+                 "sk_image_get_option", "sk_image_get",
                  "sk_video_get_option", "sk_video_get"):
         signatures[name] = (query, ctypes.c_void_p)
     for name in ("sk_filllight_set", "sk_image_set", "sk_ptz_set", "sk_video_set"):
@@ -82,15 +80,15 @@ def _library_name():
     machine = platform.machine().lower()
     if sys.platform == "win32" and sysconfig.get_platform() == "win-amd64":
         return "camera_proto.dll"
-    if sys.platform == "linux" and machine in ("amd64", "x86_64"):
+    if sys.platform == "linux" and machine in ("amd64", "x86_64", "aarch64", "arm64"):
         if platform.libc_ver()[0] != "glibc":
-            raise RuntimeError("Linux protocol library supports glibc x64 only. musl/Alpine and unrecognized libc are not supported.")
+            raise RuntimeError("Linux protocol library supports glibc x64/ARM64 only. musl/Alpine and unrecognized libc are not supported.")
         return "camera_proto.so"
     if sys.platform == "darwin" and machine in ("x86_64", "arm64"):
         return "camera_proto.dylib"
     raise RuntimeError(
         f"Unsupported platform for the protocol library: {sys.platform}/{machine}; "
-        "only Windows x64, Linux glibc x64, and macOS Intel/ARM64 64-bit interpreters are supported.")
+        "only Windows x64, Linux glibc x64/ARM64, and macOS Intel/ARM64 64-bit interpreters are supported.")
 
 
 def _pip_hint() -> str:
@@ -237,11 +235,6 @@ def video_set(ip, sn, username, password, payload=None, timeout=5.0) -> Dict[str
                  _b(password), _payload_json(payload), float(timeout))
 
 
-def ptz_get(ip, sn, username, password, timeout=5.0) -> Dict[str, Any]:
-    return _call("sk_ptz_get", _b(ip), _b(sn), _b(username),
-                 _b(password), float(timeout))
-
-
 def ptz_set(ip, sn, username, password, payload=None, timeout=5.0) -> Dict[str, Any]:
     return _call("sk_ptz_set", _b(ip), _b(sn), _b(username),
                  _b(password), _payload_json(payload), float(timeout))
@@ -261,14 +254,6 @@ def detect_set(type_code, ip, sn, username, password, payload=None,
                timeout=5.0) -> Dict[str, Any]:
     return _call("sk_detect_set", int(type_code), _b(ip), _b(sn),
                  _b(username), _b(password), _payload_json(payload), float(timeout))
-
-
-def device_get_info(ip, username, password, timeout=5.0) -> Dict[str, Any]:
-    return _call("sk_device_get_info", _b(ip), _b(username), _b(password), float(timeout))
-
-
-def verify_sk_http(ip, timeout=5.0) -> Dict[str, Any]:
-    return _call("sk_verify_sk_http", _b(ip), float(timeout))
 
 
 def _local_ip() -> str:

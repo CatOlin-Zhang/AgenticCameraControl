@@ -57,6 +57,8 @@ For protocol-level details (multicast addresses, message formats), see [Discover
 
 > **Pre-notice before a cloud-auth wait (required):** a cloud-authorization call blocks `connect_device` for up to 5 minutes until the user approves, and the request is pushed only to the phone App the camera is bound to. Before calling `connect_device` on a camera that may need cloud authorization (e.g. no cached password), tell the user to open the bound App and tap **Approve** when the request appears.
 
+> **Password hint:** whenever asking the user for a camera password, mention that the password is printed on the camera's body label.
+
 ### Direct-connect camera (no password needed)
 
 ```text
@@ -99,7 +101,9 @@ Step 2a — Cloud authorized (success=true):
   Future sessions will auto-connect via Phase 0.
 
 Step 2b — Cloud unavailable (needs_password):
-  (conversationally — the Agent informs user that cloud service is unreachable)
+  (conversationally — the Agent informs user that cloud service is unavailable)
+  Default-station HTTP 500: ask for the password immediately. Do not poll again,
+  retry cloud authorization, switch stations, or infer server/region/registration causes.
   connect_device(
     camera_name="discovered_192_168_1_100",
     password=<user_input>,
@@ -129,13 +133,13 @@ Step 2d — Authorization rejected (auth_rejected):
 ```text
 # WS-Discovery found a camera that never answers SK/JCP discovery (sn_code empty)
 connect_device(camera_name="office_thirdparty", password=<user_input>)
-→ SK TCP 9010 probe fails (expected for non-XPAI), SK/JCP SN probes empty
+→ SK/JCP SN probes empty
 → ONVIF admission passes (port probe + GetDeviceInformation)
 → success=true, status="connected", protocol_type="O"
 → config.yaml: protocol_type: O, onvif_sn: <ONVIF SerialNumber>, sn_code: '' (empty)
 → available: RTSP streaming/screenshot/recording/WebRTC (ONVIF GetStreamUri paths), ONVIF PTZ
 → unavailable (immediate UNSUPPORTED_PROTOCOL / clear message): cloud authorization,
-  illumination, image settings, detection/tracking, alarm events, PTZ degrees/calibration
+  illumination, image settings, detection/tracking, alarm events, PTZ degrees
 
 # RTSP-only device (ONVIF admission fails):
 connect_device(camera_name="rtsp_only_cam", password=<user_input>)
@@ -192,10 +196,12 @@ Step 2 — Get RTSP stream URL for live viewing:
 Step 3 — Agent delivers BOTH results to the user:
   (a) Show the screenshot image using markdown:
       ![living room camera snapshot](snapshots/living_room_camera_20260727_143052.jpg)
-  (b) Tell user the RTSP URL:
-      "RTSP live stream: rtsp://admin:***@192.168.1.100:554/md0_0
-       You can open this URL in VLC, ffplay, or PotPlayer for live viewing."
+  (b) Tell user the complete RTSP URL unchanged:
+      "RTSP live stream: rtsp://admin:pass@192.168.1.100:554/md0_0
+       You can copy this URL into VLC, ffplay, or PotPlayer for live viewing."
 ```
+
+The URL contains credentials; do not share it publicly.
 
 ---
 
@@ -203,66 +209,25 @@ Step 3 — Agent delivers BOTH results to the user:
 
 PTZ backend is selected by `protocol_type`: **S-class** uses the Skyworth private protocol; **J-class and O-class** use **ONVIF only** (no private-protocol fallback). All return results include a `protocol` field indicating which protocol was actually used.
 
-### Directional movement (8 directions + Chinese aliases)
+### Directional movement (4 directions + Chinese aliases)
 
 ```text
 # Basic 4 directions (auto-stop after duration_seconds, default 1.0s)
 control_ptz(camera_name="living_room_camera", direction="up", speed=0.5)
 control_ptz(camera_name="living_room_camera", direction="left", speed=0.5, duration_seconds=2.0)
 
-# Diagonal directions
-control_ptz(camera_name="living_room_camera", direction="upleft", speed=0.5)
-control_ptz(camera_name="living_room_camera", direction="downright", speed=0.5)
-
-# Chinese direction aliases are supported (上=up, 左上=upleft, etc.)
+# Chinese direction aliases are supported (上=up, 左=left, etc.)
 control_ptz(camera_name="living_room_camera", direction="上", speed=0.5)
-control_ptz(camera_name="living_room_camera", direction="左上", speed=0.5)
 ```
 
-### Physical limit guard (degraded results)
-
-`control_ptz` guards against commands that exceed the PTZ's physical travel range. When the requested duration cannot be fulfilled, the tool executes the feasible portion and marks the result as degraded:
-
-```text
-# User asks: "turn right for 5 seconds" — but only ~3s of travel remains
-control_ptz(camera_name="living_room_camera", direction="right", duration_seconds=5.0)
-→ success=true, degraded=true, limit_reached=true
-→ requested_duration_seconds=5.0, actual_duration_seconds=3.2
-→ degrade_reason="Requested moving right for 5.0 seconds, but the PTZ reached its physical limit after 3.2 seconds and stopped early. ..."
-
-# Head already at the right limit — command intercepted, nothing sent to the device
-control_ptz(camera_name="living_room_camera", direction="right", duration_seconds=5.0)
-→ success=true, degraded=true, limit_reached=true, actual_duration_seconds=0.0
-→ degrade_reason="The PTZ is already at the physical limit position in the right direction (...), the move command was intercepted..."
-```
-
-**Agent MUST relay `degrade_reason` to the user whenever `degraded=true`** — e.g. "You requested a 5-second right turn, but the PTZ head reached its physical limit after 3.2 seconds and stopped early". Never report a degraded move as fully completed.
-
-### Get current PTZ status
-
-```text
-get_ptz_parameters(camera_name="living_room_camera")
-→ pan, tilt, zoom positions
-→ pan_range, tilt_range, zoom_range
-→ is_moving, protocol
-```
+PTZ movement is time-based. The tool does not query the current position or detect physical travel limits.
 
 ### Stop PTZ immediately
 
 ```text
-# Stop all PTZ movement (SK private protocol for S-class, ONVIF for J/O-class)
+# Stop pan/tilt movement (SK private protocol for S-class, ONVIF for J/O-class)
 stop_ptz(camera_name="living_room_camera")
 ```
-
-### Physical calibration (S-class only; J/O-class not supported)
-
-```text
-# Calibrate PTZ zero point (takes 10-30 seconds, Skyworth cameras only)
-calibrate_ptz(camera_name="living_room_camera")
-→ success / error_message
-```
-
-> Note: absolute coordinate movement is handled internally and is NOT available as an MCP tool.
 
 ---
 

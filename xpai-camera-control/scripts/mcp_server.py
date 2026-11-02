@@ -6,6 +6,7 @@ import argparse
 import threading
 
 import anyio
+from anyio.to_thread import current_default_thread_limiter, run_sync as run_in_thread
 from typing import Any, Dict, Optional, Tuple
 
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -138,7 +139,7 @@ TOOLS = [
     ),
     Tool(
         name="toggle_recording",
-        description="Start, stop, or query local MP4 recording, defaulting to the video/ directory. Before starting a recording, check free disk space via manage_storage_status and judge sufficiency yourself.",
+        description="Start, stop, or query local MP4 recording, defaulting to the video/ directory.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -158,45 +159,16 @@ TOOLS = [
         },
     ),
     Tool(
-        name="manage_storage_status",
-        description="Query disk usage and free space, or set storage path, format, and policy.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "Camera name"},
-                "action": {
-                    "type": "string",
-                    "enum": ["query", "set"],
-                    "description": "query / set",
-                    "default": "query",
-                },
-                "path": {"type": "string", "description": "Storage path"},
-                "format": {
-                    "type": "string",
-                    "enum": ["mp4", "avi", "jpg"],
-                    "description": "File format"
-                },
-                "policy": {
-                    "type": "string",
-                    "enum": ["overwrite", "stop_when_full", "circular"],
-                    "description": "Storage policy"
-                },
-            },
-            "required": ["camera_name"],
-        },
-    ),
-
-    Tool(
         name="control_ptz",
-        description="Control PTZ pan/tilt direction or zoom; supports 8 directions and zoom. Specify the movement via duration_seconds or degrees (choose one).",
+        description="Control PTZ pan/tilt in four directions. Specify the movement via duration_seconds or degrees (choose one).",
         inputSchema={
             "type": "object",
             "properties": {
                 "camera_name": {"type": "string", "description": "Camera name"},
                 "direction": {
                     "type": "string",
-                    "enum": ["up", "down", "left", "right", "upleft", "upright", "downleft", "downright", "zoom_in", "zoom_out"],
-                    "description": "Movement direction (8 directions + zoom)"
+                    "enum": ["up", "down", "left", "right"],
+                    "description": "Movement direction (up/down/left/right)"
                 },
                 "speed": {
                     "type": "number",
@@ -216,37 +188,8 @@ TOOLS = [
         },
     ),
     Tool(
-        name="get_ptz_parameters",
-        description="Read the PTZ current position coordinates and motion range (read-only).",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "Camera name"},
-            },
-            "required": ["camera_name"],
-        },
-    ),
-    Tool(
-        name="calibrate_ptz",
-        description="PTZ physical calibration and homing (hardware calibration operations).",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "camera_name": {"type": "string", "description": "Camera name"},
-                "action": {
-                    "type": "string",
-                    "enum": ["set_home", "go_home"],
-                    "description": "set_home=calibrate and store the home position / go_home=return to the stored home position",
-                    "default": "set_home",
-                },
-            },
-            "required": ["camera_name"],
-        },
-    ),
-
-    Tool(
         name="stop_ptz",
-        description="Emergency-stop all ongoing PTZ movements immediately.",
+        description="Stop ongoing PTZ pan/tilt movement immediately.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -464,7 +407,6 @@ _TOOL_TIMEOUTS: Dict[str, float] = {
     "get_audio_video_stream": 45.0,
     "toggle_recording": 90.0,
     "connect_device": 360.0,
-    "calibrate_ptz": 90.0,
     "start_webrtc_stream": 90.0,
 }
 _DEFAULT_TOOL_TIMEOUT = 60.0
@@ -486,7 +428,7 @@ def _resolve_tool_budget(name: str, args: Dict[str, Any]) -> float:
 
 def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     import scripts.toolkit as tk
-    from scripts.toolkit.stream import RecordingAction, StorageAction
+    from scripts.toolkit.stream import RecordingAction
     from scripts.toolkit.ptz import PTZDirection
     from scripts.toolkit.events import EventAction
     from scripts.toolkit.illumination import IlluminationAction
@@ -523,21 +465,11 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
         if "action" in args:
             args["action"] = RecordingAction(args["action"])
         return _serialize(tk.toggle_recording(**args))
-    elif name == "manage_storage_status":
-        args = dict(args)
-        if "action" in args:
-            args["action"] = StorageAction(args.get("action", "query"))
-        return _serialize(tk.manage_storage_status(**args))
-
     elif name == "control_ptz":
         args = dict(args)
         if "direction" in args:
             args["direction"] = PTZDirection(args["direction"])
         return _serialize(tk.control_ptz(**args))
-    elif name == "get_ptz_parameters":
-        return _serialize(tk.get_ptz_parameters(**args))
-    elif name == "calibrate_ptz":
-        return _serialize(tk.calibrate_ptz(**args))
     elif name == "stop_ptz":
         return _serialize(tk.stop_ptz(**args))
 
@@ -564,9 +496,9 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
         return _serialize(tk.manage_image_settings(**args))
 
     elif name == "query_tracking_capabilities":
-        return _serialize(tk.manage_tracking(action="get", **args))
+        return _serialize(tk.manage_tracking(action=TrackingAction.QUERY, **args))
     elif name == "set_tracking":
-        return _serialize(tk.manage_tracking(action="set", **args))
+        return _serialize(tk.manage_tracking(action=TrackingAction.SET, **args))
 
     else:
         raise ValueError(f"Unknown tool: {name}")
@@ -581,7 +513,7 @@ async def handle_list_tools() -> list[Tool]:
 async def handle_call_tool(name: str, arguments: Dict[str, Any] | None) -> list[TextContent]:
     args = arguments or {}
     if name not in _LOCK_EXEMPT_TOOLS:
-        lock_error = await anyio.to_thread.run_sync(_ensure_camera_lock)
+        lock_error = await run_in_thread(_ensure_camera_lock)
         if lock_error is not None:
             return [TextContent(
                 type="text",
@@ -591,7 +523,7 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any] | None) -> list[
     try:
 
         with anyio.fail_after(budget):
-            result = await anyio.to_thread.run_sync(
+            result = await run_in_thread(
                 _call_tool, name, args, abandon_on_cancel=True,
             )
         return [TextContent(
@@ -825,7 +757,7 @@ async def main():
     except Exception:
         pass
 
-    anyio.to_thread.current_default_thread_limiter().total_tokens = 16
+    current_default_thread_limiter().total_tokens = 16
 
     async with stdio_server() as (read_stream, write_stream):
 
