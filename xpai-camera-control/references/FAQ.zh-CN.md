@@ -33,7 +33,7 @@
 答：大概率是 DHCP 续租导致 IP 变化，config.yaml 中缓存的 IP 已失效。先调用一次 `search_devices()` 刷新注册表再重试；不要对旧 IP 反复重试。
 
 **问：工具一直要求输密码（`needs_password`）。**
-答：缓存凭据已失效且云端重授权也失败、云服务不可达，或设备无 SN 无法发起云授权。请用户输入设备密码，然后 `connect_device(camera_name, password=用户输入)`。
+答：缓存凭据已失效且云端重授权也失败、云服务不可达，或设备无 SN 无法发起云授权。请用户输入设备密码，然后 `connect_device(camera_name, password=用户输入)`。设备密码印在摄像头机身标签上。
 
 **问：云授权弹窗一直没人确认。**
 答：`connect_device` 会阻塞等待厂商手机 APP 上的确认操作。请用户在 APP 上点击确认后，调用会自行完成。
@@ -62,15 +62,12 @@
 答：用更大的 `timeout_seconds`（上限 120）重试一次；仍失败则检查设备是否在线。
 
 **问：截图/录像写入失败（文件未创建或为空）。**
-答：可能原因：磁盘空间不足、`save_path` 无效（不存在或无写权限；Windows 下含中文等非 ASCII 字符的路径会使 `cv2.imwrite()` 静默失败）、或录像时长太短未产生数据。长录像前先用 `manage_storage_status()`（action=query）查可用容量并自行判断是否充足；报错后依次排查空间、路径、权限再重试。
+答：可能原因：磁盘空间不足、`save_path` 无效（不存在或无写权限；Windows 下含中文等非 ASCII 字符的路径会使 `cv2.imwrite()` 静默失败）、或录像时长太短未产生数据。检查实际保存目录所在磁盘的剩余空间、路径和权限，修复后重试；录像报错时还应查看视频旁的 ffmpeg `.log` 文件。
 
 ### 云台 · 事件 · 数据
 
-**问：云台返回 `degraded=true` 或 `limit_reached=true`。**
-答：物理限位保护。`degrade_reason` 必须原样转达给用户（不得把降级动作谎报为按请求完成）；`limit_reached` 后停止向该方向发命令。
-
-**问：云台 `degrees` 模式 / 校准不可用。**
-答：J/O 类的 ONVIF 后端仅支持「速度 + 时长」方式，请改用 `duration_seconds`；`calibrate_ptz` 仅 S 类支持。
+**问：云台 `degrees` 模式不可用。**
+答：J/O 类的 ONVIF 后端仅支持「速度 + 时长」方式，请改用 `duration_seconds`。
 
 **问：没有事件 / 补光 / 图像参数 / 追踪功能。**
 答：这些是 S 类专属能力，J/O 类会返回 `UNSUPPORTED_PROTOCOL` 并附原因——请告知用户这是设备类别限制，不是故障或超时。
@@ -82,7 +79,7 @@
 答：私有协议端口瞬时抖动——有界自动重试：参数不变，间隔 2-3 秒，最多 3 次，无需用户确认；重试期间不要重连或重新发现。
 
 **问：数据会离开局域网吗？密码是明文存储吗？**
-答：使用阶段流量仅限局域网；连接阶段仅与厂商云端确认连接状态。文件只写入 `config.yaml`、`snapshots/`、`video/`、`events/` 白名单位置。凭据（`password`/`sn_code`/`sn`/`pkdk`）混淆存储，仅在使用点于内存中还原。
+答：使用阶段流量仅限局域网；连接阶段仅与厂商云端确认连接状态。文件只写入 `config.yaml`、`snapshots/`、`video/`、`events/` 白名单位置。凭据（`password`/`sn_code`/`sn`/`pkdk`）以 XOR + base64 混淆存储（带 `enc1:` 前缀），仅在使用点于内存中还原一次；经工具 API 回传的存储值也只解码一次，不会二次混淆。
 
 ## 最佳实践
 
@@ -108,7 +105,7 @@
 | `not_connected` / `needs_password` / `no_sn` / 授权失败组 | 重连 / 询问密码 / 终态处理 | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [WORKFLOW.md Phase 2](WORKFLOW.md) |
 | 事件/补光/图像/追踪返回 `UNSUPPORTED_PROTOCOL` | 设备类别限制，告知用户 | [SKILL.md 能力矩阵](../SKILL.md#extended-capabilities--protocol-matrix) · `commands/*.md` |
 | 流 / 截图 / 录像错误（`timeout`、`recording in progress`、写入失败） | 按决策表重试规则 | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · [commands/stream.md](commands/stream.md) |
-| 云台 `degraded` / `limit_reached` / J-O 限制 | 原样转达 / 停发该方向 / 改用时长 | [SKILL.md Phase 4](../SKILL.md#phase-4--ptz-control) · [commands/ptz.md](commands/ptz.md) |
+| J/O 类摄像头不支持云台 `degrees` 模式 | 改用 `duration_seconds` | [SKILL.md Phase 4](../SKILL.md#phase-4--ptz-control) · [commands/ptz.md](commands/ptz.md) |
 | 补光/图像/追踪 `DEVICE_UNREACHABLE` | 有界自动重试 ×3 | [SKILL.md Decision Table](../SKILL.md#decision-table--error--status--action) · `commands/*.md` 的 `## Error codes` |
 | 事件存储外部消费 | 契约与 schema | [EVENT_INTEGRATION.md](EVENT_INTEGRATION.md) · [commands/events.md](commands/events.md) |
 | config.yaml schema / 手动预配置 | 完整 schema | [CONFIG.md](CONFIG.md) |
