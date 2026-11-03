@@ -1631,8 +1631,10 @@ def _build_rtsp_digest_header(
         qop_fields = ""
     header = (
         f'Authorization: Digest username="{username}", realm="{realm}", '
-        f'nonce="{nonce}", uri="{uri}", response="{response}", algorithm=MD5'
+        f'nonce="{nonce}", uri="{uri}", response="{response}"'
     )
+    if params.get("algorithm", "").lower() == "md5":
+        header += ", algorithm=MD5"
     if params.get("opaque"):
         header += f', opaque="{params["opaque"]}"'
     return header + qop_fields + "\r\n"

@@ -5,13 +5,13 @@
   <img src="https://img.shields.io/badge/MCP-1.0-green" alt="MCP 1.0">
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License MIT">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform">
-  <img src="https://img.shields.io/badge/Version-0.7.0-orange" alt="Version 0.7.0">
+  <img src="https://img.shields.io/badge/Version-1.5.6-orange" alt="Version 1.5.6">
   <img src="https://img.shields.io/badge/ONVIF-Supported-blueviolet" alt="ONVIF">
   <img src="https://img.shields.io/badge/Skyworth-Supported-ff6600" alt="Skyworth">
   <img src="https://img.shields.io/badge/Transport-stdio-9cf" alt="Transport stdio">
 </p>
 
-> **版本：0.7.0** | 传输协议：MCP stdio | MCP 工具数：20
+> **版本：1.5.6** | 传输协议：MCP stdio | MCP 工具数：17
 
 **[中文](#中文) | [English](#english)**
 
@@ -21,7 +21,7 @@
 
 局域网 IP 摄像头的智能控制系统。支持 ONVIF 协议摄像头与 Sky Worth 协议摄像头的自动发现、连接、视频流拉取、云台控制、设备管理等功能；USB 摄像头可通过手动配置接入（不支持自动发现，且不适用云台与设备管理）。支持摄像头智能命名——用户可自定义名称，或由多模态模型根据截图画面自动生成描述性名称。
 
-核心模块 `xpai-camera-control` 可作为 MCP (Model Context Protocol) Server 运行，将 18 个摄像头控制工具暴露给 AI Agent 使用。`scripts/toolkit/` 为纯 Python 源码，任意平台安装依赖后直接运行。
+核心模块 `xpai-camera-control` 可作为 MCP (Model Context Protocol) Server 运行，将 17 个摄像头控制工具暴露给 AI Agent 使用。`scripts/toolkit/` 为纯 Python 源码，任意平台安装依赖后直接运行。
 
 ### 功能概览
 
@@ -104,7 +104,7 @@ Server 通过 stdio 传输协议与 MCP 客户端通信，兼容 Claude Desktop 
 AgenticCameraControl/
 └── xpai-camera-control/          # 核心技能包（MCP Server）
     ├── scripts/
-    │   ├── mcp_server.py         # MCP Server 入口（18 个工具注册）
+    │   ├── mcp_server.py         # MCP Server 入口（17 个工具注册）
     │   ├── _paths.py             # 路径解析
     │   └── toolkit/              # 工具函数集（纯 Python 源码）
     │       ├── __init__.py       # 统一导出入口
@@ -121,7 +121,7 @@ AgenticCameraControl/
     │   ├── commands/             # 各模块工具签名与参数说明
     │   ├── CONFIG.md             # config.yaml 完整 schema
     │   ├── WORKFLOW.md           # 工作流详解（含故障排查）
-    │   ├── MCP_TOOLS_API.md      # 18 个 MCP 工具完整 API 文档
+    │   ├── MCP_TOOLS_API.md      # 17 个 MCP 工具完整 API 文档
     │   ├── EVENT_INTEGRATION.md  # 事件存储外部消费契约
     │   ├── FAQ.md / FAQ.zh-CN.md # FAQ · 最佳实践 · 排障索引（EN / 中文）
     │   └── SUPPORTED_DEVICES.md  # 完全支持设备列表（EXSKYWORTH / S 类）
@@ -135,7 +135,20 @@ AgenticCameraControl/
 
 ### 工具模块
 
-8 个功能扇区，共 18 个 MCP 工具：
+8 个功能扇区，共 17 个 MCP 工具：
+
+| 功能 | 工具 |
+|------|------|
+| 设备管理（5） | `get_registered_cameras`、`register_camera`、`search_devices`、`connect_device`、`disconnect_device` |
+| 视频流（3） | `get_audio_video_stream`、`capture_video_screenshot`、`toggle_recording` |
+| 云台控制（2） | `control_ptz`、`stop_ptz` |
+| 事件监听（1） | `manage_camera_events` |
+| WebRTC 预览（2） | `start_webrtc_stream`、`stop_webrtc_stream` |
+| 补光控制（1） | `manage_illumination` |
+| 图像设置（1） | `manage_image_settings` |
+| 侦测追踪（2） | `query_tracking_capabilities`、`set_tracking` |
+
+各工具所属实现模块与参考文档：
 
 | 扇区                  | 说明                      | 参考文档                                                                                    |
 |---------------------|-------------------------|-----------------------------------------------------------------------------------------|
@@ -149,7 +162,7 @@ AgenticCameraControl/
 | `image_settings.py` | 图像参数查询与设置（双通道）          | [commands/image_settings.md](xpai-camera-control/references/commands/image_settings.md) |
 | `tracking.py`       | 侦测追踪能力查询与开关控制           | [commands/tracking.md](xpai-camera-control/references/commands/tracking.md)             |
 
-全部 18 个工具的参数签名、返回字段与错误码详见 [MCP_TOOLS_API.md](xpai-camera-control/references/MCP_TOOLS_API.md)。
+全部 17 个工具的参数签名、返回字段与错误码详见 [MCP_TOOLS_API.md](xpai-camera-control/references/MCP_TOOLS_API.md)。
 
 ### 摄像头智能命名
 
@@ -186,7 +199,7 @@ AgenticCameraControl/
 ### 依赖
 
 - `mcp` — MCP Server 框架
-- `camera-proto` — 私有协议原生库（动态库；版本 pin 与门面 `_ABI_VERSION` 绑定）
+- `camera-proto==0.3.0` — 私有协议原生库（ABI `2.1.0`；支持 Windows x64、Linux glibc x64/ARM64、macOS Intel/ARM64）
 - `onvif-zeep` — ONVIF 协议（SOAP / WS-Discovery）
 - `opencv-python` — 视频采集与处理
 - `ffmpeg-downloader` — ffmpeg 二进制（录像 remux / 流元数据探测）
@@ -196,7 +209,7 @@ AgenticCameraControl/
 
 完整依赖列表见 `xpai-camera-control/requirements.txt`。
 
-维护提示：升级或修改 `camera-proto` 时，必须同步更新 `requirements.txt` 中的版本 pin 与 `scripts/toolkit/camera_proto.py` 中的 `_ABI_VERSION`——两者绑定，版本不匹配时原生库会拒绝加载。
+维护提示：升级 `camera-proto` 时，同步更新 `requirements.txt` 中的版本 pin；只有原生接口 ABI 变化时才更新 `scripts/toolkit/camera_proto.py` 中的 `_ABI_VERSION`，包版本升级本身不要求修改 ABI。
 
 ### 会话规则
 
@@ -235,7 +248,7 @@ Server 进程退出码：`70` = stdio 会话结束后的正常退出（宿主关
 
 An intelligent control system for IP cameras on local networks. Supports auto-discovery, connection, video streaming, PTZ control, and device management for ONVIF-compliant cameras and Sky Worth protocol cameras; USB webcams can be integrated via manual configuration (no auto-discovery; PTZ and device management not applicable). Features intelligent camera naming — users can assign custom names, or let the multimodal model auto-generate descriptive names from screenshot content.
 
-The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Server, exposing 18 camera control tools to AI Agents. `scripts/toolkit/` ships as pure Python source — runs on any platform after installing dependencies.
+The core module `xpai-camera-control` runs as an MCP (Model Context Protocol) Server, exposing 17 camera control tools to AI Agents. `scripts/toolkit/` ships as pure Python source — runs on any platform after installing dependencies.
 
 ### Features
 
@@ -318,7 +331,7 @@ Add the following to your MCP client configuration (e.g. Claude Desktop):
 AgenticCameraControl/
 └── xpai-camera-control/          # Core skill package (MCP Server)
     ├── scripts/
-    │   ├── mcp_server.py         # MCP Server entry point (18 tools registered)
+    │   ├── mcp_server.py         # MCP Server entry point (17 tools registered)
     │   ├── _paths.py             # Path resolution
     │   └── toolkit/              # Tool functions (pure Python source)
     │       ├── __init__.py       # Unified export entry
@@ -335,7 +348,7 @@ AgenticCameraControl/
     │   ├── commands/             # Per-module tool signatures & parameters
     │   ├── CONFIG.md             # config.yaml full schema
     │   ├── WORKFLOW.md           # Workflow details (incl. troubleshooting)
-    │   ├── MCP_TOOLS_API.md      # Complete API doc for all 18 MCP tools
+    │   ├── MCP_TOOLS_API.md      # Complete API doc for all 17 MCP tools
     │   ├── EVENT_INTEGRATION.md  # Event storage external consumer contract
     │   ├── FAQ.md / FAQ.zh-CN.md # FAQ · best practices · troubleshooting index (EN / 中文)
     │   └── SUPPORTED_DEVICES.md  # Fully-supported device list (EXSKYWORTH / S-class)
@@ -349,7 +362,20 @@ AgenticCameraControl/
 
 ### Toolkit Modules
 
-8 functional sectors, 18 MCP tools in total:
+8 functional sectors, 17 MCP tools in total:
+
+| Capability | Tools |
+|------------|-------|
+| Device management (5) | `get_registered_cameras`, `register_camera`, `search_devices`, `connect_device`, `disconnect_device` |
+| Streaming (3) | `get_audio_video_stream`, `capture_video_screenshot`, `toggle_recording` |
+| PTZ control (2) | `control_ptz`, `stop_ptz` |
+| Event monitoring (1) | `manage_camera_events` |
+| WebRTC preview (2) | `start_webrtc_stream`, `stop_webrtc_stream` |
+| Illumination (1) | `manage_illumination` |
+| Image settings (1) | `manage_image_settings` |
+| Detection & tracking (2) | `query_tracking_capabilities`, `set_tracking` |
+
+Implementation modules and reference documents:
 
 | Sector              | Description                                                           | Reference                                                                               |
 |---------------------|-----------------------------------------------------------------------|-----------------------------------------------------------------------------------------|
@@ -363,7 +389,7 @@ AgenticCameraControl/
 | `image_settings.py` | Image parameter query & adjustment (dual-channel)                     | [commands/image_settings.md](xpai-camera-control/references/commands/image_settings.md) |
 | `tracking.py`       | Detection & tracking capability query and toggle                      | [commands/tracking.md](xpai-camera-control/references/commands/tracking.md)             |
 
-See [MCP_TOOLS_API.md](xpai-camera-control/references/MCP_TOOLS_API.md) for the complete parameter signatures, return fields, and error codes of all 18 tools.
+See [MCP_TOOLS_API.md](xpai-camera-control/references/MCP_TOOLS_API.md) for the complete parameter signatures, return fields, and error codes of all 17 tools.
 
 ### Intelligent Camera Naming
 
@@ -400,7 +426,7 @@ Camera configurations are stored in `xpai-camera-control/config.yaml`. Credentia
 ### Dependencies
 
 - `mcp` — MCP Server framework
-- `camera-proto` — Native private-protocol library (shared library; version pin bound to the facade `_ABI_VERSION`)
+- `camera-proto==0.3.0` — Native private-protocol library (ABI `2.1.0`; Windows x64, Linux glibc x64/ARM64, macOS Intel/ARM64)
 - `onvif-zeep` — ONVIF protocol (SOAP / WS-Discovery)
 - `opencv-python` — Video capture and processing
 - `ffmpeg-downloader` — ffmpeg binaries (recording remux / stream metadata probing)
@@ -410,7 +436,7 @@ Camera configurations are stored in `xpai-camera-control/config.yaml`. Credentia
 
 See `xpai-camera-control/requirements.txt` for the full dependency list.
 
-Maintainer note: when upgrading or modifying `camera-proto`, update both the version pin in `requirements.txt` and `_ABI_VERSION` in `scripts/toolkit/camera_proto.py` — they are bound together; a mismatch makes the native library refuse to load.
+Maintainer note: when upgrading `camera-proto`, update the version pin in `requirements.txt`. Update `_ABI_VERSION` in `scripts/toolkit/camera_proto.py` only when the native interface ABI changes; a package version upgrade alone does not require an ABI change.
 
 ### Session Rules
 
