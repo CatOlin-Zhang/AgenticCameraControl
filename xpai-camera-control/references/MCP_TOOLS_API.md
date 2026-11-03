@@ -1,6 +1,6 @@
 # XPAI Camera Control — MCP Server Tools API Reference
 
-> **Version**: v0.7.0 | **Transport**: stdio (JSON-RPC) | **Service name**: `xpai-camera-control`
+> **Version**: v1.5.6 | **Transport**: stdio (JSON-RPC) | **Service name**: `xpai-camera-control`
 
 All tool functions are exposed via MCP (Model Context Protocol). The caller sends JSON-RPC requests, and return values are uniformly serialized as JSON objects. On failure, `{"success": false, "error": "<error message>"}` is returned.
 
@@ -148,7 +148,7 @@ Connect to a camera. Automatically loads cached credentials (validated over RTSP
 |------------------|--------|----------------------------------------------------------------------------------------------------------|
 | `success`        | bool   | Whether the connection succeeded                                                                        |
 | `status`         | string | `"connected"` / `"needs_password"` / `"no_sn"` / `"failed"` / `"auth_rejected"` / `"cloud_pwd_failed"` |
-| `auth_method`    | string | Auth method: `"password"` / `"direct"`                                                                     |
+| `auth_method`    | string | Auth method: `"password"` (manual or cached) / `"cloud_password"` (cloud-issued) / `"direct"`             |
 | `needs_password` | bool   | Whether the user needs to provide a password                                                            |
 | `onvif_port`     | int    | Verified ONVIF port (0 = unverified)                                                                    |
 | `protocol_type`  | string | Device protocol class `"S"`/`"J"`/`"O"` (empty if unresolved); for O-class, explain the degraded capability set to the user |
