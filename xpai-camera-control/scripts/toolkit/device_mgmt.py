@@ -1086,6 +1086,7 @@ def _cloud_auth_and_connect(
                         camera_name, ip, effective_port,
                         username, result.device_pwd, cached,
                     )
+                conn.auth_method = "cloud_password"
                 conn.protocol_type = protocol_type
                 return conn
             else:

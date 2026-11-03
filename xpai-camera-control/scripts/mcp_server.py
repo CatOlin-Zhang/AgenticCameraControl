@@ -503,7 +503,7 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Any:
     else:
         raise ValueError(f"Unknown tool: {name}")
 
-server = Server("xpai-camera-control", version="0.7.0")
+server = Server("xpai-camera-control", version="1.5.6")
 
 @server.list_tools()
 async def handle_list_tools() -> list[Tool]:

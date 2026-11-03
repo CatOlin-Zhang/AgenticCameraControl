@@ -137,7 +137,7 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
 | Field | Type | Description |
 |-------|------|-------------|
 | `success` | bool | Whether the connection succeeded |
-| `auth_method` | string | Authentication method used: `"password"` or `"direct"` (empty if not connected) |
+| `auth_method` | string | Authentication method used: `"password"` (manual or cached), `"cloud_password"` (cloud-issued), or `"direct"` (empty if not connected) |
 | `status` | string | `"connected"` / `"needs_password"` / `"no_sn"` / `"cloud_pwd_failed"` / `"auth_rejected"` / `"failed"` |
 | `error_message` | string | Failure reason or status detail (empty on success) |
 | `needs_password` | bool | `true` = Agent must prompt user for password and re-call with `password` arg |
@@ -156,12 +156,12 @@ Establish connection to a camera. Uses cached credentials (retry 3x) → user-pr
 
 1. Check `config.yaml` for cached credentials → if found, retry connection up to 3 times (1s interval) using ONVIF/RTSP verification. For password devices, the password must pass **RTSP authentication** to be considered valid. All retries fail → attempt **cloud re-authorization** (if SN available) to fetch a fresh password; cloud also fails → auto-remove registration from config.yaml → return `status="needs_password"`
 2. If password provided by user → single attempt with ONVIF/RTSP verification (no retry, no cache cleanup). RTSP auth failure → `status="failed"`
-3. If no password and `device_class == "password_required"` → internally initiate cloud authorization (POST request + polling). Cloud returns password → verify via ONVIF + RTSP → success: persist credentials; failure: return `status="cloud_pwd_failed"`
+3. If no password and `device_class == "password_required"` → internally initiate cloud authorization (POST request + polling). Cloud returns password → verify via ONVIF + RTSP → success: persist credentials and return `auth_method="cloud_password"`; failure: return `status="cloud_pwd_failed"`
 4. If not `password_required` → probe RTSP stream:
    - `200 OK` (direct-connect) → probe SN via XPAI private protocol → register to config.yaml with SN → `auth_method="direct"`
    - `200 OK` but SN probes empty → ONVIF admission probe: pass → register as `protocol_type="O"` with `onvif_sn` → `auth_method="direct"`; fail → `status="no_sn"` rejection (RTSP-only device)
    - `401 Unauthorized` → SN probes empty and no S/J assertion → `status="needs_password"` (O-class has no cloud channel); otherwise internally initiate cloud authorization (same as step 3)
-5. Cloud authorization outcomes: authorized → auto-connect with cloud password; rejected → `status="auth_rejected"`; timeout/error → `status="needs_password"`. A device with no cloud station record is submitted to the default station (same host as the station-lookup interface); transport, TLS, HTTP and signature failures are reported directly — no fallback
+5. Cloud authorization outcomes: authorized → auto-connect with cloud password and return `auth_method="cloud_password"`; rejected → `status="auth_rejected"`; timeout/error → `status="needs_password"`. A device with no cloud station record is submitted to the default station (same host as the station-lookup interface); transport, TLS, HTTP and signature failures are reported directly — no fallback
 
 **Password verification standard:** A password is valid only when RTSP DESCRIBE returns 200. ONVIF `GetDeviceInformation` is a control-plane reachability check and may succeed with any password; RTSP 401 or an unreachable RTSP port rejects the password.
 
